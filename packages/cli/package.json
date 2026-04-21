@@ -1,0 +1,20 @@
+{
+  "name": "@lynlens/cli",
+  "version": "0.1.0",
+  "description": "LynLens CLI - script-friendly entry for batch editing",
+  "type": "module",
+  "bin": {
+    "lynlens": "./dist/index.js"
+  },
+  "main": "./dist/index.js",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "dev": "tsx src/index.ts",
+    "start": "node dist/index.js",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@lynlens/core": "workspace:*",
+    "commander": "^12.1.0"
+  }
+}

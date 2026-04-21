@@ -1,0 +1,40 @@
+{
+  "name": "lynlens",
+  "version": "0.1.0",
+  "private": true,
+  "description": "LynLens - AI-First talking-video quick-cut editor (Core Engine + MCP + UI + CLI)",
+  "scripts": {
+    "build": "pnpm -r --filter \"./packages/*\" run build",
+    "test": "pnpm -r --filter \"./packages/*\" run test",
+    "lint": "pnpm -r --filter \"./packages/*\" run lint",
+    "dev:core": "pnpm --filter @lynlens/core run dev",
+    "dev:mcp": "pnpm --filter @lynlens/mcp-server run dev",
+    "dev:desktop": "pnpm --filter @lynlens/desktop run dev",
+    "dev:cli": "pnpm --filter @lynlens/cli run dev",
+    "clean": "pnpm -r exec rimraf dist node_modules",
+    "typecheck": "pnpm -r --filter \"./packages/*\" run typecheck",
+    "bootstrap:ffmpeg": "node scripts/download-ffmpeg.mjs auto",
+    "bootstrap:whisper": "node scripts/download-whisper.mjs auto",
+    "package:desktop": "pnpm --filter @lynlens/desktop package",
+    "package:portable": "pnpm -r --filter \"./packages/*\" run build && node scripts/package-portable.mjs",
+    "package:source": "node scripts/package-source.mjs"
+  },
+  "devDependencies": {
+    "@electron/packager": "^19.1.0",
+    "@types/node": "^22.10.0",
+    "rimraf": "^6.0.1",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2",
+    "vitest": "^2.1.8"
+  },
+  "packageManager": "pnpm@10.33.0",
+  "engines": {
+    "node": ">=20"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "electron",
+      "esbuild"
+    ]
+  }
+}

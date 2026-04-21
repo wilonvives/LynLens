@@ -1,0 +1,20 @@
+node_modules/
+dist/
+build/
+# Keep per-package build resources (entitlements, icons, etc.) that electron-builder
+# reads from packages/*/build/. The generic `build/` above ignores top-level caches.
+!packages/*/build/
+!packages/*/build/**
+out/
+release/
+.DS_Store
+*.log
+.env
+.env.local
+.turbo/
+coverage/
+.vscode/
+.idea/
+packages/desktop/resources/ffmpeg/
+packages/desktop/resources/whisper/
+*.tsbuildinfo

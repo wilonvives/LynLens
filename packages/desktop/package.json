@@ -1,0 +1,38 @@
+{
+  "name": "@lynlens/desktop",
+  "version": "0.1.0",
+  "description": "LynLens desktop app (Electron) - UI for talking-video quick-cut editing",
+  "main": "./dist/main/main/index.js",
+  "scripts": {
+    "build": "tsc -p tsconfig.main.json && vite build",
+    "build:main": "tsc -p tsconfig.main.json",
+    "build:renderer": "vite build",
+    "dev": "concurrently -k \"pnpm dev:renderer\" \"pnpm dev:main\" \"pnpm dev:electron\"",
+    "dev:main": "tsc -p tsconfig.main.json --watch --preserveWatchOutput",
+    "dev:renderer": "vite",
+    "dev:electron": "cross-env LYNLENS_DEV=1 wait-on http://localhost:5173 && cross-env LYNLENS_DEV=1 electron .",
+    "start": "electron .",
+    "package": "pnpm build && electron-builder",
+    "typecheck": "tsc -p tsconfig.main.json --noEmit && tsc -p tsconfig.renderer.json --noEmit"
+  },
+  "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "^0.2.116",
+    "@lynlens/core": "workspace:*",
+    "electron-updater": "^6.8.3",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/react": "^18.3.17",
+    "@types/react-dom": "^18.3.5",
+    "@vitejs/plugin-react": "^4.3.4",
+    "concurrently": "^9.1.0",
+    "cross-env": "^7.0.3",
+    "electron": "^33.2.1",
+    "electron-builder": "^25.1.8",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "vite": "^6.0.3",
+    "wait-on": "^8.0.1",
+    "zustand": "^5.0.2"
+  }
+}

@@ -1,0 +1,66 @@
+appId: com.lynlens.app
+productName: LynLens
+copyright: "Copyright © 2026"
+
+directories:
+  output: release
+  buildResources: build
+
+asar: false
+
+files:
+  - dist/**
+  - package.json
+  - "!node_modules/**/test/**"
+  - "!node_modules/**/tests/**"
+
+# Auto-publish to GitHub Releases when env GH_TOKEN is set and the version is tagged.
+# Tag like v0.1.1 → release page gets the .dmg / .exe automatically.
+publish:
+  provider: github
+  owner: ""        # filled at release time (CI sets owner/repo from $GITHUB_REPOSITORY)
+  repo: ""
+
+win:
+  target:
+    - target: nsis
+      arch: [x64]
+  # Signing happens automatically when these env vars are present:
+  #   WIN_CSC_LINK, WIN_CSC_KEY_PASSWORD   — code-signing .pfx (base64)
+  # Missing → unsigned (SmartScreen warning on first run, but still runs).
+  extraResources:
+    - from: resources/ffmpeg/win
+      to: ffmpeg
+      filter: ["**/*"]
+    - from: resources/whisper/win
+      to: whisper
+      filter: ["**/*"]
+
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+
+mac:
+  target:
+    - target: dmg
+      arch: [x64, arm64]
+  category: public.app-category.video
+  hardenedRuntime: true
+  gatekeeperAssess: false
+  # Signing happens automatically when these env vars are present in the
+  # build environment:
+  #   CSC_LINK, CSC_KEY_PASSWORD            — Developer ID .p12 (base64)
+  #   APPLE_ID, APPLE_APP_SPECIFIC_PASSWORD, APPLE_TEAM_ID  — for notarization
+  # If the env vars are missing, builds are unsigned (dev/local case).
+  entitlements: build/entitlements.mac.plist
+  entitlementsInherit: build/entitlements.mac.plist
+  notarize: true
+  extraResources:
+    - from: resources/ffmpeg/mac-${arch}
+      to: ffmpeg
+      filter: ["**/*"]
+    - from: resources/whisper/mac-${arch}
+      to: whisper
+      filter: ["**/*"]
