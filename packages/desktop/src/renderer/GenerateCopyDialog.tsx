@@ -4,15 +4,18 @@ import type { HighlightVariant, SocialPlatform } from './core-browser';
 interface Props {
   /** Variants currently available; if empty, only "rippled" source is selectable. */
   variants: HighlightVariant[];
-  /** Current global style note from the project; used as default for the textarea. */
-  initialStyleNote: string;
+  /**
+   * Current global style note shown read-only for context. The dialog's
+   * "本次额外说明" is separate and additive — it does NOT modify this.
+   */
+  globalStyleNote: string;
   onCancel: () => void;
   onConfirm: (opts: {
     sourceType: 'rippled' | 'variant';
     sourceVariantId?: string;
     platforms: SocialPlatform[];
-    userStyleNote?: string;
-    saveStyleNoteGlobally: boolean;
+    /** Per-generation note only. Empty unless user explicitly typed. */
+    perRunNote?: string;
   }) => void;
 }
 
@@ -37,7 +40,7 @@ const PLATFORM_OPTIONS: PlatformOption[] = [
  */
 export function GenerateCopyDialog({
   variants,
-  initialStyleNote,
+  globalStyleNote,
   onCancel,
   onConfirm,
 }: Props) {
@@ -49,8 +52,8 @@ export function GenerateCopyDialog({
   const [platforms, setPlatforms] = useState<Set<SocialPlatform>>(
     new Set(['xiaohongshu', 'instagram', 'tiktok'])
   );
-  const [styleNote, setStyleNote] = useState(initialStyleNote);
-  const [saveGlobally, setSaveGlobally] = useState(false);
+  // Per-run note only — always starts empty.
+  const [perRunNote, setPerRunNote] = useState('');
 
   function togglePlatform(p: SocialPlatform): void {
     setPlatforms((prev) => {
@@ -71,8 +74,7 @@ export function GenerateCopyDialog({
       sourceType: source.kind,
       sourceVariantId: source.kind === 'variant' ? source.variantId : undefined,
       platforms: Array.from(platforms),
-      userStyleNote: styleNote.trim() ? styleNote.trim() : undefined,
-      saveStyleNoteGlobally: saveGlobally,
+      perRunNote: perRunNote.trim() ? perRunNote.trim() : undefined,
     });
   }
 
@@ -83,10 +85,6 @@ export function GenerateCopyDialog({
     >
       <div className="dialog" style={{ minWidth: 520 }}>
         <h3>生成社群文案</h3>
-        <div className="quick-desc">
-          挑一个输入源 → 选要的平台 → 加点风格说明(可选) → Claude 并行为每个平台单独写一版。
-          生成的文案会存进工程,切 tab 不会丢。
-        </div>
 
         {/* Source selector */}
         <div className="quick-row" style={{ marginTop: 12 }}>
@@ -151,37 +149,27 @@ export function GenerateCopyDialog({
           </div>
         </div>
 
-        {/* Style note */}
+        {/* Global style — read-only display, editable on the main panel. */}
+        {globalStyleNote.trim() && (
+          <div className="quick-row" style={{ marginTop: 12 }}>
+            <label className="quick-label">全局风格(在主页面修改)</label>
+            <div className="copy-dialog-global-style">{globalStyleNote}</div>
+          </div>
+        )}
+
+        {/* Per-run note — additive, not saved. */}
         <div className="quick-row" style={{ marginTop: 12 }}>
           <label className="quick-label">
-            账号定位 / 本次补充说明(可选)
-            <span className="quick-value">{styleNote.length} 字</span>
+            本次额外说明(可选,仅这次生效)
+            <span className="quick-value">{perRunNote.length} 字</span>
           </label>
           <textarea
             className="sub-text"
             style={{ width: '100%', minHeight: 70, marginTop: 6 }}
-            placeholder="比如: 我的账号做马来西亚华人创业,语气偏轻松,避免说教"
-            value={styleNote}
-            onChange={(e) => setStyleNote(e.target.value)}
+            placeholder="比如: 这次标题前面加一个 🇲🇾 emoji / 着重讲税务细节"
+            value={perRunNote}
+            onChange={(e) => setPerRunNote(e.target.value)}
           />
-          <label
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              gap: 6,
-              fontSize: 11,
-              color: '#888',
-              marginTop: 6,
-              cursor: 'pointer',
-            }}
-          >
-            <input
-              type="checkbox"
-              checked={saveGlobally}
-              onChange={(e) => setSaveGlobally(e.target.checked)}
-            />
-            保存为该工程的默认风格(下次生成时自动带上)
-          </label>
         </div>
 
         <div className="dialog-actions">

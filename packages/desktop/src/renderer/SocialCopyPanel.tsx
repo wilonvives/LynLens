@@ -26,6 +26,13 @@ export function SocialCopyPanel(): JSX.Element {
   const [generating, setGenerating] = useState(false);
   const [savingCopyId, setSavingCopyId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // Electron blocks window.prompt(), so we use a local dialog for text input.
+  // `kind` tells us which handler to run on confirm.
+  const [textPrompt, setTextPrompt] = useState<
+    | null
+    | { kind: 'save-as'; initial: string }
+    | { kind: 'rename'; presetId: string; initial: string }
+  >(null);
 
   // Hydrate everything we need on mount / project change.
   useEffect(() => {
@@ -58,24 +65,26 @@ export function SocialCopyPanel(): JSX.Element {
     sourceType: 'rippled' | 'variant';
     sourceVariantId?: string;
     platforms: SocialPlatform[];
-    userStyleNote?: string;
-    saveStyleNoteGlobally: boolean;
+    perRunNote?: string;
   }): Promise<void> {
     if (!projectId) return;
     setShowDialog(false);
     setGenerating(true);
     setError(null);
     try {
-      if (opts.saveStyleNoteGlobally) {
-        const next = opts.userStyleNote ?? '';
-        setStyleNote(next);
-        await window.lynlens.setSocialStyleNote(projectId, next || null);
-      }
+      // Combine global style (persistent) + per-run note (one-off) into one
+      // userStyleNote for the prompt. Keeping them separate in the UI but
+      // merged at the boundary keeps the prompt assembly simple.
+      const parts: string[] = [];
+      if (styleNote.trim()) parts.push(styleNote.trim());
+      if (opts.perRunNote) parts.push(`[本次额外要求] ${opts.perRunNote}`);
+      const combined = parts.join('\n\n');
+
       const result = await window.lynlens.generateSocialCopies(projectId, {
         sourceType: opts.sourceType,
         sourceVariantId: opts.sourceVariantId,
         platforms: opts.platforms,
-        userStyleNote: opts.userStyleNote,
+        userStyleNote: combined || undefined,
       });
       await refreshSets();
       if (result.failures.length > 0) {
@@ -129,15 +138,13 @@ export function SocialCopyPanel(): JSX.Element {
     setStylePresets(await window.lynlens.getSocialStylePresets(projectId));
   }
 
-  async function handleSaveAsPreset(): Promise<void> {
+  function handleSaveAsPreset(): void {
     if (!projectId || !styleNote.trim()) {
       alert('当前风格是空的,先填点内容再保存。');
       return;
     }
-    const name = prompt('给这个风格起个名字:');
-    if (!name || !name.trim()) return;
-    await window.lynlens.addSocialStylePreset(projectId, name.trim(), styleNote);
-    await refreshPresets();
+    // Open inline prompt dialog (Electron blocks window.prompt()).
+    setTextPrompt({ kind: 'save-as', initial: '' });
   }
 
   async function handleLoadPreset(preset: SocialStylePresetData): Promise<void> {
@@ -149,11 +156,32 @@ export function SocialCopyPanel(): JSX.Element {
     }
   }
 
-  async function handleRenamePreset(preset: SocialStylePresetData): Promise<void> {
+  function handleRenamePreset(preset: SocialStylePresetData): void {
     if (!projectId) return;
-    const name = prompt('重命名风格:', preset.name);
-    if (!name || name.trim() === preset.name) return;
-    await window.lynlens.updateSocialStylePreset(projectId, preset.id, { name: name.trim() });
+    setTextPrompt({ kind: 'rename', presetId: preset.id, initial: preset.name });
+  }
+
+  /** Called when the inline prompt dialog is confirmed. */
+  async function resolveTextPrompt(value: string): Promise<void> {
+    if (!textPrompt || !projectId) {
+      setTextPrompt(null);
+      return;
+    }
+    const trimmed = value.trim();
+    if (!trimmed) {
+      setTextPrompt(null);
+      return;
+    }
+    if (textPrompt.kind === 'save-as') {
+      await window.lynlens.addSocialStylePreset(projectId, trimmed, styleNote);
+    } else if (textPrompt.kind === 'rename') {
+      await window.lynlens.updateSocialStylePreset(
+        projectId,
+        textPrompt.presetId,
+        { name: trimmed }
+      );
+    }
+    setTextPrompt(null);
     await refreshPresets();
   }
 
@@ -339,11 +367,77 @@ export function SocialCopyPanel(): JSX.Element {
       {showDialog && (
         <GenerateCopyDialog
           variants={variants}
-          initialStyleNote={styleNote}
+          globalStyleNote={styleNote}
           onCancel={() => setShowDialog(false)}
           onConfirm={handleGenerate}
         />
       )}
+
+      {textPrompt && (
+        <TextPromptDialog
+          title={textPrompt.kind === 'save-as' ? '保存为新风格' : '重命名风格'}
+          label={textPrompt.kind === 'save-as' ? '给这个风格起个名字:' : '新名字:'}
+          initialValue={textPrompt.initial}
+          confirmLabel={textPrompt.kind === 'save-as' ? '保存' : '确认'}
+          onCancel={() => setTextPrompt(null)}
+          onConfirm={(v) => void resolveTextPrompt(v)}
+        />
+      )}
+    </div>
+  );
+}
+
+/**
+ * Tiny inline text-prompt dialog. Electron's default renderer blocks
+ * window.prompt() entirely (returns null), so anywhere we'd normally call
+ * prompt() we render this instead.
+ */
+function TextPromptDialog({
+  title,
+  label,
+  initialValue,
+  confirmLabel,
+  onCancel,
+  onConfirm,
+}: {
+  title: string;
+  label: string;
+  initialValue: string;
+  confirmLabel: string;
+  onCancel: () => void;
+  onConfirm: (value: string) => void;
+}): JSX.Element {
+  const [value, setValue] = useState(initialValue);
+  return (
+    <div
+      className="dialog-backdrop"
+      onClick={(e) => e.target === e.currentTarget && onCancel()}
+    >
+      <div className="dialog" style={{ minWidth: 360 }}>
+        <h3>{title}</h3>
+        <div className="dialog-row">
+          <label>{label}</label>
+          <input
+            autoFocus
+            value={value}
+            onChange={(e) => setValue(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') onConfirm(value);
+              else if (e.key === 'Escape') onCancel();
+            }}
+          />
+        </div>
+        <div className="dialog-actions">
+          <button onClick={onCancel}>取消</button>
+          <button
+            className="primary"
+            onClick={() => onConfirm(value)}
+            disabled={!value.trim()}
+          >
+            {confirmLabel}
+          </button>
+        </div>
+      </div>
     </div>
   );
 }
