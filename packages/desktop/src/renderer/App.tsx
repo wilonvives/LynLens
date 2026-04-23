@@ -13,9 +13,10 @@ import { SubtitlePanel } from './SubtitlePanel';
 import { OrientationDialog } from './OrientationDialog';
 import { QuickMarkDialog } from './QuickMarkDialog';
 import { HighlightPanel } from './HighlightPanel';
+import { SocialCopyPanel } from './SocialCopyPanel';
 import { Resizer } from './Resizer';
 
-type WorkMode = 'precision' | 'highlight';
+type WorkMode = 'precision' | 'highlight' | 'copywriter';
 
 function usePersistedSize(key: string, defaultValue: number): [number, (n: number) => void] {
   const [value, setValue] = useState<number>(() => {
@@ -746,6 +747,14 @@ export function App() {
         >
           高光
         </button>
+        <button
+          className={`work-mode-tab${workMode === 'copywriter' ? ' active' : ''}`}
+          onClick={() => void switchMode('copywriter')}
+          disabled={!store.projectId}
+          title={store.projectId ? undefined : '请先打开视频'}
+        >
+          文案
+        </button>
       </div>
 
       {workMode === 'highlight' ? (
@@ -754,6 +763,8 @@ export function App() {
           videoPath={store.videoPath}
           previewRotation={previewRotation}
         />
+      ) : workMode === 'copywriter' ? (
+        <SocialCopyPanel />
       ) : (
       <>
       <div className="ai-bar">
