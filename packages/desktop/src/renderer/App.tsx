@@ -56,6 +56,56 @@ export function App() {
   const brushRef = useRef<{ start: number } | null>(null);
 
   /**
+   * Preview-only rotation, in degrees. PURELY VISUAL: applied as a CSS
+   * transform on the <video> element, never persisted to the QcpProject,
+   * never sent to ffmpeg on export. The source video and all exported
+   * output keep their original orientation metadata intact. We persist the
+   * choice in localStorage keyed by projectId so reopening the same video
+   * remembers the user's preferred viewing angle.
+   */
+  const [previewRotation, setPreviewRotation] = useState<0 | 90 | 180 | 270>(0);
+  useEffect(() => {
+    if (!store.projectId) {
+      setPreviewRotation(0);
+      return;
+    }
+    const raw = window.localStorage.getItem(`lynlens.previewRotation.${store.projectId}`);
+    const n = raw ? Number(raw) : 0;
+    if (n === 0 || n === 90 || n === 180 || n === 270) setPreviewRotation(n);
+    else setPreviewRotation(0);
+  }, [store.projectId]);
+
+  const rotatePreview = useCallback(() => {
+    setPreviewRotation((prev) => {
+      const next = ((prev + 90) % 360) as 0 | 90 | 180 | 270;
+      const pid = store.projectId;
+      if (pid) {
+        window.localStorage.setItem(`lynlens.previewRotation.${pid}`, String(next));
+      }
+      return next;
+    });
+  }, [store.projectId]);
+
+  /**
+   * When the preview is rotated 90° or 270°, the video's pre-rotation
+   * bounding box needs to be constrained by the container's SWAPPED
+   * dimensions so that after the CSS rotate() the visible frame lands back
+   * inside the container. We measure the container with a ResizeObserver so
+   * this survives panel resizes.
+   */
+  const playerWrapRef = useRef<HTMLDivElement | null>(null);
+  const [playerWrapSize, setPlayerWrapSize] = useState({ w: 0, h: 0 });
+  useEffect(() => {
+    const el = playerWrapRef.current;
+    if (!el) return;
+    const ro = new ResizeObserver(() => {
+      setPlayerWrapSize({ w: el.clientWidth, h: el.clientHeight });
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+
+  /**
    * Source-time ranges that are currently rippled out of the effective
    * timeline. Derived from segments with status='cut' so there's one source
    * of truth. When empty, every effective↔source helper below is identity
@@ -694,17 +744,43 @@ export function App() {
       </div>
 
       <div className="main-area">
-        <div className="player-wrap">
+        <div className="player-wrap" ref={playerWrapRef}>
           {store.videoUrl ? (
-            <video
-              ref={videoRef}
-              src={store.videoUrl}
-              onPlay={() => setIsPlaying(true)}
-              onPause={() => setIsPlaying(false)}
-              // eslint-disable-next-line no-console
-              onError={(e) => console.error('[video] error', (e.target as HTMLVideoElement).error)}
-              controls={false}
-            />
+            <>
+              <video
+                ref={videoRef}
+                src={store.videoUrl}
+                onPlay={() => setIsPlaying(true)}
+                onPause={() => setIsPlaying(false)}
+                // eslint-disable-next-line no-console
+                onError={(e) => console.error('[video] error', (e.target as HTMLVideoElement).error)}
+                controls={false}
+                style={(() => {
+                  const isSide = previewRotation === 90 || previewRotation === 270;
+                  // When rotated 90/270 the pre-rotation box must fit within
+                  // (containerH × containerW), not (containerW × containerH),
+                  // so after the transform the visible frame lands back inside
+                  // the player. maxWidth+maxHeight+objectFit:contain together
+                  // give us a clean letterboxed rotation.
+                  const maxW = isSide && playerWrapSize.h ? `${playerWrapSize.h}px` : '100%';
+                  const maxH = isSide && playerWrapSize.w ? `${playerWrapSize.w}px` : '100%';
+                  return {
+                    maxWidth: maxW,
+                    maxHeight: maxH,
+                    objectFit: 'contain' as const,
+                    transform: `rotate(${previewRotation}deg)`,
+                    transition: 'transform 0.2s ease',
+                  };
+                })()}
+              />
+              <button
+                className="preview-rotate-btn"
+                onClick={rotatePreview}
+                title="仅旋转预览画面,不影响原视频和导出"
+              >
+                旋转 {previewRotation}°
+              </button>
+            </>
           ) : (
             <div className="drop-hint">
               <h2>拖入视频文件,或点击菜单「文件 · 打开视频」</h2>

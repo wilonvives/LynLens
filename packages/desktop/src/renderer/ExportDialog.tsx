@@ -10,8 +10,13 @@ interface Props {
 
 export function ExportDialog({ defaultPath, onClose, onConfirm }: Props) {
   const [outputPath, setOutputPath] = useState(defaultPath);
-  const [mode, setMode] = useState<ExportMode>('precise');
-  const [quality, setQuality] = useState<ExportQuality>('high');
+  // Default to stream-copy: LynLens is a source-preserving tool. The kept
+  // video bytes should come out of the export byte-for-byte identical to
+  // the original file — same codec, same bitrate, same color, same
+  // rotation metadata. The user can opt in to re-encode only if they need
+  // frame-accurate cuts.
+  const [mode, setMode] = useState<ExportMode>('fast');
+  const [quality, setQuality] = useState<ExportQuality>('original');
   const ex = useStore((s) => s.export);
 
   async function browse() {
@@ -34,23 +39,29 @@ export function ExportDialog({ defaultPath, onClose, onConfirm }: Props) {
         <div className="dialog-row">
           <label>导出模式</label>
           <select value={mode} onChange={(e) => setMode(e.target.value as ExportMode)}>
-            <option value="precise">精确模式(重新编码,帧精度)</option>
-            <option value="fast">快速模式(流拷贝,关键帧精度)</option>
+            <option value="fast">原样导出 (不转码,推荐)</option>
+            <option value="precise">帧精度 (会重新编码)</option>
           </select>
+          <div style={{ fontSize: 11, color: '#888', marginTop: 4, lineHeight: 1.5 }}>
+            {mode === 'fast'
+              ? '保留段用 -c copy 直接拷贝,画质/编码/元数据与原片完全一致。切点落在最近关键帧,误差通常 <1 秒。'
+              : '每一帧都重新编码以获得精确切点。画质会有损耗,文件大小/编码参数与原片不同。'}
+          </div>
         </div>
-        <div className="dialog-row">
-          <label>视频质量</label>
-          <select
-            value={quality}
-            onChange={(e) => setQuality(e.target.value as ExportQuality)}
-            disabled={mode === 'fast'}
-          >
-            <option value="original">原画 (CRF 16)</option>
-            <option value="high">高 (CRF 18)</option>
-            <option value="medium">中 (CRF 23)</option>
-            <option value="low">低 (CRF 28)</option>
-          </select>
-        </div>
+        {mode === 'precise' && (
+          <div className="dialog-row">
+            <label>视频质量</label>
+            <select
+              value={quality}
+              onChange={(e) => setQuality(e.target.value as ExportQuality)}
+            >
+              <option value="original">原画 (CRF 16)</option>
+              <option value="high">高 (CRF 18)</option>
+              <option value="medium">中 (CRF 23)</option>
+              <option value="low">低 (CRF 28)</option>
+            </select>
+          </div>
+        )}
 
         {ex.active && (
           <div style={{ marginTop: 16 }}>

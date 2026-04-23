@@ -557,6 +557,11 @@ ipcMain.handle('export', async (_ev, req: ExportRequest) => {
       mode: req.mode,
       quality: req.quality,
       signal: ac.signal,
+      // CRITICAL: forward the bundled ffmpeg binary. Without this, export
+      // tries literal 'ffmpeg' from PATH and ENOENTs on machines without
+      // system ffmpeg installed. Probe works even without this because
+      // probeVideo already threads engine.ffmpegPaths through its own IPC.
+      ffmpegPaths: engine.ffmpegPaths,
     });
     return result;
   } finally {

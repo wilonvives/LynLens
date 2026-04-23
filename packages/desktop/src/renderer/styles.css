@@ -163,6 +163,23 @@ button.ai.active {
   height: auto;
   background: #000;
 }
+.preview-rotate-btn {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  padding: 4px 10px;
+  font-size: 12px;
+  background: rgba(30, 30, 30, 0.72);
+  color: #ddd;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  border-radius: 4px;
+  cursor: pointer;
+  z-index: 2;
+}
+.preview-rotate-btn:hover {
+  background: rgba(50, 50, 50, 0.9);
+  color: #fff;
+}
 .drop-hint {
   color: var(--text3);
   font-size: 14px;
