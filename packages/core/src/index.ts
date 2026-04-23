@@ -39,6 +39,17 @@ export {
   type FillerMatch,
 } from './transcription';
 export { LynLensEngine } from './engine';
+export {
+  buildHighlightSystemPrompt,
+  buildHighlightUserPrompt,
+  formatTranscriptEffective,
+  type HighlightGenerateOptions,
+  type HighlightStyle,
+} from './highlight-prompts';
+export {
+  parseHighlightResponse,
+  type HighlightVariant,
+} from './highlight-parser';
 // Ripple helpers: re-exported via `import *` + const bindings so tsc emits
 // direct `exports.foo = ripple.foo` assignments instead of Object.define-
 // Property getters. Getter-based re-exports are invisible to both esbuild's

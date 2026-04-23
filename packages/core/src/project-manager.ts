@@ -4,6 +4,7 @@ import { v4 as uuid } from 'uuid';
 import { EventBus } from './event-bus';
 import { SegmentManager } from './segment-manager';
 import { getEffectiveDuration } from './ripple';
+import type { HighlightVariant } from './highlight-parser';
 import type { AiMode, ProjectHandle, QcpProject, Range, Segment, Transcript, VideoMeta } from './types';
 
 export class Project {
@@ -19,6 +20,18 @@ export class Project {
   createdAt: string;
   modifiedAt: string;
   projectPath: string | null;
+  /**
+   * Highlight variants produced by Claude in the current session. Intentionally
+   * ephemeral: never written to the .qcp file. The highlight tab shows them;
+   * switching back to the precision (粗剪) tab clears them. Re-opening a
+   * project does NOT restore previous variants — the user re-generates.
+   *
+   * Rationale: variants reference source-time ranges, and source times are
+   * only meaningful relative to the CURRENT cutRanges. If the user edits the
+   * ripple after generating variants, those variants become misaligned. Making
+   * them ephemeral sidesteps that class of bug entirely.
+   */
+  highlightVariants: HighlightVariant[] = [];
 
   constructor(handle: ProjectHandle, eventBus: EventBus) {
     this.id = handle.projectId;
@@ -297,6 +310,20 @@ export class Project {
   /** Convenience for callers that need to reason about the compacted timeline. */
   getEffectiveDuration(): number {
     return getEffectiveDuration(this.videoMeta.duration, this.cutRanges);
+  }
+
+  /** Replace the in-memory highlight variants with a fresh batch. */
+  setHighlightVariants(variants: HighlightVariant[]): void {
+    this.highlightVariants = [...variants];
+  }
+
+  /** Drop all highlight variants — called when the user switches back to 粗剪. */
+  clearHighlightVariants(): void {
+    this.highlightVariants = [];
+  }
+
+  findHighlightVariant(id: string): HighlightVariant | undefined {
+    return this.highlightVariants.find((v) => v.id === id);
   }
 }
 
