@@ -77,6 +77,15 @@ export interface QcpProject {
    * fall back to auto-detection from videoMeta.width/height/rotation.
    */
   userOrientation?: 'landscape' | 'portrait' | null;
+  /**
+   * Committed ripple cuts (source-time ranges). When the user clicks 「剪切」
+   * their approved delete segments are compacted into this list and removed
+   * from `deleteSegments`. The UI renders the timeline in "effective time" =
+   * source duration minus the sum of these ranges. Persisting this separately
+   * from deleteSegments lets the user continue marking+erasing on top of a
+   * rippled timeline and later apply another round of cuts.
+   */
+  cutRanges?: Range[];
   createdAt: string;
   modifiedAt: string;
 }
@@ -109,6 +118,19 @@ export type LynLensEvent =
   | { type: 'export.progress'; projectId: string; percent: number; stage: string }
   | { type: 'export.completed'; projectId: string; outputPath: string; sizeBytes: number }
   | { type: 'export.failed'; projectId: string; error: string }
-  | { type: 'export.canceled'; projectId: string };
+  | { type: 'export.canceled'; projectId: string }
+  | {
+      type: 'ripple.committed';
+      projectId: string;
+      addedCutRange: Range;
+      totalCutSeconds: number;
+      effectiveDuration: number;
+    }
+  | {
+      type: 'ripple.reverted';
+      projectId: string;
+      removedCutRange: Range;
+      effectiveDuration: number;
+    };
 
 export type EventType = LynLensEvent['type'];

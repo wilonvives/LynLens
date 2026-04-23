@@ -40,6 +40,15 @@ export {
 } from './transcription';
 export { LynLensEngine } from './engine';
 export {
+  addCutRange,
+  computeKeepIntervals,
+  effectiveToSource,
+  getEffectiveDuration,
+  mapRangeToEffective,
+  normalizeCuts,
+  sourceToEffective,
+} from './ripple';
+export {
   getOrientation,
   getLineLimits,
   isMainlyCJK,

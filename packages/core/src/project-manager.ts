@@ -3,7 +3,12 @@ import path from 'node:path';
 import { v4 as uuid } from 'uuid';
 import { EventBus } from './event-bus';
 import { SegmentManager } from './segment-manager';
-import type { AiMode, ProjectHandle, QcpProject, Transcript, VideoMeta } from './types';
+import {
+  addCutRange,
+  getEffectiveDuration,
+  normalizeCuts,
+} from './ripple';
+import type { AiMode, ProjectHandle, QcpProject, Range, Transcript, VideoMeta } from './types';
 
 export class Project {
   readonly id: string;
@@ -15,6 +20,12 @@ export class Project {
   transcript: Transcript | null;
   aiMode: AiMode;
   userOrientation: 'landscape' | 'portrait' | null;
+  /**
+   * Committed ripple cuts (source-time ranges). Normalised: sorted, merged,
+   * non-overlapping. Never mutate in place — reassign to keep state transitions
+   * explicit.
+   */
+  cutRanges: Range[];
   createdAt: string;
   modifiedAt: string;
   projectPath: string | null;
@@ -27,6 +38,10 @@ export class Project {
     this.transcript = handle.data.transcript;
     this.aiMode = handle.data.aiMode;
     this.userOrientation = handle.data.userOrientation ?? null;
+    this.cutRanges = normalizeCuts(
+      handle.data.cutRanges ?? [],
+      handle.data.videoMeta.duration
+    );
     this.createdAt = handle.data.createdAt;
     this.modifiedAt = handle.data.modifiedAt;
     this.eventBus = eventBus;
@@ -41,6 +56,7 @@ export class Project {
     this.transcript = data.transcript;
     this.aiMode = data.aiMode;
     this.userOrientation = data.userOrientation ?? null;
+    this.cutRanges = normalizeCuts(data.cutRanges ?? [], this.videoMeta.duration);
     this.modifiedAt = data.modifiedAt;
     this.segments = new SegmentManager(this.id, this.eventBus, data.deleteSegments);
     this.eventBus.emit({
@@ -163,9 +179,112 @@ export class Project {
       deleteSegments: this.segments.list(),
       aiMode: this.aiMode,
       userOrientation: this.userOrientation,
+      cutRanges: this.cutRanges,
       createdAt: this.createdAt,
       modifiedAt: new Date().toISOString(),
     };
+  }
+
+  /**
+   * Commit ripple: take every approved delete segment, append it to cutRanges
+   * (merging with any existing cuts), and remove those segments from the
+   * segment list. Pending and rejected segments are untouched.
+   *
+   * Returns a summary that the UI / caller can show: the merged cut range
+   * that was appended, total cut seconds, and the new effective duration.
+   *
+   * The approved segments are removed via `segments.remove()` which records
+   * each removal in the SegmentManager's undo stack — undoing that stack
+   * restores them, but the cutRange itself is NOT on that stack. Use
+   * `revertRipple` to remove a cut range explicitly.
+   */
+  commitRipple(): {
+    addedCutRange: Range | null;
+    totalCutSeconds: number;
+    effectiveDuration: number;
+    cutSegmentIds: string[];
+  } {
+    const approved = this.segments.getApprovedSegments();
+    if (approved.length === 0) {
+      return {
+        addedCutRange: null,
+        totalCutSeconds: 0,
+        effectiveDuration: getEffectiveDuration(this.videoMeta.duration, this.cutRanges),
+        cutSegmentIds: [],
+      };
+    }
+
+    // Each approved segment becomes a new cut. They may overlap / touch
+    // neighbours, so we merge via normalizeCuts. We record the union as ONE
+    // merged range for the event payload — that's the visible "this is what
+    // got removed this round" boundary on the compacted timeline.
+    const newCuts: Range[] = approved.map((s) => ({ start: s.start, end: s.end }));
+    const mergedBefore = this.cutRanges;
+    const mergedAfter = normalizeCuts(
+      [...mergedBefore, ...newCuts],
+      this.videoMeta.duration
+    );
+
+    const cutSegmentIds = approved.map((s) => s.id);
+    for (const id of cutSegmentIds) this.segments.remove(id);
+
+    this.cutRanges = mergedAfter;
+    this.modifiedAt = new Date().toISOString();
+
+    const totalCutSeconds = mergedAfter.reduce((sum, c) => sum + (c.end - c.start), 0);
+    const effectiveDuration = getEffectiveDuration(this.videoMeta.duration, mergedAfter);
+
+    // For the event payload we surface the BOUNDING range of what was added
+    // this round — the caller can use it to animate / highlight the collapse.
+    const addedCutRange: Range = {
+      start: Math.min(...newCuts.map((c) => c.start)),
+      end: Math.max(...newCuts.map((c) => c.end)),
+    };
+    this.eventBus.emit({
+      type: 'ripple.committed',
+      projectId: this.id,
+      addedCutRange,
+      totalCutSeconds,
+      effectiveDuration,
+    });
+
+    return { addedCutRange, totalCutSeconds, effectiveDuration, cutSegmentIds };
+  }
+
+  /**
+   * Remove a previously-committed cut range by its source-time start/end.
+   * The previously-cut source time is restored to the effective timeline.
+   * Returns true if a matching cut was found and removed.
+   */
+  revertRipple(cutStart: number, cutEnd: number): boolean {
+    const before = this.cutRanges;
+    const next = before.filter(
+      (c) => !(Math.abs(c.start - cutStart) < 1e-6 && Math.abs(c.end - cutEnd) < 1e-6)
+    );
+    if (next.length === before.length) return false;
+    this.cutRanges = next;
+    this.modifiedAt = new Date().toISOString();
+    const effectiveDuration = getEffectiveDuration(this.videoMeta.duration, next);
+    this.eventBus.emit({
+      type: 'ripple.reverted',
+      projectId: this.id,
+      removedCutRange: { start: cutStart, end: cutEnd },
+      effectiveDuration,
+    });
+    return true;
+  }
+
+  /** Convenience for callers that need to reason about the compacted timeline. */
+  getEffectiveDuration(): number {
+    return getEffectiveDuration(this.videoMeta.duration, this.cutRanges);
+  }
+
+  /** Add a cut without needing any approved segments — used by MCP tools / CLI. */
+  addCut(cut: Range): Range[] {
+    if (cut.end <= cut.start) return this.cutRanges;
+    this.cutRanges = addCutRange(this.cutRanges, cut);
+    this.modifiedAt = new Date().toISOString();
+    return this.cutRanges;
   }
 }
 
@@ -202,6 +321,7 @@ export class ProjectManager {
         transcript: null,
         deleteSegments: [],
         aiMode: 'L2',
+        cutRanges: [],
         createdAt: now,
         modifiedAt: now,
       };
