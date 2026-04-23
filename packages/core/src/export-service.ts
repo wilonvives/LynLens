@@ -3,6 +3,7 @@ import path from 'node:path';
 import type { EventBus } from './event-bus';
 import { mkTmpDir, resolveFfmpegPaths, runFfmpeg, type FfmpegPaths } from './ffmpeg';
 import type { Project } from './project-manager';
+import { computeKeepIntervals } from './ripple';
 import type { Range } from './types';
 
 export type ExportMode = 'fast' | 'precise';
@@ -38,7 +39,17 @@ export class ExportService {
   async export(project: Project, options: ExportOptions): Promise<ExportResult> {
     const mode: ExportMode = options.mode ?? 'precise';
     const { videoPath, videoMeta } = project;
-    const keeps = project.segments.getKeepSegments(videoMeta.duration);
+    // Export drops TWO things: approved delete segments AND any committed
+    // ripple cuts. computeKeepIntervals merges both into the same keep list.
+    const approvedDeletes = project.segments.getApprovedSegments().map((s) => ({
+      start: s.start,
+      end: s.end,
+    }));
+    const keeps = computeKeepIntervals(
+      videoMeta.duration,
+      approvedDeletes,
+      project.cutRanges
+    );
     const outputPath = path.resolve(options.outputPath);
 
     if (path.resolve(videoPath) === outputPath) {
@@ -48,10 +59,12 @@ export class ExportService {
       throw new Error('Nothing to export: all content is marked deleted');
     }
 
-    const totalDeleted = project.segments.getTotalDeletedDuration();
-    if (totalDeleted > videoMeta.duration * 0.8) {
+    const totalCut =
+      project.cutRanges.reduce((sum, r) => sum + (r.end - r.start), 0) +
+      approvedDeletes.reduce((sum, r) => sum + (r.end - r.start), 0);
+    if (totalCut > videoMeta.duration * 0.8) {
       throw new Error(
-        `Refusing to export: deleted ${totalDeleted.toFixed(2)}s exceeds 80% of total ${videoMeta.duration.toFixed(2)}s`
+        `Refusing to export: removed ${totalCut.toFixed(2)}s exceeds 80% of total ${videoMeta.duration.toFixed(2)}s`
       );
     }
 

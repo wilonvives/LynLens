@@ -1,25 +1,45 @@
 import { useEffect, useRef, useState } from 'react';
-import type { Segment, Transcript } from '@lynlens/core';
+import {
+  effectiveToSource,
+  mapRangeToEffective,
+  sourceToEffective,
+  type Range,
+  type Segment,
+  type Transcript,
+} from '@lynlens/core';
 import { formatTime } from './util';
 
 interface TimelineProps {
+  /**
+   * Effective duration of the compacted timeline (seconds). When cutRanges
+   * is empty this equals sourceDuration and nothing changes visually.
+   */
   duration: number;
+  /** True source video duration — needed only to sample the waveform. */
+  sourceDuration: number;
+  /**
+   * Source-time ranges that have been ripple-cut out. Drawing compacts them
+   * away; click/drag coordinates come back in effective time.
+   */
+  cutRanges: readonly Range[];
+  /** Current playhead in effective seconds. */
   currentTime: number;
   waveform: { peak: Float32Array; rms: Float32Array } | null;
+  /** Segments live in SOURCE time; we map through cutRanges for rendering. */
   segments: Segment[];
   transcript: Transcript | null;
-  /** Plain click: just seek the playhead (no playback). */
-  onSeek: (time: number) => void;
-  /** Plain drag: scrub (video follows mouse live). Start → update → end. */
-  onScrubStart: (time: number) => void;
-  onScrubUpdate: (time: number) => void;
+  /** Plain click: seek the playhead. Argument is EFFECTIVE seconds. */
+  onSeek: (effectiveSec: number) => void;
+  /** Plain drag: scrub. Arguments are EFFECTIVE seconds. */
+  onScrubStart: (effectiveSec: number) => void;
+  onScrubUpdate: (effectiveSec: number) => void;
   onScrubEnd: () => void;
-  /** Shift+drag: add a delete-mark region. */
-  onMarkRange: (start: number, end: number) => void;
-  /** Ctrl+drag: erase any existing marks in this range. */
-  onEraseRange: (start: number, end: number) => void;
-  /** Drag segment edge or body to adjust its start/end. Called on release. */
-  onResizeSegment: (id: string, start: number, end: number) => void;
+  /** Shift+drag mark. Arguments are EFFECTIVE seconds. */
+  onMarkRange: (effStart: number, effEnd: number) => void;
+  /** Cmd/Ctrl+drag erase. Arguments are EFFECTIVE seconds. */
+  onEraseRange: (effStart: number, effEnd: number) => void;
+  /** Segment resize/move. Arguments are EFFECTIVE seconds. */
+  onResizeSegment: (id: string, effStart: number, effEnd: number) => void;
 }
 
 interface View {
@@ -30,6 +50,8 @@ interface View {
 export function Timeline(props: TimelineProps) {
   const {
     duration,
+    sourceDuration,
+    cutRanges,
     currentTime,
     waveform,
     segments,
@@ -42,6 +64,16 @@ export function Timeline(props: TimelineProps) {
     onEraseRange,
     onResizeSegment,
   } = props;
+  // Keep a ref so long-lived drag handlers (started via mousedown) still see
+  // the latest cutRanges without having to retear down on every render.
+  const cutRangesRef = useRef<readonly Range[]>(cutRanges);
+  useEffect(() => {
+    cutRangesRef.current = cutRanges;
+  }, [cutRanges]);
+  const sourceDurationRef = useRef<number>(sourceDuration);
+  useEffect(() => {
+    sourceDurationRef.current = sourceDuration;
+  }, [sourceDuration]);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const [view, setView] = useState<View>({ offsetSec: 0, visibleSec: 0 });
@@ -131,18 +163,22 @@ export function Timeline(props: TimelineProps) {
       const peakScale = 1.4;
       const rmsScale = 2.0;
       const { peak, rms } = waveform;
-      const bucketsPerSec = peak.length / duration;
+      // Waveform buckets were extracted from the source audio, so index them
+      // by source time. We translate each effective-time pixel to source time
+      // before sampling. When cutRanges is empty this is effectively a no-op.
+      const srcDur = sourceDurationRef.current || duration;
+      const bucketsPerSec = peak.length / srcDur;
       const peakTops = new Float32Array(w);
       const rmsTops = new Float32Array(w);
 
       for (let x = 0; x < w; x++) {
-        const secA = view.offsetSec + (x / w) * view.visibleSec;
-        const secB = view.offsetSec + ((x + 1) / w) * view.visibleSec;
-        if (secB < 0 || secA >= duration) continue;
-        const aClamped = Math.max(0, secA);
-        const bClamped = Math.min(duration, secB);
-        const idxA = Math.floor(aClamped * bucketsPerSec);
-        const idxB = Math.max(idxA + 1, Math.ceil(bClamped * bucketsPerSec));
+        const effA = view.offsetSec + (x / w) * view.visibleSec;
+        const effB = view.offsetSec + ((x + 1) / w) * view.visibleSec;
+        if (effB < 0 || effA >= duration) continue;
+        const srcA = effectiveToSource(Math.max(0, effA), cutRanges);
+        const srcB = effectiveToSource(Math.min(duration, effB), cutRanges);
+        const idxA = Math.floor(srcA * bucketsPerSec);
+        const idxB = Math.max(idxA + 1, Math.ceil(srcB * bucketsPerSec));
         let p = 0;
         let rSum = 0;
         let count = 0;
@@ -199,34 +235,64 @@ export function Timeline(props: TimelineProps) {
     }
 
     // --- segments ---
+    // Segments are stored in SOURCE time. Map each through cutRanges to get
+    // the effective-time pieces visible on the compacted timeline. A segment
+    // that straddles a cut is drawn as multiple pieces; a segment fully
+    // inside a cut disappears from view (it's now unreachable — the user can
+    // still undo to restore the cut).
     for (const seg of segments) {
-      // If this segment is currently being dragged, use the live preview values
       const dragActive = segDrag && segDrag.id === seg.id;
-      const segStart = dragActive ? segDrag!.start : seg.start;
-      const segEnd = dragActive ? segDrag!.end : seg.end;
-      const x1 = secToPx(segStart);
-      const x2 = secToPx(segEnd);
-      if (x2 < 0 || x1 > w) continue;
-      const clampedX1 = Math.max(0, x1);
-      const clampedX2 = Math.min(w, x2);
+      // Non-drag: map source range through cuts to get effective pieces.
+      // During drag: segDrag already stores a single continuous effective
+      // piece (the one the user grabbed via hitTestSegment), so draw it
+      // directly without remapping.
+      const pieces = dragActive
+        ? [{ start: segDrag!.start, end: segDrag!.end }]
+        : mapRangeToEffective({ start: seg.start, end: seg.end }, cutRanges);
+      if (pieces.length === 0) continue;
+
       let color: string;
-      if (seg.status === 'rejected') color = 'rgba(136,136,136,0.3)';
-      else if (seg.source === 'ai' && seg.status === 'pending')
+      let strokeColor: string;
+      if (seg.status === 'rejected') {
+        color = 'rgba(136,136,136,0.3)';
+        strokeColor = 'rgba(136,136,136,0.6)';
+      } else if (seg.source === 'ai' && seg.status === 'pending') {
         color = 'rgba(155,89,182,0.5)';
-      else color = 'rgba(255,74,74,0.55)';
-      ctx.fillStyle = color;
-      ctx.fillRect(clampedX1, 0, clampedX2 - clampedX1, waveHeight);
-      ctx.strokeStyle = seg.source === 'ai' && seg.status === 'pending'
-        ? 'rgba(155,89,182,0.9)'
-        : 'rgba(255,74,74,0.9)';
-      ctx.lineWidth = dragActive ? 2 : 1;
-      ctx.strokeRect(clampedX1 + 0.5, 0.5, clampedX2 - clampedX1 - 1, waveHeight - 1);
-      // Edge resize handles — small vertical bars on inside of each edge,
-      // visible when segment is wide enough.
-      if (clampedX2 - clampedX1 > 12) {
-        ctx.fillStyle = 'rgba(255,255,255,0.35)';
-        ctx.fillRect(clampedX1 + 2, waveHeight * 0.2, 2, waveHeight * 0.6);
-        ctx.fillRect(clampedX2 - 4, waveHeight * 0.2, 2, waveHeight * 0.6);
+        strokeColor = 'rgba(155,89,182,0.9)';
+      } else {
+        color = 'rgba(255,74,74,0.55)';
+        strokeColor = 'rgba(255,74,74,0.9)';
+      }
+
+      for (const piece of pieces) {
+        const x1 = secToPx(piece.start);
+        const x2 = secToPx(piece.end);
+        if (x2 < 0 || x1 > w) continue;
+        const clampedX1 = Math.max(0, x1);
+        const clampedX2 = Math.min(w, x2);
+        ctx.fillStyle = color;
+        ctx.fillRect(clampedX1, 0, clampedX2 - clampedX1, waveHeight);
+        ctx.strokeStyle = strokeColor;
+        ctx.lineWidth = dragActive ? 2 : 1;
+        ctx.strokeRect(clampedX1 + 0.5, 0.5, clampedX2 - clampedX1 - 1, waveHeight - 1);
+        if (clampedX2 - clampedX1 > 12) {
+          ctx.fillStyle = 'rgba(255,255,255,0.35)';
+          ctx.fillRect(clampedX1 + 2, waveHeight * 0.2, 2, waveHeight * 0.6);
+          ctx.fillRect(clampedX2 - 4, waveHeight * 0.2, 2, waveHeight * 0.6);
+        }
+      }
+    }
+
+    // --- cut markers ---
+    // Each committed cut collapses to a single point in effective time. Draw
+    // a thin amber vertical line there so the user can see where the cuts
+    // happened (and aim to undo them if needed).
+    if (cutRanges.length > 0) {
+      ctx.fillStyle = 'rgba(243,156,18,0.85)';
+      for (const c of cutRanges) {
+        const effX = secToPx(sourceToEffective(c.start, cutRanges));
+        if (effX < 0 || effX > w) continue;
+        ctx.fillRect(effX - 0.5, 0, 1.5, waveHeight);
       }
     }
 
@@ -254,29 +320,34 @@ export function Timeline(props: TimelineProps) {
       ctx.textBaseline = 'middle';
       const midY = waveHeight + subtitleHeight / 2;
       for (const tseg of transcript.segments) {
-        const x1 = secToPx(tseg.start);
-        const x2 = secToPx(tseg.end);
-        if (x2 < 0 || x1 > w) continue;
-        const clampedX1 = Math.max(0, x1);
-        const clampedX2 = Math.min(w, x2);
-        const width = clampedX2 - clampedX1;
-        if (width < 2) continue;
+        // Map source time → effective pieces. A subtitle fully inside a cut
+        // vanishes; one straddling a cut is drawn in each kept piece.
+        const pieces = mapRangeToEffective({ start: tseg.start, end: tseg.end }, cutRanges);
+        if (pieces.length === 0) continue;
         // Dim any subtitle that falls inside an approved delete-segment
         const inDelete = segments.some(
           (s) => s.status === 'approved' && tseg.start >= s.start && tseg.end <= s.end
         );
-        // Alternating background so adjacent segments are distinguishable
-        ctx.fillStyle = inDelete ? 'rgba(80,80,80,0.25)' : 'rgba(80,130,180,0.2)';
-        ctx.fillRect(clampedX1, waveHeight + 2, width, subtitleHeight - 4);
-        // Text (truncated)
-        ctx.fillStyle = inDelete ? '#666' : '#d8d8d8';
-        ctx.save();
-        ctx.beginPath();
-        ctx.rect(clampedX1 + 3, waveHeight, Math.max(0, width - 6), subtitleHeight);
-        ctx.clip();
-        const decoration = inDelete ? '(已删) ' : '';
-        ctx.fillText(decoration + tseg.text.trim(), clampedX1 + 5, midY);
-        ctx.restore();
+
+        for (const piece of pieces) {
+          const x1 = secToPx(piece.start);
+          const x2 = secToPx(piece.end);
+          if (x2 < 0 || x1 > w) continue;
+          const clampedX1 = Math.max(0, x1);
+          const clampedX2 = Math.min(w, x2);
+          const width = clampedX2 - clampedX1;
+          if (width < 2) continue;
+          ctx.fillStyle = inDelete ? 'rgba(80,80,80,0.25)' : 'rgba(80,130,180,0.2)';
+          ctx.fillRect(clampedX1, waveHeight + 2, width, subtitleHeight - 4);
+          ctx.fillStyle = inDelete ? '#666' : '#d8d8d8';
+          ctx.save();
+          ctx.beginPath();
+          ctx.rect(clampedX1 + 3, waveHeight, Math.max(0, width - 6), subtitleHeight);
+          ctx.clip();
+          const decoration = inDelete ? '(已删) ' : '';
+          ctx.fillText(decoration + tseg.text.trim(), clampedX1 + 5, midY);
+          ctx.restore();
+        }
       }
     }
 
@@ -379,21 +450,36 @@ export function Timeline(props: TimelineProps) {
    * edge, right edge, or body. Rejected segments are ignored.
    */
   function hitTestSegment(xPx: number, canvasW: number):
-    | { segId: string; kind: 'resize-left' | 'resize-right' | 'move'; start: number; end: number }
+    | {
+        segId: string;
+        kind: 'resize-left' | 'resize-right' | 'move';
+        /** Effective-time anchors for the segment piece under the cursor. */
+        start: number;
+        end: number;
+      }
     | null {
     const HANDLE = 6;
+    const cuts = cutRangesRef.current;
+    const v = viewRef.current;
     for (const s of segments) {
       if (s.status === 'rejected') continue;
-      const sx = ((s.start - viewRef.current.offsetSec) / viewRef.current.visibleSec) * canvasW;
-      const ex = ((s.end - viewRef.current.offsetSec) / viewRef.current.visibleSec) * canvasW;
-      if (Math.abs(xPx - sx) <= HANDLE) {
-        return { segId: s.id, kind: 'resize-left', start: s.start, end: s.end };
-      }
-      if (Math.abs(xPx - ex) <= HANDLE) {
-        return { segId: s.id, kind: 'resize-right', start: s.start, end: s.end };
-      }
-      if (xPx > sx + HANDLE && xPx < ex - HANDLE) {
-        return { segId: s.id, kind: 'move', start: s.start, end: s.end };
+      // Each segment may be split into multiple effective-time pieces when
+      // it straddles a cut. Hit-testing operates on pieces individually.
+      // Resize/move returns EFFECTIVE anchors for the specific piece —
+      // callers (App.tsx) convert back to source when persisting.
+      const pieces = mapRangeToEffective({ start: s.start, end: s.end }, cuts);
+      for (const p of pieces) {
+        const sx = ((p.start - v.offsetSec) / v.visibleSec) * canvasW;
+        const ex = ((p.end - v.offsetSec) / v.visibleSec) * canvasW;
+        if (Math.abs(xPx - sx) <= HANDLE) {
+          return { segId: s.id, kind: 'resize-left', start: p.start, end: p.end };
+        }
+        if (Math.abs(xPx - ex) <= HANDLE) {
+          return { segId: s.id, kind: 'resize-right', start: p.start, end: p.end };
+        }
+        if (xPx > sx + HANDLE && xPx < ex - HANDLE) {
+          return { segId: s.id, kind: 'move', start: p.start, end: p.end };
+        }
       }
     }
     return null;

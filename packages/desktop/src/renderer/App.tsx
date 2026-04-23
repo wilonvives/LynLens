@@ -1,5 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { LynLensEvent, Segment } from '@lynlens/core';
+import {
+  effectiveToSource,
+  getEffectiveDuration,
+  sourceToEffective,
+} from '@lynlens/core';
 import { Timeline } from './Timeline';
 import { ExportDialog } from './ExportDialog';
 import { ChatPanel } from './ChatPanel';
@@ -72,11 +77,24 @@ export function App() {
         const qcp = await window.lynlens.getState(store.projectId);
         store.setTranscript(qcp.transcript);
       }
+      // Ripple cut committed / reverted: segments AND cutRanges both change,
+      // so pull both from the persisted project state.
+      if (
+        (event.type === 'ripple.committed' || event.type === 'ripple.reverted') &&
+        store.projectId
+      ) {
+        const qcp = await window.lynlens.getState(store.projectId);
+        store.refreshSegments(qcp.deleteSegments);
+        store.setCutRanges(qcp.cutRanges ?? []);
+        // After a cut, the video's current source time may now be inside a
+        // cut zone. The RAF loop below will auto-skip to the far side.
+      }
       // External reload (e.g. MCP/Claude modified the .qcp file): refresh
       // everything the UI cares about so the user sees AI's marks live.
       if (event.type === 'project.reloaded' && store.projectId) {
         const qcp = await window.lynlens.getState(store.projectId);
         store.refreshSegments(qcp.deleteSegments);
+        store.setCutRanges(qcp.cutRanges ?? []);
         store.setTranscript(qcp.transcript);
         store.setAiMode(qcp.aiMode);
         store.setUserOrientation(qcp.userOrientation ?? null);
@@ -92,7 +110,19 @@ export function App() {
       const v = videoRef.current;
       if (v) {
         setCurrentTime(v.currentTime);
-        // Preview mode: skip approved delete segments
+        // Committed ripple cuts: ALWAYS skip — regardless of preview mode or
+        // paused state — because a cut is permanent. If the playhead is
+        // inside a cut zone (happens after seeking, or after a fresh cut
+        // was committed over the current position) jump to the far side.
+        const cut = store.cutRanges.find(
+          (r) => v.currentTime >= r.start && v.currentTime < r.end
+        );
+        if (cut) {
+          v.currentTime = Math.min(v.duration, cut.end + 0.02);
+        }
+        // Preview mode: also skip approved delete segments that haven't been
+        // rippled yet. This keeps the "preview成品" button useful before the
+        // user commits a cut.
         if (store.previewMode && !v.paused) {
           const currentSeg = store.segments.find(
             (s) =>
@@ -113,7 +143,7 @@ export function App() {
     };
     raf = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(raf);
-  }, [store.previewMode, store.segments, store.projectId]);
+  }, [store.previewMode, store.segments, store.cutRanges, store.projectId]);
 
   // Keyboard shortcuts
   useEffect(() => {
@@ -297,9 +327,14 @@ export function App() {
     });
   }, []);
 
+  // Timeline emits EFFECTIVE seconds; segments live in SOURCE seconds. Map at
+  // the boundary so cut-aware math stays confined to the renderer ↔ core line.
   const onMarkRange = useCallback(
-    async (start: number, end: number) => {
+    async (effStart: number, effEnd: number) => {
       if (!store.projectId) return;
+      const start = effectiveToSource(effStart, store.cutRanges);
+      const end = effectiveToSource(effEnd, store.cutRanges);
+      if (end - start < 0.02) return;
       await window.lynlens.addSegment({
         projectId: store.projectId,
         start,
@@ -308,58 +343,90 @@ export function App() {
         reason: null,
       });
     },
-    [store.projectId]
+    [store.projectId, store.cutRanges]
   );
 
   const onEraseRange = useCallback(
-    async (start: number, end: number) => {
+    async (effStart: number, effEnd: number) => {
       if (!store.projectId) return;
+      const start = effectiveToSource(effStart, store.cutRanges);
+      const end = effectiveToSource(effEnd, store.cutRanges);
+      if (end - start < 0.02) return;
       await window.lynlens.eraseRange(store.projectId, start, end);
     },
-    [store.projectId]
+    [store.projectId, store.cutRanges]
   );
 
+  // Segment edges come back as EFFECTIVE seconds (that's how Timeline draws
+  // them). Convert both ends to source before persisting.
   const onResizeSegment = useCallback(
-    async (id: string, start: number, end: number) => {
+    async (id: string, effStart: number, effEnd: number) => {
       if (!store.projectId) return;
+      const start = effectiveToSource(effStart, store.cutRanges);
+      const end = effectiveToSource(effEnd, store.cutRanges);
       await window.lynlens.resizeSegment(store.projectId, id, start, end);
     },
-    [store.projectId]
+    [store.projectId, store.cutRanges]
   );
 
-  const onSeek = useCallback((t: number) => {
+  // Timeline and sidebar both speak EFFECTIVE time (what the user sees on
+  // the compacted timeline). We translate to source time only at the boundary
+  // with the <video> element. This keeps the rest of the UI simple and
+  // symmetric — segments still store source times, but seeks / scrubs can
+  // arrive in either units depending on the caller, so each handler names
+  // its input explicitly.
+  const seekSource = useCallback((sourceSec: number) => {
     const v = videoRef.current;
-    if (v && Number.isFinite(t)) v.currentTime = t;
+    if (v && Number.isFinite(sourceSec)) v.currentTime = sourceSec;
   }, []);
+
+  const onSeek = useCallback(
+    (effectiveSec: number) => {
+      const src = effectiveToSource(effectiveSec, store.cutRanges);
+      seekSource(src);
+    },
+    [store.cutRanges, seekSource]
+  );
 
   /**
-   * Jump used by sidebar segment list: seek video AND auto-scroll the timeline
-   * view so the playhead becomes visible (centered if currently off-screen).
+   * Jump used by sidebar segment list / subtitles: the caller passes a
+   * SOURCE-time second (segments and transcripts live in source time).
+   * We seek the video there and dispatch the jump event carrying EFFECTIVE
+   * time so the timeline view auto-centers on the compacted position.
    */
-  const onJumpTo = useCallback((t: number) => {
-    onSeek(t);
-    const el = document.querySelector('.timeline-wrap');
-    if (el) {
-      el.dispatchEvent(new CustomEvent('lynlens-jump', { detail: t }));
-    }
-  }, [onSeek]);
+  const onJumpTo = useCallback(
+    (sourceSec: number) => {
+      seekSource(sourceSec);
+      const el = document.querySelector('.timeline-wrap');
+      if (el) {
+        const effectiveSec = sourceToEffective(sourceSec, store.cutRanges);
+        el.dispatchEvent(new CustomEvent('lynlens-jump', { detail: effectiveSec }));
+      }
+    },
+    [seekSource, store.cutRanges]
+  );
 
   // Scrub: pause the video and let frames follow the mouse position tightly.
-  // (Playing while seeking caused drift in Chromium.) Restore prior state on release.
-  // Press Space after releasing to hear audio.
+  // Timeline reports EFFECTIVE seconds; we convert to source at this boundary.
   const scrubPrevPlaying = useRef(false);
-  const onScrubStart = useCallback((t: number) => {
-    const v = videoRef.current;
-    if (!v) return;
-    scrubPrevPlaying.current = !v.paused;
-    if (!v.paused) v.pause();
-    v.currentTime = t;
-  }, []);
+  const onScrubStart = useCallback(
+    (effectiveSec: number) => {
+      const v = videoRef.current;
+      if (!v) return;
+      scrubPrevPlaying.current = !v.paused;
+      if (!v.paused) v.pause();
+      v.currentTime = effectiveToSource(effectiveSec, store.cutRanges);
+    },
+    [store.cutRanges]
+  );
 
-  const onScrubUpdate = useCallback((t: number) => {
-    const v = videoRef.current;
-    if (v) v.currentTime = t;
-  }, []);
+  const onScrubUpdate = useCallback(
+    (effectiveSec: number) => {
+      const v = videoRef.current;
+      if (v) v.currentTime = effectiveToSource(effectiveSec, store.cutRanges);
+    },
+    [store.cutRanges]
+  );
 
   const onScrubEnd = useCallback(() => {
     const v = videoRef.current;
@@ -382,6 +449,54 @@ export function App() {
     [store.segments]
   );
   const pendingCount = store.segments.filter((s) => s.status === 'pending').length;
+  const approvedCount = store.segments.filter((s) => s.status === 'approved').length;
+
+  // Derived effective-time values. When cutRanges is empty these equal the
+  // raw source values, so the UI is byte-for-byte identical to the pre-ripple
+  // behaviour until the user actually commits a cut.
+  const sourceDuration = store.videoMeta?.duration ?? 0;
+  const effectiveDuration = useMemo(
+    () => getEffectiveDuration(sourceDuration, store.cutRanges),
+    [sourceDuration, store.cutRanges]
+  );
+  const effectiveCurrentTime = useMemo(
+    () => sourceToEffective(currentTime, store.cutRanges),
+    [currentTime, store.cutRanges]
+  );
+  const totalCut = useMemo(
+    () => store.cutRanges.reduce((sum, r) => sum + (r.end - r.start), 0),
+    [store.cutRanges]
+  );
+
+  /**
+   * Commit all approved delete segments as a ripple cut. Red boxes vanish,
+   * the timeline compacts, and everything past each cut shifts left. Shows a
+   * confirm so an accidental click doesn't irreversibly collapse the timeline.
+   */
+  async function handleCommitRipple() {
+    if (!store.projectId) return;
+    if (approvedCount === 0) {
+      alert('没有已批准的删除段。请先批准一些段(或标记人工删除段),再按剪切。');
+      return;
+    }
+    const ok = confirm(
+      `确认剪掉 ${approvedCount} 段、共 ${totalDeleted.toFixed(2)} 秒?\n\n` +
+        `时间轴会从 ${sourceDuration.toFixed(2)}s 压缩到约 ${(
+          effectiveDuration - totalDeleted
+        ).toFixed(2)}s。原视频不动,之后还能撤销。`
+    );
+    if (!ok) return;
+    try {
+      const result = await window.lynlens.commitRipple(store.projectId);
+      if (result.cutSegmentIds.length === 0) {
+        alert('没有可剪切的段。');
+      }
+      // No explicit alert on success — the visible timeline collapse is the
+      // confirmation. The refresh happens via ripple.committed event.
+    } catch (err) {
+      alert(`剪切失败: ${(err as Error).message}`);
+    }
+  }
 
   async function handleExportConfirm(args: {
     outputPath: string;
@@ -473,9 +588,10 @@ export function App() {
             const result = await window.lynlens.openProjectDialog();
             if (!result) return;
             store.setProject(result);
-            // Restore segments + transcript from the .qcp
+            // Restore segments + transcript + cuts from the .qcp
             const qcp = await window.lynlens.getState(result.projectId);
             store.refreshSegments(qcp.deleteSegments);
+            store.setCutRanges(qcp.cutRanges ?? []);
             store.setTranscript(qcp.transcript);
             store.setAiMode(qcp.aiMode);
             store.setUserOrientation(qcp.userOrientation ?? null);
@@ -701,16 +817,35 @@ export function App() {
           🎬 {store.previewMode ? '预览中(Esc 退出)' : '预览成品'}
         </button>
         <button
+          onClick={handleCommitRipple}
+          disabled={!store.videoUrl || approvedCount === 0}
+          title="把所有已批准的红框真的剪掉,时间轴压缩成品状态。原视频不动,可撤销。"
+        >
+          ✂ 剪切 ({approvedCount})
+        </button>
+        <button
           className="primary"
           onClick={() => setShowExport(true)}
-          disabled={!store.videoUrl || store.segments.length === 0}
+          disabled={
+            !store.videoUrl || (store.segments.length === 0 && store.cutRanges.length === 0)
+          }
         >
           导出
         </button>
         <div className="spacer" />
         <div className="stats">
-          {formatTime(currentTime)} / {formatTime(store.videoMeta?.duration ?? 0)}
-          {' · '}已删 {formatTime(totalDeleted)}
+          {formatTime(effectiveCurrentTime)} / {formatTime(effectiveDuration)}
+          {totalCut > 0 && (
+            <>
+              {' · '}
+              <span style={{ color: '#f39c12' }}>已剪 {formatTime(totalCut)}</span>
+            </>
+          )}
+          {totalDeleted > 0 && (
+            <>
+              {' · '}待剪 {formatTime(totalDeleted)}
+            </>
+          )}
         </div>
       </div>
 
@@ -760,8 +895,10 @@ export function App() {
       />
       <div className="timeline-outer" style={{ height: timelineHeight }}>
         <Timeline
-          duration={store.videoMeta?.duration ?? 0}
-          currentTime={currentTime}
+          duration={effectiveDuration}
+          sourceDuration={sourceDuration}
+          cutRanges={store.cutRanges}
+          currentTime={effectiveCurrentTime}
           waveform={store.waveform}
           segments={store.segments}
           transcript={store.transcript}
