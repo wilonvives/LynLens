@@ -12,7 +12,10 @@ import { ChatPanel } from './ChatPanel';
 import { SubtitlePanel } from './SubtitlePanel';
 import { OrientationDialog } from './OrientationDialog';
 import { QuickMarkDialog } from './QuickMarkDialog';
+import { HighlightPanel } from './HighlightPanel';
 import { Resizer } from './Resizer';
+
+type WorkMode = 'precision' | 'highlight';
 
 function usePersistedSize(key: string, defaultValue: number): [number, (n: number) => void] {
   const [value, setValue] = useState<number>(() => {
@@ -46,6 +49,7 @@ export function App() {
   const [sidebarTab, setSidebarTab] = useState<'segments' | 'subtitles'>('segments');
   const [showOrientDialog, setShowOrientDialog] = useState(false);
   const [showQuickMarkDialog, setShowQuickMarkDialog] = useState(false);
+  const [workMode, setWorkMode] = useState<WorkMode>('precision');
 
   // Persisted panel sizes so the user's preferred layout survives restarts.
   const [sidebarWidth, setSidebarWidth] = usePersistedSize('lynlens.sidebarWidth', 340);
@@ -74,6 +78,37 @@ export function App() {
     if (n === 0 || n === 90 || n === 180 || n === 270) setPreviewRotation(n);
     else setPreviewRotation(0);
   }, [store.projectId]);
+
+  /**
+   * Switch between 粗剪 and 高光 tabs.
+   *
+   * Going precision → highlight: free (just changes what's rendered).
+   *
+   * Going highlight → precision: variants reference source-time ranges
+   * that are only meaningful relative to the current cutRanges. If the
+   * user ripples again, those variants desync. Rather than trying to
+   * migrate them, we clear them on switch-back and warn the user so they
+   * can export first if they want to keep any.
+   */
+  const switchMode = useCallback(
+    async (next: WorkMode) => {
+      if (next === workMode) return;
+      if (next === 'precision' && store.projectId) {
+        const pid = store.projectId;
+        const currentVariants = await window.lynlens.getHighlights(pid);
+        if (currentVariants.length > 0) {
+          const ok = confirm(
+            `返回粗剪会清空当前 ${currentVariants.length} 个高光变体。` +
+              '建议先导出你想保留的变体。继续?'
+          );
+          if (!ok) return;
+          await window.lynlens.clearHighlights(pid);
+        }
+      }
+      setWorkMode(next);
+    },
+    [workMode, store.projectId]
+  );
 
   const rotatePreview = useCallback(() => {
     setPreviewRotation((prev) => {
@@ -668,6 +703,30 @@ export function App() {
         </span>
       </div>
 
+      <div className="work-mode-tabs">
+        <button
+          className={`work-mode-tab${workMode === 'precision' ? ' active' : ''}`}
+          onClick={() => void switchMode('precision')}
+        >
+          粗剪
+        </button>
+        <button
+          className={`work-mode-tab${workMode === 'highlight' ? ' active' : ''}`}
+          onClick={() => void switchMode('highlight')}
+          disabled={!store.projectId}
+          title={store.projectId ? undefined : '请先打开视频'}
+        >
+          高光
+        </button>
+      </div>
+
+      {workMode === 'highlight' ? (
+        <HighlightPanel
+          effectiveDuration={effectiveDuration}
+          videoPath={store.videoPath}
+        />
+      ) : (
+      <>
       <div className="ai-bar">
         <span>
           <span className={`status-dot ${aiStatusClass}`} />
@@ -984,6 +1043,8 @@ export function App() {
           onResizeSegment={onResizeSegment}
         />
       </div>
+      </>
+      )}
 
       {showExport && store.videoPath && (
         <ExportDialog

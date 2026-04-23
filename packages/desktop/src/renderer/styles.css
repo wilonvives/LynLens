@@ -981,3 +981,186 @@ button.ai.active {
   text-align: left;
 }
 .quick-adv-toggle:hover { color: var(--text2); background: transparent; }
+
+/* ---------- Work mode tabs (粗剪 / 高光) ---------- */
+.work-mode-tabs {
+  display: flex;
+  gap: 2px;
+  padding: 0 12px;
+  background: #1a1a1a;
+  border-bottom: 1px solid #2a2a2a;
+  flex-shrink: 0;
+}
+.work-mode-tab {
+  background: transparent;
+  border: none;
+  color: var(--text3);
+  font-size: 13px;
+  padding: 8px 18px;
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+  transition: color 0.15s, border-color 0.15s;
+}
+.work-mode-tab:hover:not(:disabled) {
+  color: var(--text1);
+  background: transparent;
+}
+.work-mode-tab.active {
+  color: var(--text1);
+  border-bottom-color: var(--accent);
+}
+.work-mode-tab:disabled {
+  color: #555;
+  cursor: not-allowed;
+}
+
+/* ---------- Highlight panel (高光 tab) ---------- */
+.highlight-panel {
+  flex: 1 1 0;
+  display: flex;
+  flex-direction: column;
+  padding: 20px 28px;
+  overflow-y: auto;
+  min-height: 0;
+  gap: 18px;
+}
+.highlight-panel-header {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid #2a2a2a;
+}
+.highlight-panel-title {
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--text1);
+}
+.highlight-panel-sub {
+  font-size: 12px;
+  color: var(--text3);
+  margin-top: 2px;
+}
+.highlight-error {
+  padding: 10px 14px;
+  border-radius: 4px;
+  background: #3a1f1f;
+  color: #f0a0a0;
+  font-size: 12px;
+  border: 1px solid #5a2d2d;
+}
+.highlight-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 40px 20px;
+  color: var(--text3);
+  text-align: center;
+  gap: 10px;
+}
+.highlight-empty h2 {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 500;
+  color: var(--text2);
+}
+
+/* ---------- Variant cards ---------- */
+.variant-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.variant-card {
+  background: #1e1e1e;
+  border: 1px solid #2e2e2e;
+  border-radius: 6px;
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  transition: border-color 0.15s;
+}
+.variant-card:hover {
+  border-color: #3e3e3e;
+}
+.variant-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.variant-card-title-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1;
+  min-width: 0;
+}
+.variant-card-index {
+  color: var(--text3);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+.variant-card-title {
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--text1);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.variant-card-style {
+  font-size: 10px;
+  padding: 2px 6px;
+  background: #2a2a3a;
+  color: #b0b0d0;
+  border-radius: 3px;
+}
+.variant-card-meta {
+  font-size: 12px;
+  color: var(--text3);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.variant-card-actions {
+  display: flex;
+  gap: 8px;
+}
+.variant-card-segments {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 10px 12px;
+  background: #161616;
+  border-radius: 4px;
+  font-size: 11px;
+}
+.variant-seg-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--text2);
+}
+.variant-seg-idx {
+  color: var(--text3);
+  font-variant-numeric: tabular-nums;
+  width: 16px;
+}
+.variant-seg-time {
+  font-family: ui-monospace, monospace;
+  color: var(--text2);
+  font-variant-numeric: tabular-nums;
+}
+.variant-seg-dur {
+  color: var(--text3);
+  font-variant-numeric: tabular-nums;
+}
+.variant-seg-reason {
+  color: var(--text2);
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
