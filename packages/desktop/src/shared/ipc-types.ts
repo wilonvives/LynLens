@@ -6,9 +6,23 @@ import type {
   LynLensEvent,
   QcpProject,
   Segment,
+  SocialCopySetData,
+  SocialPlatform,
   Transcript,
   VideoMeta,
 } from '@lynlens/core';
+
+export interface GenerateSocialCopiesResult {
+  setId: string;
+  copies: Array<{
+    id: string;
+    platform: string;
+    title: string;
+    body: string;
+    hashtags: string[];
+  }>;
+  failures: Array<{ platform: SocialPlatform; error: string }>;
+}
 
 export interface CommitRippleResult {
   /** Ids of segments that transitioned to cut status in this call. */
@@ -119,6 +133,31 @@ export interface IpcApi {
     variantId: string,
     outputPath: string
   ): Promise<ExportResultDto>;
+
+  /**
+   * Generate per-platform copy in parallel. The returned setId is the
+   * handle for subsequent edits / deletes; getSocialCopies() returns the
+   * full persisted list (including this new set).
+   */
+  generateSocialCopies(
+    projectId: string,
+    opts: {
+      sourceType: 'rippled' | 'variant';
+      sourceVariantId?: string;
+      platforms: SocialPlatform[];
+      userStyleNote?: string;
+    }
+  ): Promise<GenerateSocialCopiesResult>;
+  getSocialCopies(projectId: string): Promise<SocialCopySetData[]>;
+  updateSocialCopy(
+    projectId: string,
+    setId: string,
+    copyId: string,
+    patch: { title?: string; body?: string; hashtags?: string[] }
+  ): Promise<boolean>;
+  deleteSocialCopy(projectId: string, setId: string, copyId: string): Promise<boolean>;
+  deleteSocialCopySet(projectId: string, setId: string): Promise<boolean>;
+  setSocialStyleNote(projectId: string, note: string | null): Promise<void>;
 
   transcribe(
     projectId: string,

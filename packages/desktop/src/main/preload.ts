@@ -33,6 +33,14 @@ const api: IpcApi = {
   clearHighlights: (pid) => ipcRenderer.invoke('clear-highlights', pid),
   exportHighlight: (pid, vid, outputPath) =>
     ipcRenderer.invoke('export-highlight', pid, vid, outputPath),
+  generateSocialCopies: (pid, opts) => ipcRenderer.invoke('generate-social-copies', pid, opts),
+  getSocialCopies: (pid) => ipcRenderer.invoke('get-social-copies', pid),
+  updateSocialCopy: (pid, setId, copyId, patch) =>
+    ipcRenderer.invoke('update-social-copy', pid, setId, copyId, patch),
+  deleteSocialCopy: (pid, setId, copyId) =>
+    ipcRenderer.invoke('delete-social-copy', pid, setId, copyId),
+  deleteSocialCopySet: (pid, setId) => ipcRenderer.invoke('delete-social-copy-set', pid, setId),
+  setSocialStyleNote: (pid, note) => ipcRenderer.invoke('set-social-style-note', pid, note),
   transcribe: (pid, opts) => ipcRenderer.invoke('transcribe', pid, opts),
   updateTranscriptSegment: (pid, sid, text) =>
     ipcRenderer.invoke('update-transcript-segment', pid, sid, text),

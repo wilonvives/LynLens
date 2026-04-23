@@ -24,6 +24,7 @@ const TOOL_LABELS: Record<string, string> = {
   'mcp__lynlens__revert_ripple': '撤销剪切',
   'mcp__lynlens__generate_highlights': '生成高光变体',
   'mcp__lynlens__clear_highlights': '清空高光变体',
+  'mcp__lynlens__generate_social_copies': '生成社群文案',
   'mcp__lynlens__set_mode': '切换 AI 模式',
   'mcp__lynlens__update_transcript_segment': '修改字幕',
   'mcp__lynlens__suggest_transcript_fix': '提交字幕建议',

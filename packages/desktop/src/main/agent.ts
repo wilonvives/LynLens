@@ -9,13 +9,19 @@
 
 import { z } from 'zod';
 import {
+  buildCopywriterSystemPrompt,
+  buildCopywriterUserPrompt,
   buildHighlightSystemPrompt,
   buildHighlightUserPrompt,
+  parseCopywriterResponse,
   parseHighlightResponse,
+  type CopywriterGenerateInput,
   type HighlightStyle,
   type LynLensEngine,
   type SegmentSource,
   type SegmentStatus,
+  type SocialCopy,
+  type SocialPlatform,
 } from '@lynlens/core';
 
 // Lazy-load the ESM-only Claude SDK. Static `import` would compile to
@@ -495,8 +501,152 @@ async function buildLynLensSdkServer(engine: LynLensEngine) {
           };
         }
       ),
+
+      tool(
+        'generate_social_copies',
+        '为指定平台生成社群媒体文案。输入源可以是粗剪完整版(sourceType=rippled,用字幕拼文本)或某个高光变体(sourceType=variant + sourceVariantId)。platforms 数组里每个平台会被并行调用一次,各自返回独立文案(标题/正文/hashtag)。',
+        {
+          projectId: z.string(),
+          sourceType: z.enum(['rippled', 'variant'] as const),
+          sourceVariantId: z.string().optional(),
+          platforms: z.array(
+            z.enum(['xiaohongshu', 'instagram', 'tiktok', 'youtube', 'twitter'] as const)
+          ),
+          userStyleNote: z.string().optional(),
+        },
+        async ({ projectId, sourceType, sourceVariantId, platforms, userStyleNote }) => {
+          const project = engine.projects.get(projectId);
+          if (!project.transcript || project.transcript.segments.length === 0) {
+            return {
+              content: [{ type: 'text' as const, text: '请先生成字幕后再生成文案。' }],
+              isError: true,
+            };
+          }
+          // Assemble source text based on sourceType. For 'rippled' we use
+          // transcript lines whose time overlaps any kept region (everything
+          // outside cut segments). For 'variant' we use lines inside the
+          // variant's own source-time segments.
+          let sourceText: string;
+          let sourceTitle: string;
+          if (sourceType === 'variant') {
+            if (!sourceVariantId) {
+              return {
+                content: [{ type: 'text' as const, text: 'sourceType=variant 时必须提供 sourceVariantId' }],
+                isError: true,
+              };
+            }
+            const variant = project.findHighlightVariant(sourceVariantId);
+            if (!variant) {
+              return {
+                content: [{ type: 'text' as const, text: `找不到变体 ${sourceVariantId}` }],
+                isError: true,
+              };
+            }
+            sourceTitle = `高光变体：${variant.title}`;
+            sourceText = assembleVariantText(project.transcript.segments, variant.segments);
+          } else {
+            sourceTitle = '粗剪完整版';
+            sourceText = assembleRippledText(project.transcript.segments, project.cutRanges);
+          }
+
+          const results = await Promise.allSettled(
+            platforms.map((platform) =>
+              runCopywriterForPlatform({
+                sourceTitle,
+                sourceText,
+                platform,
+                userStyleNote: userStyleNote ?? project.socialStyleNote ?? undefined,
+              })
+            )
+          );
+          const copies: SocialCopy[] = [];
+          const failures: string[] = [];
+          let model: string | undefined;
+          for (let i = 0; i < results.length; i++) {
+            const r = results[i];
+            if (r.status === 'fulfilled') {
+              copies.push(r.value.copy);
+              if (r.value.model) model = r.value.model;
+            } else {
+              failures.push(`${platforms[i]}: ${(r.reason as Error).message}`);
+            }
+          }
+
+          if (copies.length === 0) {
+            return {
+              content: [{ type: 'text' as const, text: `全部平台生成失败:\n${failures.join('\n')}` }],
+              isError: true,
+            };
+          }
+
+          const setId = newId();
+          project.addSocialCopySet({
+            id: setId,
+            sourceType,
+            sourceVariantId,
+            sourceTitle,
+            sourceText,
+            userStyleNote: userStyleNote ?? null,
+            copies: copies.map((c) => ({
+              id: c.id,
+              platform: c.platform,
+              title: c.title,
+              body: c.body,
+              hashtags: c.hashtags,
+            })),
+            createdAt: new Date().toISOString(),
+            model,
+          });
+
+          const summary =
+            `生成了 ${copies.length} 个平台的文案。` +
+            copies.map((c) => `\n- ${c.platform}: ${c.title.slice(0, 40) || c.body.slice(0, 40)}`).join('') +
+            (failures.length > 0 ? `\n\n失败的平台:\n${failures.join('\n')}` : '');
+          return { content: [{ type: 'text' as const, text: summary }] };
+        }
+      ),
     ],
   });
+}
+
+function newId(): string {
+  return `sc_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+}
+
+/**
+ * Assemble transcript text for the "rippled full version" source:
+ * every transcript line whose range overlaps ANY kept interval (i.e. not
+ * fully inside a cut range). Lines joined with \n so Claude sees them as
+ * distinct caption-sized beats.
+ */
+function assembleRippledText(
+  transcriptSegs: ReadonlyArray<{ start: number; end: number; text: string }>,
+  cutRanges: ReadonlyArray<{ start: number; end: number }>
+): string {
+  const lines: string[] = [];
+  for (const t of transcriptSegs) {
+    const fullyInCut = cutRanges.some((c) => t.start >= c.start && t.end <= c.end);
+    if (fullyInCut) continue;
+    const txt = t.text.trim();
+    if (txt) lines.push(txt);
+  }
+  return lines.join('\n');
+}
+
+/** Assemble text for a highlight variant source — only lines inside its segments. */
+function assembleVariantText(
+  transcriptSegs: ReadonlyArray<{ start: number; end: number; text: string }>,
+  variantSegs: ReadonlyArray<{ start: number; end: number }>
+): string {
+  const lines: string[] = [];
+  for (const v of variantSegs) {
+    for (const t of transcriptSegs) {
+      if (t.end <= v.start || t.start >= v.end) continue;
+      const txt = t.text.trim();
+      if (txt) lines.push(txt);
+    }
+  }
+  return lines.join('\n');
 }
 
 export interface AgentOptions {
@@ -572,6 +722,7 @@ export async function runAgent(
     'mcp__lynlens__replace_in_transcript',
     'mcp__lynlens__generate_highlights',
     'mcp__lynlens__clear_highlights',
+    'mcp__lynlens__generate_social_copies',
   ];
 
   const queryOptions: Record<string, unknown> = {
@@ -755,4 +906,25 @@ export async function runHighlightGeneration(
     throw new Error('Model returned no text output');
   }
   return { text: collected, model: modelSeen };
+}
+
+/**
+ * One-shot copywriter call for a single platform. Same shape as the
+ * highlight generator — just different prompt composition. Returns the
+ * parsed SocialCopy so the caller can bundle multiple platforms into one
+ * set (assembled in parallel via Promise.all).
+ */
+export async function runCopywriterForPlatform(
+  input: CopywriterGenerateInput,
+  signal?: AbortSignal
+): Promise<{ copy: SocialCopy; model?: string }> {
+  const systemPrompt = buildCopywriterSystemPrompt(input.platform);
+  const userPrompt = buildCopywriterUserPrompt(input);
+  const { text, model } = await runHighlightGeneration({
+    systemPrompt,
+    userPrompt,
+    signal,
+  });
+  const copy = parseCopywriterResponse(text, input.platform);
+  return { copy, model };
 }
