@@ -19,7 +19,16 @@ export default defineConfig({
     },
   },
   optimizeDeps: {
-    include: ['@lynlens/core'],
+    // IMPORTANT: do NOT pre-bundle @lynlens/core. The compiled tsc output
+    // uses `Object.defineProperty(exports, "foo", { get: ... })` for any
+    // `export { foo } from './bar'` re-export. esbuild's cjs-module-lexer
+    // can't statically see those named exports through the defineProperty
+    // call, so it falls back to `export default require_dist()` only —
+    // meaning `import { getEffectiveDuration } from '@lynlens/core'`
+    // resolves to undefined at runtime even though TypeScript typechecks it.
+    // Vite's dev-mode on-the-fly CJS↔ESM transform handles the getter-style
+    // exports correctly when the module is NOT pre-bundled.
+    exclude: ['@lynlens/core'],
   },
   server: {
     port: 5173,

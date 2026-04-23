@@ -1,6 +1,5 @@
 import { useState } from 'react';
-import { getOrientation } from '@lynlens/core';
-import type { VideoMeta } from '@lynlens/core';
+import { getOrientation, type VideoMeta } from './core-browser';
 
 interface Props {
   videoMeta: VideoMeta;
@@ -49,7 +48,7 @@ export function OrientationDialog({ videoMeta, onConfirm, onCancel }: Props) {
               onChange={() => setChoice('landscape')}
             />
             <div className="orient-choice-body">
-              <div className="orient-choice-title">📺 横屏</div>
+              <div className="orient-choice-title">横屏</div>
               <div className="orient-choice-desc">中文每行最多 24 字 / 英文 90 字</div>
             </div>
           </label>
@@ -61,7 +60,7 @@ export function OrientationDialog({ videoMeta, onConfirm, onCancel }: Props) {
               onChange={() => setChoice('portrait')}
             />
             <div className="orient-choice-body">
-              <div className="orient-choice-title">📱 竖屏</div>
+              <div className="orient-choice-title">竖屏</div>
               <div className="orient-choice-desc">中文每行最多 12 字 / 英文 45 字</div>
             </div>
           </label>

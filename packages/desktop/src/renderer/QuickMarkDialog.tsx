@@ -28,12 +28,12 @@ export function QuickMarkDialog({ hasTranscript, onCancel, onConfirm }: Props) {
   return (
     <div className="dialog-backdrop" onClick={(e) => e.target === e.currentTarget && onCancel()}>
       <div className="dialog" style={{ minWidth: 460 }}>
-        <h3>⚡ 快速标记</h3>
+        <h3>快速标记</h3>
         <div className="quick-desc">
           自动标出停顿段,你稍后可审核再决定是否真删。
           {hasTranscript
             ? '已有字幕,还会额外识别语气词和重复段。'
-            : '先点 🎤 生成字幕 后,还能额外识别语气词和重复段。'}
+            : '先点「生成字幕」后,还能额外识别语气词和重复段。'}
         </div>
 
         <div className="quick-row">

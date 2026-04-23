@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import type { LynLensEvent, Segment } from '@lynlens/core';
 import {
   effectiveToSource,
   getEffectiveDuration,
   sourceToEffective,
-} from '@lynlens/core';
+  type LynLensEvent,
+  type Segment,
+} from './core-browser';
 import { Timeline } from './Timeline';
 import { ExportDialog } from './ExportDialog';
 import { ChatPanel } from './ChatPanel';
@@ -54,6 +55,21 @@ export function App() {
   // Track a "brush paint" state: while holding D, paint marks as playhead moves.
   const brushRef = useRef<{ start: number } | null>(null);
 
+  /**
+   * Source-time ranges that are currently rippled out of the effective
+   * timeline. Derived from segments with status='cut' so there's one source
+   * of truth. When empty, every effective↔source helper below is identity
+   * and the UI behaves exactly as before any ripple.
+   */
+  const cutRanges = useMemo(
+    () =>
+      store.segments
+        .filter((s) => s.status === 'cut')
+        .map((s) => ({ start: s.start, end: s.end }))
+        .sort((a, b) => a.start - b.start),
+    [store.segments]
+  );
+
   // Apply engine events and trigger state refresh for segment changes.
   useEffect(() => {
     const off = window.lynlens.onEngineEvent(async (event: LynLensEvent) => {
@@ -77,24 +93,12 @@ export function App() {
         const qcp = await window.lynlens.getState(store.projectId);
         store.setTranscript(qcp.transcript);
       }
-      // Ripple cut committed / reverted: segments AND cutRanges both change,
-      // so pull both from the persisted project state.
-      if (
-        (event.type === 'ripple.committed' || event.type === 'ripple.reverted') &&
-        store.projectId
-      ) {
-        const qcp = await window.lynlens.getState(store.projectId);
-        store.refreshSegments(qcp.deleteSegments);
-        store.setCutRanges(qcp.cutRanges ?? []);
-        // After a cut, the video's current source time may now be inside a
-        // cut zone. The RAF loop below will auto-skip to the far side.
-      }
-      // External reload (e.g. MCP/Claude modified the .qcp file): refresh
-      // everything the UI cares about so the user sees AI's marks live.
+      // Ripple committed/reverted fires segment.cut / segment.uncut per
+      // segment, which the segment.* branch above already refreshes. We
+      // don't need a separate handler — cutRanges is derived from segments.
       if (event.type === 'project.reloaded' && store.projectId) {
         const qcp = await window.lynlens.getState(store.projectId);
         store.refreshSegments(qcp.deleteSegments);
-        store.setCutRanges(qcp.cutRanges ?? []);
         store.setTranscript(qcp.transcript);
         store.setAiMode(qcp.aiMode);
         store.setUserOrientation(qcp.userOrientation ?? null);
@@ -110,12 +114,13 @@ export function App() {
       const v = videoRef.current;
       if (v) {
         setCurrentTime(v.currentTime);
-        // Committed ripple cuts: ALWAYS skip — regardless of preview mode or
-        // paused state — because a cut is permanent. If the playhead is
-        // inside a cut zone (happens after seeking, or after a fresh cut
-        // was committed over the current position) jump to the far side.
-        const cut = store.cutRanges.find(
-          (r) => v.currentTime >= r.start && v.currentTime < r.end
+        // Committed ripple cuts: ALWAYS skip. A cut is permanent until the
+        // user clicks ↶ on its segment. If the playhead lands inside a cut
+        // zone (after seeking, or right after a fresh cut was committed),
+        // jump to the far side.
+        const cut = store.segments.find(
+          (s) =>
+            s.status === 'cut' && v.currentTime >= s.start && v.currentTime < s.end
         );
         if (cut) {
           v.currentTime = Math.min(v.duration, cut.end + 0.02);
@@ -143,7 +148,7 @@ export function App() {
     };
     raf = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(raf);
-  }, [store.previewMode, store.segments, store.cutRanges, store.projectId]);
+  }, [store.previewMode, store.segments, store.projectId]);
 
   // Keyboard shortcuts
   useEffect(() => {
@@ -332,8 +337,8 @@ export function App() {
   const onMarkRange = useCallback(
     async (effStart: number, effEnd: number) => {
       if (!store.projectId) return;
-      const start = effectiveToSource(effStart, store.cutRanges);
-      const end = effectiveToSource(effEnd, store.cutRanges);
+      const start = effectiveToSource(effStart, cutRanges);
+      const end = effectiveToSource(effEnd, cutRanges);
       if (end - start < 0.02) return;
       await window.lynlens.addSegment({
         projectId: store.projectId,
@@ -343,18 +348,18 @@ export function App() {
         reason: null,
       });
     },
-    [store.projectId, store.cutRanges]
+    [store.projectId, cutRanges]
   );
 
   const onEraseRange = useCallback(
     async (effStart: number, effEnd: number) => {
       if (!store.projectId) return;
-      const start = effectiveToSource(effStart, store.cutRanges);
-      const end = effectiveToSource(effEnd, store.cutRanges);
+      const start = effectiveToSource(effStart, cutRanges);
+      const end = effectiveToSource(effEnd, cutRanges);
       if (end - start < 0.02) return;
       await window.lynlens.eraseRange(store.projectId, start, end);
     },
-    [store.projectId, store.cutRanges]
+    [store.projectId, cutRanges]
   );
 
   // Segment edges come back as EFFECTIVE seconds (that's how Timeline draws
@@ -362,11 +367,11 @@ export function App() {
   const onResizeSegment = useCallback(
     async (id: string, effStart: number, effEnd: number) => {
       if (!store.projectId) return;
-      const start = effectiveToSource(effStart, store.cutRanges);
-      const end = effectiveToSource(effEnd, store.cutRanges);
+      const start = effectiveToSource(effStart, cutRanges);
+      const end = effectiveToSource(effEnd, cutRanges);
       await window.lynlens.resizeSegment(store.projectId, id, start, end);
     },
-    [store.projectId, store.cutRanges]
+    [store.projectId, cutRanges]
   );
 
   // Timeline and sidebar both speak EFFECTIVE time (what the user sees on
@@ -382,10 +387,10 @@ export function App() {
 
   const onSeek = useCallback(
     (effectiveSec: number) => {
-      const src = effectiveToSource(effectiveSec, store.cutRanges);
+      const src = effectiveToSource(effectiveSec, cutRanges);
       seekSource(src);
     },
-    [store.cutRanges, seekSource]
+    [cutRanges, seekSource]
   );
 
   /**
@@ -399,11 +404,11 @@ export function App() {
       seekSource(sourceSec);
       const el = document.querySelector('.timeline-wrap');
       if (el) {
-        const effectiveSec = sourceToEffective(sourceSec, store.cutRanges);
+        const effectiveSec = sourceToEffective(sourceSec, cutRanges);
         el.dispatchEvent(new CustomEvent('lynlens-jump', { detail: effectiveSec }));
       }
     },
-    [seekSource, store.cutRanges]
+    [seekSource, cutRanges]
   );
 
   // Scrub: pause the video and let frames follow the mouse position tightly.
@@ -415,17 +420,17 @@ export function App() {
       if (!v) return;
       scrubPrevPlaying.current = !v.paused;
       if (!v.paused) v.pause();
-      v.currentTime = effectiveToSource(effectiveSec, store.cutRanges);
+      v.currentTime = effectiveToSource(effectiveSec, cutRanges);
     },
-    [store.cutRanges]
+    [cutRanges]
   );
 
   const onScrubUpdate = useCallback(
     (effectiveSec: number) => {
       const v = videoRef.current;
-      if (v) v.currentTime = effectiveToSource(effectiveSec, store.cutRanges);
+      if (v) v.currentTime = effectiveToSource(effectiveSec, cutRanges);
     },
-    [store.cutRanges]
+    [cutRanges]
   );
 
   const onScrubEnd = useCallback(() => {
@@ -450,28 +455,27 @@ export function App() {
   );
   const pendingCount = store.segments.filter((s) => s.status === 'pending').length;
   const approvedCount = store.segments.filter((s) => s.status === 'approved').length;
+  const cutCount = store.segments.filter((s) => s.status === 'cut').length;
 
-  // Derived effective-time values. When cutRanges is empty these equal the
-  // raw source values, so the UI is byte-for-byte identical to the pre-ripple
-  // behaviour until the user actually commits a cut.
   const sourceDuration = store.videoMeta?.duration ?? 0;
   const effectiveDuration = useMemo(
-    () => getEffectiveDuration(sourceDuration, store.cutRanges),
-    [sourceDuration, store.cutRanges]
+    () => getEffectiveDuration(sourceDuration, cutRanges),
+    [sourceDuration, cutRanges]
   );
   const effectiveCurrentTime = useMemo(
-    () => sourceToEffective(currentTime, store.cutRanges),
-    [currentTime, store.cutRanges]
+    () => sourceToEffective(currentTime, cutRanges),
+    [currentTime, cutRanges]
   );
   const totalCut = useMemo(
-    () => store.cutRanges.reduce((sum, r) => sum + (r.end - r.start), 0),
-    [store.cutRanges]
+    () => cutRanges.reduce((sum, r) => sum + (r.end - r.start), 0),
+    [cutRanges]
   );
 
   /**
-   * Commit all approved delete segments as a ripple cut. Red boxes vanish,
-   * the timeline compacts, and everything past each cut shifts left. Shows a
-   * confirm so an accidental click doesn't irreversibly collapse the timeline.
+   * Commit all approved delete segments as a ripple cut. Segments transition
+   * to `status: 'cut'` — they stay in the sidebar list with a ↶ button so the
+   * user can undo any individual cut any time. Skip the confirm — undo is
+   * now one click away.
    */
   async function handleCommitRipple() {
     if (!store.projectId) return;
@@ -479,13 +483,6 @@ export function App() {
       alert('没有已批准的删除段。请先批准一些段(或标记人工删除段),再按剪切。');
       return;
     }
-    const ok = confirm(
-      `确认剪掉 ${approvedCount} 段、共 ${totalDeleted.toFixed(2)} 秒?\n\n` +
-        `时间轴会从 ${sourceDuration.toFixed(2)}s 压缩到约 ${(
-          effectiveDuration - totalDeleted
-        ).toFixed(2)}s。原视频不动,之后还能撤销。`
-    );
-    if (!ok) return;
     try {
       const result = await window.lynlens.commitRipple(store.projectId);
       if (result.cutSegmentIds.length === 0) {
@@ -588,10 +585,10 @@ export function App() {
             const result = await window.lynlens.openProjectDialog();
             if (!result) return;
             store.setProject(result);
-            // Restore segments + transcript + cuts from the .qcp
+            // Restore segments + transcript. Cut ranges come along inside
+            // deleteSegments (as status='cut'), so one refreshSegments suffices.
             const qcp = await window.lynlens.getState(result.projectId);
             store.refreshSegments(qcp.deleteSegments);
-            store.setCutRanges(qcp.cutRanges ?? []);
             store.setTranscript(qcp.transcript);
             store.setAiMode(qcp.aiMode);
             store.setUserOrientation(qcp.userOrientation ?? null);
@@ -658,7 +655,7 @@ export function App() {
           onClick={() => setChatOpen((v) => !v)}
           title="打开/关闭内置 Claude 助手(用你已登录的 Claude Code 订阅)"
         >
-          💬 Claude
+          Claude
         </button>
         <button
           className="ai"
@@ -681,10 +678,10 @@ export function App() {
           title="本地 whisper.cpp 转录(离线)"
         >
           {store.aiStatus === 'transcribing'
-            ? `🎤 转录中 ${Math.round(store.transcribeProgress * 100)}%`
+            ? `转录中 ${Math.round(store.transcribeProgress * 100)}%`
             : store.transcript
-              ? `🎤 重新转录 (${store.transcript.segments.length} 段)`
-              : '🎤 生成字幕'}
+              ? `重新转录 (${store.transcript.segments.length} 段)`
+              : '生成字幕'}
         </button>
         <button
           className="ai"
@@ -692,7 +689,7 @@ export function App() {
           onClick={() => setShowQuickMarkDialog(true)}
           title="自动标出停顿 / 语气词 / 重复段 (自选阈值)"
         >
-          ⚡ 快速标记
+          快速标记
         </button>
       </div>
 
@@ -746,8 +743,8 @@ export function App() {
             <span>标记段 ({store.segments.length})</span>
             <div className="sidebar-filter">
               <button className={segFilter === 'all' ? 'active' : ''} onClick={() => setSegFilter('all')}>全部</button>
-              <button className={segFilter === 'human' ? 'active' : ''} onClick={() => setSegFilter('human')}>👤</button>
-              <button className={segFilter === 'ai' ? 'active' : ''} onClick={() => setSegFilter('ai')}>🤖</button>
+              <button className={segFilter === 'human' ? 'active' : ''} onClick={() => setSegFilter('human')}>人工</button>
+              <button className={segFilter === 'ai' ? 'active' : ''} onClick={() => setSegFilter('ai')}>AI</button>
               <button className={segFilter === 'pending' ? 'active' : ''} onClick={() => setSegFilter('pending')}>待审</button>
             </div>
           </div>
@@ -814,20 +811,20 @@ export function App() {
           onClick={() => store.setPreviewMode(!store.previewMode)}
           disabled={!store.videoUrl}
         >
-          🎬 {store.previewMode ? '预览中(Esc 退出)' : '预览成品'}
+          {store.previewMode ? '预览中 (Esc 退出)' : '预览成品'}
         </button>
         <button
           onClick={handleCommitRipple}
           disabled={!store.videoUrl || approvedCount === 0}
           title="把所有已批准的红框真的剪掉,时间轴压缩成品状态。原视频不动,可撤销。"
         >
-          ✂ 剪切 ({approvedCount})
+          剪切 ({approvedCount})
         </button>
         <button
           className="primary"
           onClick={() => setShowExport(true)}
           disabled={
-            !store.videoUrl || (store.segments.length === 0 && store.cutRanges.length === 0)
+            !store.videoUrl || (store.segments.length === 0 && cutRanges.length === 0)
           }
         >
           导出
@@ -862,7 +859,7 @@ export function App() {
           }}
         >
           <span style={{ color: '#d0b3ff' }}>
-            🤖 有 {pendingCount} 个 AI 待审核段落
+            有 {pendingCount} 个 AI 待审核段落
           </span>
           <div style={{ flex: 1 }} />
           <button
@@ -897,7 +894,7 @@ export function App() {
         <Timeline
           duration={effectiveDuration}
           sourceDuration={sourceDuration}
-          cutRanges={store.cutRanges}
+          cutRanges={cutRanges}
           currentTime={effectiveCurrentTime}
           waveform={store.waveform}
           segments={store.segments}
@@ -964,7 +961,7 @@ export function App() {
                     (b.fillers ? `\n  语气词 ${b.fillers} 段` : '') +
                     (b.retakes ? `\n  重复/重拍 ${b.retakes} 段` : '') +
                     (!store.transcript
-                      ? '\n\n提示: 先点「🎤 生成字幕」后,能额外识别语气词和重复段。'
+                      ? '\n\n提示: 先点「生成字幕」后,能额外识别语气词和重复段。'
                       : '')
                 );
               }
@@ -988,13 +985,18 @@ function SegmentRow({
   onJump: (t: number) => void;
 }) {
   const cls = seg.status;
+  const isCut = seg.status === 'cut';
   return (
     <div className={`segment-item ${cls}`} onClick={() => onJump(seg.start)}>
       <div className="num">#{index}</div>
       <div className="meta">
         <div>
-          {seg.source === 'ai' ? '🤖' : '👤'}{' '}
-          <span className="time">
+          <span style={{ opacity: 0.7, marginRight: 4 }}>{seg.source === 'ai' ? 'AI' : '人'}</span>
+          {isCut && <span style={{ color: '#f39c12', marginRight: 4 }}>已剪</span>}
+          <span
+            className="time"
+            style={isCut ? { textDecoration: 'line-through', opacity: 0.7 } : undefined}
+          >
             {formatTime(seg.start)} - {formatTime(seg.end)} ({(seg.end - seg.start).toFixed(2)}s)
           </span>
         </div>
@@ -1023,6 +1025,17 @@ function SegmentRow({
             </button>
           </>
         )}
+        {isCut && (
+          <button
+            title="撤销这一刀:段恢复为已批准,时间轴重新变长"
+            onClick={() => {
+              const pid = useStore.getState().projectId;
+              if (pid) void window.lynlens.revertRipple(pid, seg.id);
+            }}
+          >
+            ↶
+          </button>
+        )}
         <button
           title="删除"
           onClick={() => {
@@ -1030,7 +1043,7 @@ function SegmentRow({
             if (pid) void window.lynlens.removeSegment(pid, seg.id);
           }}
         >
-          🗑
+          ×
         </button>
       </div>
     </div>

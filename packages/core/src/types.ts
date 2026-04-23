@@ -1,5 +1,14 @@
 export type SegmentSource = 'human' | 'ai';
-export type SegmentStatus = 'pending' | 'approved' | 'rejected';
+/**
+ * Segment lifecycle:
+ *   pending  → AI-proposed, awaiting human review
+ *   approved → user confirmed "this will be deleted", still visible as red box
+ *   rejected → user dismissed; stays in list but contributes nothing to export
+ *   cut      → approved segment that has been ripple-cut: collapsed out of the
+ *              effective timeline. Segment record stays so the sidebar can
+ *              offer a ↶ undo button that flips it back to 'approved'.
+ */
+export type SegmentStatus = 'pending' | 'approved' | 'rejected' | 'cut';
 export type AiMode = 'L2' | 'L3';
 
 export interface Segment {
@@ -78,12 +87,10 @@ export interface QcpProject {
    */
   userOrientation?: 'landscape' | 'portrait' | null;
   /**
-   * Committed ripple cuts (source-time ranges). When the user clicks 「剪切」
-   * their approved delete segments are compacted into this list and removed
-   * from `deleteSegments`. The UI renders the timeline in "effective time" =
-   * source duration minus the sum of these ranges. Persisting this separately
-   * from deleteSegments lets the user continue marking+erasing on top of a
-   * rippled timeline and later apply another round of cuts.
+   * DEPRECATED. Older .qcp files saved during earlier ripple development
+   * stored cut ranges here. Current versions put every cut on the segment
+   * itself via `status: 'cut'`, so this field is read on load (for migration)
+   * but never written. Kept optional so old files still open cleanly.
    */
   cutRanges?: Range[];
   createdAt: string;
@@ -109,6 +116,8 @@ export type LynLensEvent =
   | { type: 'segment.approved'; projectId: string; segmentId: string }
   | { type: 'segment.rejected'; projectId: string; segmentId: string }
   | { type: 'segment.merged'; projectId: string; mergedIds: string[]; resultSegment: Segment }
+  | { type: 'segment.cut'; projectId: string; segmentId: string }
+  | { type: 'segment.uncut'; projectId: string; segmentId: string }
   | { type: 'mode.changed'; projectId: string; mode: AiMode }
   | { type: 'transcription.started'; projectId: string; engine: string }
   | { type: 'transcription.progress'; projectId: string; percent: number }

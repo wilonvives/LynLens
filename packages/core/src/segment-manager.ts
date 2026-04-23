@@ -88,7 +88,13 @@ export class SegmentManager {
     if (end <= start) return;
     const current = [...this.segments];
     for (const s of current) {
-      if (s.status === 'rejected') continue;
+      // Skip rejected (inactive) and cut (committed) segments. Committed
+      // cuts can only be undone via restoreFromCut() / the ↶ button — a
+      // Cmd-drag on the effective timeline must never silently delete or
+      // split one, because on the effective timeline the cut occupies no
+      // visible space, so any drag straddling the boundary would otherwise
+      // grab the entire cut range by accident.
+      if (s.status === 'rejected' || s.status === 'cut') continue;
       if (s.end <= start || s.start >= end) continue; // no overlap
       if (s.start >= start && s.end <= end) {
         this.remove(s.id);
@@ -159,6 +165,32 @@ export class SegmentManager {
   reject(id: string, reviewer: string | null = 'human'): void {
     this.setStatus(id, 'rejected', reviewer);
     this.eventBus.emit({ type: 'segment.rejected', projectId: this.projectId, segmentId: id });
+  }
+
+  /**
+   * Transition an approved segment to `cut` — the ripple has been applied
+   * and this range is now physically collapsed out of the effective timeline.
+   * The segment stays in the list so the sidebar can offer a ↶ undo button.
+   */
+  markCut(id: string, reviewer: string | null = 'human'): void {
+    this.setStatus(id, 'cut', reviewer);
+    this.eventBus.emit({ type: 'segment.cut', projectId: this.projectId, segmentId: id });
+  }
+
+  /**
+   * Undo a cut: flip the segment back to `approved`. The ripple collapse is
+   * automatically undone because cutRanges is derived from cut-status segs.
+   */
+  restoreFromCut(id: string, reviewer: string | null = 'human'): void {
+    const seg = this.find(id);
+    if (!seg || seg.status !== 'cut') return;
+    this.setStatus(id, 'approved', reviewer);
+    this.eventBus.emit({ type: 'segment.uncut', projectId: this.projectId, segmentId: id });
+  }
+
+  /** Segments that have been ripple-cut (source time). */
+  getCutSegments(): Segment[] {
+    return this.segments.filter((s) => s.status === 'cut').sort((a, b) => a.start - b.start);
   }
 
   private setStatus(id: string, status: SegmentStatus, reviewer: string | null): void {
@@ -266,10 +298,14 @@ export class SegmentManager {
 
   /**
    * Compute the intervals to KEEP when exporting, given the total duration.
-   * Only approved delete-segments are considered.
+   * Both `approved` (marked-for-delete) and `cut` (already rippled) segments
+   * are dropped — they're equivalent for export purposes, just at different
+   * stages of the user's workflow.
    */
   getKeepSegments(totalDuration: number): Range[] {
-    const deletes = this.getApprovedSegments();
+    const deletes = this.segments
+      .filter((s) => s.status === 'approved' || s.status === 'cut')
+      .sort((a, b) => a.start - b.start);
     const keeps: Range[] = [];
     let cursor = 0;
     for (const seg of deletes) {
@@ -294,7 +330,15 @@ export class SegmentManager {
     if (overlapping.length === 0) {
       return { merged: newSeg, displaced: [] };
     }
-    const statusRank: Record<SegmentStatus, number> = { approved: 3, pending: 2, rejected: 1 };
+    // 'cut' outranks 'approved' because a cut segment represents commitment
+    // (the ripple is already applied); merging anything back into it should
+    // preserve that stronger state.
+    const statusRank: Record<SegmentStatus, number> = {
+      cut: 4,
+      approved: 3,
+      pending: 2,
+      rejected: 1,
+    };
     const all = [newSeg, ...overlapping];
     const best = all.reduce((a, b) => (statusRank[b.status] > statusRank[a.status] ? b : a));
     const merged: Segment = {
@@ -313,7 +357,17 @@ export class SegmentManager {
     while (this.undoStack.length > MAX_HISTORY) this.undoStack.shift();
   }
 
+  /**
+   * Approved-only total (what "待剪" should show in the UI).
+   */
   getTotalDeletedDuration(): number {
     return this.getApprovedSegments().reduce((sum, s) => sum + (s.end - s.start), 0);
+  }
+
+  /**
+   * Already-cut total (what "已剪" should show in the UI).
+   */
+  getTotalCutDuration(): number {
+    return this.getCutSegments().reduce((sum, s) => sum + (s.end - s.start), 0);
   }
 }

@@ -3,21 +3,18 @@ import type {
   ExportQuality,
   LynLensEvent,
   QcpProject,
-  Range,
   Segment,
   Transcript,
   VideoMeta,
 } from '@lynlens/core';
 
 export interface CommitRippleResult {
-  /** Ids of segments that were moved into cutRanges this call. */
+  /** Ids of segments that transitioned to cut status in this call. */
   cutSegmentIds: string[];
-  /** Total duration of every committed cut range (seconds). */
+  /** Total duration of every currently-cut segment (seconds). */
   totalCutSeconds: number;
   /** Video duration after all cuts (seconds). */
   effectiveDuration: number;
-  /** Bounding range of what was added this call; null if nothing changed. */
-  addedCutRange: Range | null;
 }
 
 export interface OpenVideoResult {
@@ -96,8 +93,8 @@ export interface IpcApi {
    * untouched.
    */
   commitRipple(projectId: string): Promise<CommitRippleResult>;
-  /** Remove a previously-committed cut range, restoring its source time. */
-  revertRipple(projectId: string, cutStart: number, cutEnd: number): Promise<boolean>;
+  /** Flip one cut segment back to approved, restoring its range to the timeline. */
+  revertRipple(projectId: string, segmentId: string): Promise<boolean>;
 
   transcribe(
     projectId: string,

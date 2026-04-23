@@ -26,7 +26,7 @@ const api: IpcApi = {
   approveAllPending: (pid) => ipcRenderer.invoke('approve-all-pending', pid),
   rejectAllPending: (pid) => ipcRenderer.invoke('reject-all-pending', pid),
   commitRipple: (pid) => ipcRenderer.invoke('commit-ripple', pid),
-  revertRipple: (pid, s, e) => ipcRenderer.invoke('revert-ripple', pid, s, e),
+  revertRipple: (pid, segmentId) => ipcRenderer.invoke('revert-ripple', pid, segmentId),
   transcribe: (pid, opts) => ipcRenderer.invoke('transcribe', pid, opts),
   updateTranscriptSegment: (pid, sid, text) =>
     ipcRenderer.invoke('update-transcript-segment', pid, sid, text),

@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import type { AiMode, LynLensEvent, Range, Segment, Transcript, VideoMeta } from '@lynlens/core';
+import type { AiMode, LynLensEvent, Segment, Transcript, VideoMeta } from '@lynlens/core';
 
 export type AiStatus = 'idle' | 'transcribing' | 'error';
 
@@ -14,14 +14,12 @@ interface State {
   videoPath: string | null;
   videoUrl: string | null;
   videoMeta: VideoMeta | null;
-  segments: Segment[];
   /**
-   * Committed ripple cuts (source time). Empty until the user hits 「剪切」.
-   * When non-empty, the timeline / player / subtitle panel all render in
-   * effective time = source - sum(cuts). Mutations always go through
-   * setCutRanges so stale caches (like Timeline's view) can react.
+   * All segments, every status (pending / approved / rejected / cut). The
+   * renderer derives its "cut ranges" for timeline compaction by filtering
+   * `segments.filter(s => s.status === 'cut')` — single source of truth.
    */
-  cutRanges: Range[];
+  segments: Segment[];
   aiMode: AiMode;
   userOrientation: 'landscape' | 'portrait' | null;
   aiStatus: AiStatus;
@@ -35,7 +33,6 @@ interface State {
   setProject(p: { projectId: string; videoPath: string; videoUrl: string; videoMeta: VideoMeta }): void;
   clearProject(): void;
   refreshSegments(segs: Segment[]): void;
-  setCutRanges(cuts: Range[]): void;
   setAiMode(m: AiMode): void;
   setUserOrientation(o: 'landscape' | 'portrait' | null): void;
   setTranscript(t: Transcript | null): void;
@@ -50,7 +47,6 @@ export const useStore = create<State>((set, get) => ({
   videoUrl: null,
   videoMeta: null,
   segments: [],
-  cutRanges: [],
   aiMode: 'L2',
   userOrientation: null,
   aiStatus: 'idle',
@@ -67,7 +63,6 @@ export const useStore = create<State>((set, get) => ({
       videoUrl: p.videoUrl,
       videoMeta: p.videoMeta,
       segments: [],
-      cutRanges: [],
       waveform: null,
       transcript: null,
       transcribeProgress: 0,
@@ -80,7 +75,6 @@ export const useStore = create<State>((set, get) => ({
       videoUrl: null,
       videoMeta: null,
       segments: [],
-      cutRanges: [],
       waveform: null,
       transcript: null,
       transcribeProgress: 0,
@@ -88,12 +82,6 @@ export const useStore = create<State>((set, get) => ({
   },
   refreshSegments(segs) {
     set({ segments: [...segs].sort((a, b) => a.start - b.start) });
-  },
-  setCutRanges(cuts) {
-    // Defensive copy + sort so the timeline renderer can cache its view state
-    // without worrying about shared mutation from main.
-    const sorted = [...cuts].sort((a, b) => a.start - b.start);
-    set({ cutRanges: sorted });
   },
   setAiMode(m) {
     set({ aiMode: m });

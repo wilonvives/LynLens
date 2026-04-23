@@ -105,7 +105,7 @@ export function ChatPanel({ open, onClose, width }: Props) {
             break;
           case 'error':
             cur.streaming = false;
-            cur.text += `\n\n⚠ 出错: ${event.message}`;
+            cur.text += `\n\n出错: ${event.message}`;
             setBusy(false);
             break;
         }
@@ -140,7 +140,7 @@ export function ChatPanel({ open, onClose, width }: Props) {
         {
           id: `err_${Date.now()}`,
           role: 'assistant',
-          text: `⚠ 调用失败: ${(err as Error).message}`,
+          text: `调用失败: ${(err as Error).message}`,
           toolCalls: [],
         },
       ]);
@@ -166,7 +166,7 @@ export function ChatPanel({ open, onClose, width }: Props) {
     >
       <div className="chat-header">
         <div className="chat-header-left">
-          <div className="chat-header-title">💬 Anthropic Claude Code</div>
+          <div className="chat-header-title">Anthropic Claude Code</div>
           {identity ? (
             <div className="chat-header-identity" title={`subscription: ${identity.plan ?? '—'}`}>
               <span className="dot" /> Connected as {identity.displayName || identity.email}
@@ -188,7 +188,7 @@ export function ChatPanel({ open, onClose, width }: Props) {
           }}
           title="清空对话记录,开新话题"
         >
-          🔄
+          重置
         </button>
         <button className="chat-close" onClick={onClose} title="关闭">
           ✕
@@ -211,7 +211,7 @@ export function ChatPanel({ open, onClose, width }: Props) {
               <div className="chat-bubble assistant">
                 {m.toolCalls.map((t, i) => (
                   <div key={i} className={`chat-tool ${t.ok === false ? 'err' : ''}`}>
-                    <span className="chat-tool-name">🔧 {prettyToolName(t.name)}</span>
+                    <span className="chat-tool-name">{prettyToolName(t.name)}</span>
                     {t.result && (
                       <span className="chat-tool-result">
                         {t.ok === false ? '❌ ' : '✓ '}

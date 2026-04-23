@@ -324,22 +324,21 @@ async function buildLynLensSdkServer(engine: LynLensEngine) {
 
       tool(
         'revert_ripple',
-        '撤销某一段已经执行的 ripple 剪切。需要明确的 source-time 起止秒数,通常只在用户说"取消刚才那刀"时使用。',
+        '撤销某一段已经执行的 ripple 剪切:把指定段从 cut 状态恢复为 approved,时间轴会重新变长。参数是要恢复的 segment id。',
         {
           projectId: z.string(),
-          cutStart: z.number(),
-          cutEnd: z.number(),
+          segmentId: z.string(),
         },
-        async ({ projectId, cutStart, cutEnd }) => {
+        async ({ projectId, segmentId }) => {
           const project = engine.projects.get(projectId);
-          const ok = project.revertRipple(cutStart, cutEnd);
+          const ok = project.revertRipple(segmentId);
           return {
             content: [
               {
                 type: 'text' as const,
                 text: ok
-                  ? `已恢复 [${cutStart.toFixed(2)}, ${cutEnd.toFixed(2)}] 这一刀。`
-                  : `找不到 [${cutStart}, ${cutEnd}] 这一刀。`,
+                  ? `已恢复段 ${segmentId.slice(0, 8)}。`
+                  : `找不到 cut 状态的段 ${segmentId}。`,
               },
             ],
             isError: !ok,

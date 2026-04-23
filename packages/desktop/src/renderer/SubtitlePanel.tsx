@@ -5,7 +5,7 @@ import {
   transcriptToPlainText,
   type Transcript,
   type VideoMeta,
-} from '@lynlens/core';
+} from './core-browser';
 import { formatTime } from './util';
 import { useStore } from './store';
 
@@ -47,7 +47,7 @@ export function SubtitlePanel({
     return (
       <div className="sub-empty">
         <div>暂无字幕</div>
-        <div className="hint">先点顶部 🎤 生成字幕 按钮跑一次转录。</div>
+        <div className="hint">先点顶部「生成字幕」按钮跑一次转录。</div>
       </div>
     );
   }
@@ -108,12 +108,12 @@ export function SubtitlePanel({
           替换全部
         </button>
         <button onClick={copyAll} title="把所有段拼成纯文本复制到剪贴板">
-          📋
+复制
         </button>
       </div>
       <div className="sub-meta">
         <span className="sub-orient">
-          {orientation === 'landscape' ? '📺 横屏' : '📱 竖屏'} · 中 {limits.zh} / 英 {limits.en} 字
+          {orientation === 'landscape' ? '横屏' : '竖屏'} · 中 {limits.zh} / 英 {limits.en} 字
         </span>
         <button
           className="sub-flip"
@@ -133,7 +133,7 @@ export function SubtitlePanel({
       {transcript.segments.some((s) => s.suggestion) && (
         <div className="sub-bulk">
           <span className="sub-bulk-count">
-            💡 {transcript.segments.filter((s) => s.suggestion).length} 条建议
+            {transcript.segments.filter((s) => s.suggestion).length} 条建议
           </span>
           <div className="sub-bulk-actions">
             <button

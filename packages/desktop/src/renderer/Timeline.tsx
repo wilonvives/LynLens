@@ -2,11 +2,10 @@ import { useEffect, useRef, useState } from 'react';
 import {
   effectiveToSource,
   mapRangeToEffective,
-  sourceToEffective,
   type Range,
   type Segment,
   type Transcript,
-} from '@lynlens/core';
+} from './core-browser';
 import { formatTime } from './util';
 
 interface TimelineProps {
@@ -89,11 +88,32 @@ export function Timeline(props: TimelineProps) {
   >(null);
   const [hoverCursor, setHoverCursor] = useState<'default' | 'ew-resize' | 'grab'>('default');
 
-  // initialize view once duration becomes known
+  // Initialise view once duration becomes known, and keep it in bounds when
+  // duration changes (a ripple cut shrinks effectiveDuration; an undo grows
+  // it back). Without this, the saved visibleSec from before the cut stays
+  // wider than the new duration and the canvas shows an empty tail past
+  // the end of the compacted timeline.
+  //
+  // Rule: if the user was viewing the full timeline (offset=0 and visible
+  // >= old duration), keep showing the full new timeline. Otherwise preserve
+  // the zoom level but clamp so the window can't overflow the new right edge.
+  // We compare against the ref from the previous tick instead of tracking
+  // prevDuration separately.
+  const prevDurationRef = useRef<number>(0);
   useEffect(() => {
-    if (duration > 0 && view.visibleSec === 0) {
-      setView({ offsetSec: 0, visibleSec: duration });
-    }
+    if (duration <= 0) return;
+    const prevDuration = prevDurationRef.current;
+    prevDurationRef.current = duration;
+    setView((v) => {
+      if (v.visibleSec === 0) return { offsetSec: 0, visibleSec: duration };
+      const wasFullView =
+        prevDuration > 0 && v.offsetSec === 0 && v.visibleSec >= prevDuration - 0.01;
+      const nextVisible = wasFullView ? duration : Math.min(v.visibleSec, duration);
+      const maxOffset = Math.max(0, duration - nextVisible);
+      const nextOffset = Math.min(v.offsetSec, maxOffset);
+      if (nextVisible === v.visibleSec && nextOffset === v.offsetSec) return v;
+      return { offsetSec: nextOffset, visibleSec: nextVisible };
+    });
   }, [duration]);
 
   // Resize canvas to container pixel ratio
@@ -283,18 +303,9 @@ export function Timeline(props: TimelineProps) {
       }
     }
 
-    // --- cut markers ---
-    // Each committed cut collapses to a single point in effective time. Draw
-    // a thin amber vertical line there so the user can see where the cuts
-    // happened (and aim to undo them if needed).
-    if (cutRanges.length > 0) {
-      ctx.fillStyle = 'rgba(243,156,18,0.85)';
-      for (const c of cutRanges) {
-        const effX = secToPx(sourceToEffective(c.start, cutRanges));
-        if (effX < 0 || effX > w) continue;
-        ctx.fillRect(effX - 0.5, 0, 1.5, waveHeight);
-      }
-    }
+    // Cut markers intentionally not drawn here — cuts live on the segment
+    // records and surface in the sidebar with a ↶ undo button. The timeline
+    // itself should feel like a clean, compacted view of the final cut.
 
     // --- drag selection ---
     if (dragging) {

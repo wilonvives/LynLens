@@ -724,9 +724,9 @@ ipcMain.handle('commit-ripple', async (_ev, projectId: string) => {
 
 ipcMain.handle(
   'revert-ripple',
-  async (_ev, projectId: string, cutStart: number, cutEnd: number) => {
+  async (_ev, projectId: string, segmentId: string) => {
     const project = engine.projects.get(projectId);
-    return project.revertRipple(cutStart, cutEnd);
+    return project.revertRipple(segmentId);
   }
 );
 

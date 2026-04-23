@@ -39,15 +39,21 @@ export {
   type FillerMatch,
 } from './transcription';
 export { LynLensEngine } from './engine';
-export {
-  addCutRange,
-  computeKeepIntervals,
-  effectiveToSource,
-  getEffectiveDuration,
-  mapRangeToEffective,
-  normalizeCuts,
-  sourceToEffective,
-} from './ripple';
+// Ripple helpers: re-exported via `import *` + const bindings so tsc emits
+// direct `exports.foo = ripple.foo` assignments instead of Object.define-
+// Property getters. Getter-based re-exports are invisible to both esbuild's
+// cjs-module-lexer (pre-bundle path) and Vite's native ESM transform (no
+// pre-bundle path), so named imports like `import { getEffectiveDuration }
+// from '@lynlens/core'` resolve to `undefined` in the renderer. Direct
+// assignment is the portable shape.
+import * as ripple from './ripple';
+export const addCutRange = ripple.addCutRange;
+export const computeKeepIntervals = ripple.computeKeepIntervals;
+export const effectiveToSource = ripple.effectiveToSource;
+export const getEffectiveDuration = ripple.getEffectiveDuration;
+export const mapRangeToEffective = ripple.mapRangeToEffective;
+export const normalizeCuts = ripple.normalizeCuts;
+export const sourceToEffective = ripple.sourceToEffective;
 export {
   getOrientation,
   getLineLimits,

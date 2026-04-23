@@ -47,14 +47,14 @@ describe('ProjectManager', () => {
     expect(events).toContain('project.opened');
   });
 
-  it('commitRipple moves approved segments into cutRanges and shrinks effective duration', async () => {
+  it('commitRipple flips approved segments to cut status and shrinks effective duration', async () => {
     const bus = new EventBus();
     const pm = new ProjectManager(bus);
     const p = await pm.openProject({ videoPath: 'x', videoMeta: makeMeta() });
 
-    p.segments.add({ start: 10, end: 20, source: 'human' });          // approved
-    p.segments.add({ start: 40, end: 45, source: 'human' });          // approved
-    p.segments.add({ start: 70, end: 75, source: 'ai', reason: 'x' }); // pending (not cut)
+    const a = p.segments.add({ start: 10, end: 20, source: 'human' });           // approved
+    const b = p.segments.add({ start: 40, end: 45, source: 'human' });           // approved
+    const c = p.segments.add({ start: 70, end: 75, source: 'ai', reason: 'x' }); // pending
 
     const events: string[] = [];
     bus.onAny((e) => events.push(e.type));
@@ -65,13 +65,16 @@ describe('ProjectManager', () => {
     expect(result.totalCutSeconds).toBe(15);
     expect(result.effectiveDuration).toBe(85);
     expect(events).toContain('ripple.committed');
+    expect(events).toContain('segment.cut');
 
-    // Approved segments are gone from the list; pending is preserved.
-    const remaining = p.segments.list();
-    expect(remaining).toHaveLength(1);
-    expect(remaining[0].status).toBe('pending');
+    // All three segments still exist; two are now cut, one is still pending.
+    const all = p.segments.list();
+    expect(all).toHaveLength(3);
+    expect(p.segments.find(a.id)!.status).toBe('cut');
+    expect(p.segments.find(b.id)!.status).toBe('cut');
+    expect(p.segments.find(c.id)!.status).toBe('pending');
 
-    // cutRanges holds the source-time ranges.
+    // Derived cutRanges sums to the rippled-out source time.
     expect(p.cutRanges).toEqual([
       { start: 10, end: 20 },
       { start: 40, end: 45 },
@@ -86,13 +89,13 @@ describe('ProjectManager', () => {
     p.segments.add({ start: 10, end: 20, source: 'ai', reason: 'x' }); // pending
 
     const result = p.commitRipple();
-    expect(result.addedCutRange).toBeNull();
     expect(result.cutSegmentIds).toEqual([]);
+    expect(result.totalCutSeconds).toBe(0);
     expect(p.cutRanges).toEqual([]);
     expect(p.segments.list()).toHaveLength(1);
   });
 
-  it('persists cutRanges across save/reopen', async () => {
+  it('cut status persists across save/reopen and still drives effective duration', async () => {
     const bus = new EventBus();
     const pm = new ProjectManager(bus);
     const p = await pm.openProject({ videoPath: 'x.mp4', videoMeta: makeMeta() });
@@ -109,21 +112,74 @@ describe('ProjectManager', () => {
       videoMeta: makeMeta(),
       projectPath: qcpPath,
     });
+    const segs = reopened.segments.list();
+    expect(segs).toHaveLength(1);
+    expect(segs[0].status).toBe('cut');
     expect(reopened.cutRanges).toEqual([{ start: 10, end: 20 }]);
     expect(reopened.getEffectiveDuration()).toBe(90);
   });
 
-  it('revertRipple removes a cut and restores effective duration', async () => {
+  it('revertRipple flips a single cut segment back to approved', async () => {
     const bus = new EventBus();
     const pm = new ProjectManager(bus);
     const p = await pm.openProject({ videoPath: 'x.mp4', videoMeta: makeMeta() });
-    p.segments.add({ start: 10, end: 20, source: 'human' });
+    const s = p.segments.add({ start: 10, end: 20, source: 'human' });
     p.commitRipple();
     expect(p.cutRanges).toHaveLength(1);
 
-    const ok = p.revertRipple(10, 20);
+    const ok = p.revertRipple(s.id);
     expect(ok).toBe(true);
     expect(p.cutRanges).toEqual([]);
     expect(p.getEffectiveDuration()).toBe(100);
+    // Segment is back to approved, still visible in the list.
+    const seg = p.segments.find(s.id);
+    expect(seg).toBeDefined();
+    expect(seg!.status).toBe('approved');
+  });
+
+  it('revertRipple is a no-op for unknown id or non-cut segment', async () => {
+    const bus = new EventBus();
+    const pm = new ProjectManager(bus);
+    const p = await pm.openProject({ videoPath: 'x', videoMeta: makeMeta() });
+    const s = p.segments.add({ start: 10, end: 20, source: 'human' });
+    // Segment is approved but NOT yet cut — revert should fail.
+    expect(p.revertRipple(s.id)).toBe(false);
+    // Unknown id
+    expect(p.revertRipple('bogus')).toBe(false);
+  });
+
+  it('migrates legacy cutRanges on open by creating cut-status segments', async () => {
+    // Simulate a .qcp written by an older build.
+    const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'lynlens-migrate-'));
+    const qcpPath = path.join(tmp, 'legacy.qcp');
+    const now = new Date().toISOString();
+    const legacy = {
+      version: '2.0',
+      videoPath: 'x.mp4',
+      videoMeta: makeMeta(),
+      transcript: null,
+      deleteSegments: [],
+      aiMode: 'L2',
+      cutRanges: [
+        { start: 10, end: 20 },
+        { start: 40, end: 45 },
+      ],
+      createdAt: now,
+      modifiedAt: now,
+    };
+    await fs.writeFile(qcpPath, JSON.stringify(legacy), 'utf-8');
+
+    const bus = new EventBus();
+    const pm = new ProjectManager(bus);
+    const p = await pm.openProject({
+      videoPath: 'x.mp4',
+      videoMeta: makeMeta(),
+      projectPath: qcpPath,
+    });
+    const segs = p.segments.list();
+    expect(segs).toHaveLength(2);
+    expect(segs.every((s) => s.status === 'cut')).toBe(true);
+    expect(p.cutRanges).toHaveLength(2);
+    expect(p.getEffectiveDuration()).toBe(85);
   });
 });
