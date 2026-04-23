@@ -1028,6 +1028,45 @@ ipcMain.handle(
 );
 
 ipcMain.handle(
+  'add-social-style-preset',
+  async (_ev, projectId: string, name: string, content: string) => {
+    const project = engine.projects.get(projectId);
+    const preset = project.addSocialStylePreset(name, content);
+    if (project.projectPath) await engine.projects.saveProject(projectId);
+    return preset;
+  }
+);
+
+ipcMain.handle(
+  'update-social-style-preset',
+  async (
+    _ev,
+    projectId: string,
+    presetId: string,
+    patch: { name?: string; content?: string }
+  ) => {
+    const project = engine.projects.get(projectId);
+    const ok = project.updateSocialStylePreset(presetId, patch);
+    if (ok && project.projectPath) await engine.projects.saveProject(projectId);
+    return ok;
+  }
+);
+
+ipcMain.handle(
+  'delete-social-style-preset',
+  async (_ev, projectId: string, presetId: string) => {
+    const project = engine.projects.get(projectId);
+    const ok = project.deleteSocialStylePreset(presetId);
+    if (ok && project.projectPath) await engine.projects.saveProject(projectId);
+    return ok;
+  }
+);
+
+ipcMain.handle('get-social-style-presets', async (_ev, projectId: string) => {
+  return engine.projects.get(projectId).socialStylePresets;
+});
+
+ipcMain.handle(
   'update-transcript-segment',
   async (_ev, projectId: string, segmentId: string, newText: string) => {
     const project = engine.projects.get(projectId);

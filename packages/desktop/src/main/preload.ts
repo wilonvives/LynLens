@@ -41,6 +41,13 @@ const api: IpcApi = {
     ipcRenderer.invoke('delete-social-copy', pid, setId, copyId),
   deleteSocialCopySet: (pid, setId) => ipcRenderer.invoke('delete-social-copy-set', pid, setId),
   setSocialStyleNote: (pid, note) => ipcRenderer.invoke('set-social-style-note', pid, note),
+  getSocialStylePresets: (pid) => ipcRenderer.invoke('get-social-style-presets', pid),
+  addSocialStylePreset: (pid, name, content) =>
+    ipcRenderer.invoke('add-social-style-preset', pid, name, content),
+  updateSocialStylePreset: (pid, presetId, patch) =>
+    ipcRenderer.invoke('update-social-style-preset', pid, presetId, patch),
+  deleteSocialStylePreset: (pid, presetId) =>
+    ipcRenderer.invoke('delete-social-style-preset', pid, presetId),
   transcribe: (pid, opts) => ipcRenderer.invoke('transcribe', pid, opts),
   updateTranscriptSegment: (pid, sid, text) =>
     ipcRenderer.invoke('update-transcript-segment', pid, sid, text),

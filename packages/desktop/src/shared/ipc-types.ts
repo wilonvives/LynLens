@@ -8,6 +8,7 @@ import type {
   Segment,
   SocialCopySetData,
   SocialPlatform,
+  SocialStylePresetData,
   Transcript,
   VideoMeta,
 } from '@lynlens/core';
@@ -158,6 +159,18 @@ export interface IpcApi {
   deleteSocialCopy(projectId: string, setId: string, copyId: string): Promise<boolean>;
   deleteSocialCopySet(projectId: string, setId: string): Promise<boolean>;
   setSocialStyleNote(projectId: string, note: string | null): Promise<void>;
+  getSocialStylePresets(projectId: string): Promise<SocialStylePresetData[]>;
+  addSocialStylePreset(
+    projectId: string,
+    name: string,
+    content: string
+  ): Promise<SocialStylePresetData>;
+  updateSocialStylePreset(
+    projectId: string,
+    presetId: string,
+    patch: { name?: string; content?: string }
+  ): Promise<boolean>;
+  deleteSocialStylePreset(projectId: string, presetId: string): Promise<boolean>;
 
   transcribe(
     projectId: string,

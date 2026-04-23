@@ -12,6 +12,7 @@ import type {
   Range,
   Segment,
   SocialCopySetData,
+  SocialStylePresetData,
   Transcript,
   VideoMeta,
 } from './types';
@@ -35,6 +36,8 @@ export class Project {
   socialCopies: SocialCopySetData[];
   /** User-editable global style note applied to all future generations. */
   socialStyleNote: string | null;
+  /** Named style presets for quick swap in/out during the same project. */
+  socialStylePresets: SocialStylePresetData[];
   createdAt: string;
   modifiedAt: string;
   projectPath: string | null;
@@ -64,6 +67,9 @@ export class Project {
       ? [...handle.data.socialCopies]
       : [];
     this.socialStyleNote = handle.data.socialStyleNote ?? null;
+    this.socialStylePresets = Array.isArray(handle.data.socialStylePresets)
+      ? [...handle.data.socialStylePresets]
+      : [];
     this.createdAt = handle.data.createdAt;
     this.modifiedAt = handle.data.modifiedAt;
     this.eventBus = eventBus;
@@ -118,6 +124,9 @@ export class Project {
     this.previewRotation = normalizeRotation(data.previewRotation);
     this.socialCopies = Array.isArray(data.socialCopies) ? [...data.socialCopies] : [];
     this.socialStyleNote = data.socialStyleNote ?? null;
+    this.socialStylePresets = Array.isArray(data.socialStylePresets)
+      ? [...data.socialStylePresets]
+      : [];
     this.modifiedAt = data.modifiedAt;
     // Same legacy-cutRanges migration logic as the constructor — keep in sync.
     const initialSegments: Segment[] = [...data.deleteSegments];
@@ -275,6 +284,7 @@ export class Project {
       previewRotation: this.previewRotation,
       socialCopies: this.socialCopies,
       socialStyleNote: this.socialStyleNote,
+      socialStylePresets: this.socialStylePresets,
       createdAt: this.createdAt,
       modifiedAt: new Date().toISOString(),
     };
@@ -421,6 +431,44 @@ export class Project {
   setSocialStyleNote(note: string | null): void {
     this.socialStyleNote = note && note.trim() ? note : null;
     this.modifiedAt = new Date().toISOString();
+  }
+
+  addSocialStylePreset(name: string, content: string): SocialStylePresetData {
+    const preset: SocialStylePresetData = {
+      id: `sp_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`,
+      name: name.trim() || '未命名',
+      content,
+      createdAt: new Date().toISOString(),
+    };
+    this.socialStylePresets = [preset, ...this.socialStylePresets];
+    this.modifiedAt = new Date().toISOString();
+    return preset;
+  }
+
+  updateSocialStylePreset(
+    presetId: string,
+    patch: { name?: string; content?: string }
+  ): boolean {
+    const idx = this.socialStylePresets.findIndex((p) => p.id === presetId);
+    if (idx < 0) return false;
+    const old = this.socialStylePresets[idx];
+    const next = [...this.socialStylePresets];
+    next[idx] = {
+      ...old,
+      ...(patch.name !== undefined ? { name: patch.name.trim() || '未命名' } : {}),
+      ...(patch.content !== undefined ? { content: patch.content } : {}),
+    };
+    this.socialStylePresets = next;
+    this.modifiedAt = new Date().toISOString();
+    return true;
+  }
+
+  deleteSocialStylePreset(presetId: string): boolean {
+    const next = this.socialStylePresets.filter((p) => p.id !== presetId);
+    if (next.length === this.socialStylePresets.length) return false;
+    this.socialStylePresets = next;
+    this.modifiedAt = new Date().toISOString();
+    return true;
   }
 }
 

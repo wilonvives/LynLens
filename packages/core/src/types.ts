@@ -110,6 +110,14 @@ export interface QcpProject {
   socialCopies?: SocialCopySetData[];
   /** Free-form note the user keeps around to flavour all copy generations. */
   socialStyleNote?: string | null;
+  /**
+   * Named style presets saved per-project. User can write one style,
+   * save it, switch to another, and swap back. The "active" preset is
+   * whichever socialStyleNote currently equals — we compare by content
+   * rather than by id so editing the note text doesn't orphan the
+   * reference.
+   */
+  socialStylePresets?: SocialStylePresetData[];
   createdAt: string;
   modifiedAt: string;
 }
@@ -131,6 +139,17 @@ export interface SocialCopyData {
   title: string;
   body: string;
   hashtags: string[];
+}
+
+/**
+ * Saved style preset. Just a named blob of text — the preset's content
+ * gets copied into socialStyleNote when selected.
+ */
+export interface SocialStylePresetData {
+  id: string;
+  name: string;
+  content: string;
+  createdAt: string;
 }
 
 export interface SocialCopySetData {

@@ -1362,6 +1362,76 @@ button.ai.active {
   font-size: 11px;
   color: var(--text3);
 }
+.copy-panel-stylenote-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.copy-style-save-as {
+  font-size: 11px;
+  padding: 3px 10px;
+}
+.copy-style-presets {
+  margin-top: 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.copy-style-presets-label {
+  font-size: 10px;
+  color: var(--text3);
+}
+.copy-style-presets-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.copy-style-preset {
+  display: inline-flex;
+  align-items: center;
+  gap: 0;
+  background: #1a1a1a;
+  border: 1px solid #2e2e2e;
+  border-radius: 4px;
+  overflow: hidden;
+}
+.copy-style-preset.active {
+  border-color: #4e6d9f;
+  background: #1f2a3a;
+}
+.copy-style-preset-load {
+  font-size: 12px;
+  padding: 4px 10px;
+  background: transparent;
+  border: none;
+  color: var(--text1);
+  border-right: 1px solid #2e2e2e;
+}
+.copy-style-preset-load:hover {
+  background: #252525;
+}
+.copy-style-preset.active .copy-style-preset-load {
+  color: #cfe0f5;
+}
+.copy-style-preset-action {
+  font-size: 10px;
+  padding: 4px 8px;
+  background: transparent;
+  border: none;
+  border-right: 1px solid #2e2e2e;
+  color: var(--text3);
+}
+.copy-style-preset-action:last-child {
+  border-right: none;
+}
+.copy-style-preset-action:hover {
+  background: #252525;
+  color: var(--text1);
+}
+.copy-style-preset-action.delete:hover {
+  background: #2a1a1a;
+  color: #e88;
+}
 
 .copy-set {
   display: flex;
@@ -1374,8 +1444,11 @@ button.ai.active {
 }
 .copy-set-head {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: 12px;
+}
+.copy-set-spacer {
+  flex: 1 1 0;
 }
 .copy-set-source {
   font-size: 13px;
@@ -1419,6 +1492,9 @@ button.ai.active {
   align-items: center;
   gap: 8px;
 }
+.copy-card-spacer {
+  flex: 1 1 0;
+}
 .copy-card-platform {
   font-size: 13px;
   font-weight: 600;
@@ -1428,6 +1504,10 @@ button.ai.active {
   font-size: 11px;
   color: #888;
   font-style: italic;
+}
+.copy-card-copy-all {
+  font-size: 11px;
+  padding: 3px 10px;
 }
 .copy-card-delete {
   font-size: 11px;
@@ -1445,11 +1525,37 @@ button.ai.active {
   flex-direction: column;
   gap: 4px;
 }
-.copy-card-field label {
+.copy-card-field-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.copy-card-field-label label {
   font-size: 10px;
   color: var(--text3);
   text-transform: uppercase;
   letter-spacing: 0.03em;
+}
+.copy-card-field-copy {
+  background: transparent;
+  border: none;
+  padding: 2px 4px;
+  color: var(--text3);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  border-radius: 3px;
+}
+.copy-card-field-copy:hover:not(:disabled) {
+  color: var(--text1);
+  background: #2a2a2a;
+}
+.copy-card-field-copy:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+.copy-icon {
+  vertical-align: middle;
 }
 .copy-card-input {
   width: 100%;
@@ -1520,4 +1626,36 @@ button.ai.active {
 }
 .copy-platform-chip input {
   margin: 0;
+}
+
+/* ---------- Generating banner (shared by highlight + copywriter) ---------- */
+.gen-banner {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  border-radius: 6px;
+  background: #1f2a3a;
+  border: 1px solid #3a5a8a;
+  color: #cfe0f5;
+  font-size: 12px;
+}
+.gen-banner-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: #4ec9b0;
+  animation: gen-pulse 1.2s ease-in-out infinite;
+  flex-shrink: 0;
+}
+@keyframes gen-pulse {
+  0%, 100% { opacity: 0.25; transform: scale(0.8); }
+  50% { opacity: 1; transform: scale(1.1); }
+}
+.gen-banner-title {
+  color: var(--text1);
+  font-weight: 500;
+}
+.gen-banner-hint {
+  color: var(--text3);
 }

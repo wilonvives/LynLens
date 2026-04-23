@@ -309,6 +309,16 @@ export function HighlightPanel({
 
       {error && <div className="highlight-error">{error}</div>}
 
+      {generating && (
+        <div className="gen-banner">
+          <span className="gen-banner-dot" />
+          <div>
+            <div className="gen-banner-title">Claude 正在读字幕并挑段...</div>
+            <div className="gen-banner-hint">通常 10-30 秒。变体数量越多越慢。</div>
+          </div>
+        </div>
+      )}
+
       <div className="highlight-body">
         {/* LEFT — dedicated variant player */}
         <div className="highlight-player">
@@ -409,13 +419,8 @@ export function HighlightPanel({
             </div>
           )}
 
-          {generating && (
-            <div className="highlight-empty" style={{ marginTop: 20 }}>
-              <div className="hint">
-                Claude 正在读字幕并挑段... 通常 10-30 秒。
-              </div>
-            </div>
-          )}
+          {/* Generating banner is rendered at panel level above so it's
+              visible without scrolling the card column. */}
 
           <div className="variant-list">
             {variants.map((v, i) => (

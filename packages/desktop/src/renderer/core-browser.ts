@@ -22,6 +22,7 @@ export type {
   Segment,
   SocialCopyData,
   SocialCopySetData,
+  SocialStylePresetData,
   Transcript,
   VideoMeta,
 } from '../../../core/src/types';

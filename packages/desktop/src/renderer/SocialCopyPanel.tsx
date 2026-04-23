@@ -4,6 +4,7 @@ import {
   type HighlightVariant,
   type SocialCopySetData,
   type SocialPlatform,
+  type SocialStylePresetData,
 } from './core-browser';
 import { GenerateCopyDialog } from './GenerateCopyDialog';
 import { SocialCopyCard } from './SocialCopyCard';
@@ -20,6 +21,7 @@ export function SocialCopyPanel(): JSX.Element {
   const [sets, setSets] = useState<SocialCopySetData[]>([]);
   const [variants, setVariants] = useState<HighlightVariant[]>([]);
   const [styleNote, setStyleNote] = useState<string>('');
+  const [stylePresets, setStylePresets] = useState<SocialStylePresetData[]>([]);
   const [showDialog, setShowDialog] = useState(false);
   const [generating, setGenerating] = useState(false);
   const [savingCopyId, setSavingCopyId] = useState<string | null>(null);
@@ -33,11 +35,13 @@ export function SocialCopyPanel(): JSX.Element {
       window.lynlens.getSocialCopies(projectId),
       window.lynlens.getHighlights(projectId),
       window.lynlens.getState(projectId),
-    ]).then(([s, v, qcp]) => {
+      window.lynlens.getSocialStylePresets(projectId),
+    ]).then(([s, v, qcp, presets]) => {
       if (cancelled) return;
       setSets(s);
       setVariants(v);
       setStyleNote(qcp.socialStyleNote ?? '');
+      setStylePresets(presets);
     });
     return () => {
       cancelled = true;
@@ -120,6 +124,53 @@ export function SocialCopyPanel(): JSX.Element {
     await window.lynlens.setSocialStyleNote(projectId, styleNote.trim() || null);
   }
 
+  async function refreshPresets(): Promise<void> {
+    if (!projectId) return;
+    setStylePresets(await window.lynlens.getSocialStylePresets(projectId));
+  }
+
+  async function handleSaveAsPreset(): Promise<void> {
+    if (!projectId || !styleNote.trim()) {
+      alert('当前风格是空的,先填点内容再保存。');
+      return;
+    }
+    const name = prompt('给这个风格起个名字:');
+    if (!name || !name.trim()) return;
+    await window.lynlens.addSocialStylePreset(projectId, name.trim(), styleNote);
+    await refreshPresets();
+  }
+
+  async function handleLoadPreset(preset: SocialStylePresetData): Promise<void> {
+    if (!projectId) return;
+    // Only overwrite if different. Persist new style note.
+    if (preset.content !== styleNote) {
+      setStyleNote(preset.content);
+      await window.lynlens.setSocialStyleNote(projectId, preset.content || null);
+    }
+  }
+
+  async function handleRenamePreset(preset: SocialStylePresetData): Promise<void> {
+    if (!projectId) return;
+    const name = prompt('重命名风格:', preset.name);
+    if (!name || name.trim() === preset.name) return;
+    await window.lynlens.updateSocialStylePreset(projectId, preset.id, { name: name.trim() });
+    await refreshPresets();
+  }
+
+  async function handleUpdatePresetContent(preset: SocialStylePresetData): Promise<void> {
+    if (!projectId) return;
+    if (!confirm(`把当前风格保存覆盖到「${preset.name}」?`)) return;
+    await window.lynlens.updateSocialStylePreset(projectId, preset.id, { content: styleNote });
+    await refreshPresets();
+  }
+
+  async function handleDeletePreset(preset: SocialStylePresetData): Promise<void> {
+    if (!projectId) return;
+    if (!confirm(`删除风格「${preset.name}」?`)) return;
+    await window.lynlens.deleteSocialStylePreset(projectId, preset.id);
+    await refreshPresets();
+  }
+
   // --- Empty states ---
   if (!projectId) {
     return (
@@ -160,7 +211,17 @@ export function SocialCopyPanel(): JSX.Element {
       </div>
 
       <div className="copy-panel-stylenote">
-        <label>全局风格 / 账号定位(所有生成都会参考,可随时改)</label>
+        <div className="copy-panel-stylenote-head">
+          <label>全局风格 / 账号定位(所有生成都会参考)</label>
+          <span className="copy-set-spacer" />
+          <button
+            className="copy-style-save-as"
+            onClick={() => void handleSaveAsPreset()}
+            title="把当前风格存为一个可随时切换的预设"
+          >
+            另存为...
+          </button>
+        </div>
         <textarea
           className="copy-card-input"
           rows={2}
@@ -169,9 +230,64 @@ export function SocialCopyPanel(): JSX.Element {
           onChange={(e) => setStyleNote(e.target.value)}
           onBlur={handleStyleNoteBlur}
         />
+        {stylePresets.length > 0 && (
+          <div className="copy-style-presets">
+            <div className="copy-style-presets-label">已保存的风格(点击加载):</div>
+            <div className="copy-style-presets-row">
+              {stylePresets.map((p) => {
+                const isActive = p.content === styleNote;
+                return (
+                  <div
+                    key={p.id}
+                    className={`copy-style-preset${isActive ? ' active' : ''}`}
+                  >
+                    <button
+                      className="copy-style-preset-load"
+                      onClick={() => void handleLoadPreset(p)}
+                      title={p.content.slice(0, 200)}
+                    >
+                      {p.name}
+                    </button>
+                    <button
+                      className="copy-style-preset-action"
+                      onClick={() => void handleRenamePreset(p)}
+                      title="重命名"
+                    >
+                      改名
+                    </button>
+                    <button
+                      className="copy-style-preset-action"
+                      onClick={() => void handleUpdatePresetContent(p)}
+                      title="用当前风格覆盖这个预设"
+                    >
+                      覆盖
+                    </button>
+                    <button
+                      className="copy-style-preset-action delete"
+                      onClick={() => void handleDeletePreset(p)}
+                      title="删除"
+                    >
+                      删除
+                    </button>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
       </div>
 
       {error && <div className="highlight-error">{error}</div>}
+
+      {generating && (
+        <div className="gen-banner">
+          <span className="gen-banner-dot" />
+          <div>
+            <div className="gen-banner-title">Claude 正在为每个平台并行写文案...</div>
+            <div className="gen-banner-hint">通常 20-40 秒。平台越多越慢,单个平台失败不影响其他。</div>
+          </div>
+        </div>
+      )}
 
       {sets.length === 0 && !generating && (
         <div className="highlight-empty" style={{ marginTop: 40 }}>
@@ -183,14 +299,6 @@ export function SocialCopyPanel(): JSX.Element {
         </div>
       )}
 
-      {generating && (
-        <div className="highlight-empty" style={{ marginTop: 40 }}>
-          <div className="hint">
-            Claude 正在为每个平台并行写文案... 通常 20-40 秒。
-          </div>
-        </div>
-      )}
-
       {sets.map((set) => (
         <div key={set.id} className="copy-set">
           <div className="copy-set-head">
@@ -198,10 +306,9 @@ export function SocialCopyPanel(): JSX.Element {
               <div className="copy-set-source">源: {set.sourceTitle}</div>
               <div className="copy-set-meta">
                 {new Date(set.createdAt).toLocaleString('zh-CN')}
-                {set.userStyleNote && ' · 有本次补充说明'}
               </div>
             </div>
-            <div className="spacer" />
+            <span className="copy-set-spacer" />
             <button
               className="copy-set-delete"
               onClick={() => handleDeleteSet(set.id)}
