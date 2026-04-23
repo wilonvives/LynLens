@@ -420,7 +420,14 @@ export function Timeline(props: TimelineProps) {
     let panRaf = 0;
     const tick = () => {
       const w = rect.width;
-      const t = clampSec(mouseXToSec(currentX, w));
+      // During mark/erase drag, clamp cursor X to the canvas so the mouse
+      // leaving the canvas (past the right edge) doesn't let mouseXToSec
+      // return a value beyond the visible range — otherwise clampSec would
+      // pin it to `duration`, silently extending a Cmd-drag erase all the
+      // way to the end of the video and wiping every red box after the
+      // click point.
+      const effectiveX = shift || ctrl ? Math.max(0, Math.min(w, currentX)) : currentX;
+      const t = clampSec(mouseXToSec(effectiveX, w));
 
       // Emit time update for current mode
       if (shift || ctrl) {
@@ -429,17 +436,22 @@ export function Timeline(props: TimelineProps) {
         onScrubUpdate(t);
       }
 
-      // Auto-pan if near edge
-      let delta = 0;
-      if (currentX < EDGE) delta = -((EDGE - currentX) / EDGE);
-      else if (currentX > w - EDGE) delta = (currentX - (w - EDGE)) / EDGE;
-      if (delta !== 0) {
-        setView((v) => {
-          const panAmount = delta * v.visibleSec * 0.02;
-          const maxOffset = Math.max(0, duration - v.visibleSec);
-          const newOffset = Math.max(0, Math.min(maxOffset, v.offsetSec + panAmount));
-          return newOffset === v.offsetSec ? v : { ...v, offsetSec: newOffset };
-        });
+      // Auto-pan if near edge — scrub only. During mark/erase drag we skip
+      // on purpose: panning while the mouse is stationary would make the same
+      // pixel map to a later second every frame, silently extending the
+      // selection far past where the user released.
+      if (!shift && !ctrl) {
+        let delta = 0;
+        if (currentX < EDGE) delta = -((EDGE - currentX) / EDGE);
+        else if (currentX > w - EDGE) delta = (currentX - (w - EDGE)) / EDGE;
+        if (delta !== 0) {
+          setView((v) => {
+            const panAmount = delta * v.visibleSec * 0.02;
+            const maxOffset = Math.max(0, duration - v.visibleSec);
+            const newOffset = Math.max(0, Math.min(maxOffset, v.offsetSec + panAmount));
+            return newOffset === v.offsetSec ? v : { ...v, offsetSec: newOffset };
+          });
+        }
       }
 
       panRaf = requestAnimationFrame(tick);

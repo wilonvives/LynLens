@@ -9,9 +9,11 @@
  * requires a signed/published release to function.
  */
 import { app, dialog, BrowserWindow } from 'electron';
-import electronUpdater from 'electron-updater';
-
-const { autoUpdater } = electronUpdater;
+// electron-updater v6 ships CJS with named exports only (no default), so a
+// namespace import is the only form that works in both tsc-compiled CJS
+// (runtime) and TypeScript type-checking. A plain named import compiles to
+// `electron_updater_1.autoUpdater` which is what we want.
+import { autoUpdater } from 'electron-updater';
 
 export function setupAutoUpdater(mainWindow: BrowserWindow | null): void {
   if (process.env.LYNLENS_DEV === '1' || !app.isPackaged) return;

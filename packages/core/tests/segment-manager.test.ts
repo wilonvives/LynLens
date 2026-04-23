@@ -107,4 +107,57 @@ describe('SegmentManager', () => {
     m.add({ start: 10, end: 12, source: 'ai', reason: 'x' }); // pending, not counted
     expect(m.getTotalDeletedDuration()).toBe(5);
   });
+
+  // Regression guard: erasing a range strictly inside an existing segment
+  // must produce TWO halves — the old code read `s.end` after `resize()`
+  // had already mutated it, so the back half was silently lost.
+  it('eraseRange splits when the range is strictly inside a segment', () => {
+    const m = mk();
+    m.add({ start: 40, end: 80, source: 'human' });
+    m.eraseRange(50, 60);
+    const segs = m.list().sort((a, b) => a.start - b.start);
+    expect(segs).toHaveLength(2);
+    expect(segs[0].start).toBe(40);
+    expect(segs[0].end).toBe(50);
+    expect(segs[1].start).toBe(60);
+    expect(segs[1].end).toBe(80);
+  });
+
+  it('eraseRange trims tail when range overlaps back', () => {
+    const m = mk();
+    m.add({ start: 10, end: 30, source: 'human' });
+    m.eraseRange(20, 40);
+    const segs = m.list();
+    expect(segs).toHaveLength(1);
+    expect(segs[0].start).toBe(10);
+    expect(segs[0].end).toBe(20);
+  });
+
+  it('eraseRange trims head when range overlaps front', () => {
+    const m = mk();
+    m.add({ start: 20, end: 50, source: 'human' });
+    m.eraseRange(10, 30);
+    const segs = m.list();
+    expect(segs).toHaveLength(1);
+    expect(segs[0].start).toBe(30);
+    expect(segs[0].end).toBe(50);
+  });
+
+  it('eraseRange removes segments fully inside the range', () => {
+    const m = mk();
+    m.add({ start: 20, end: 30, source: 'human' });
+    m.eraseRange(10, 40);
+    expect(m.list()).toHaveLength(0);
+  });
+
+  it('eraseRange leaves non-overlapping segments untouched', () => {
+    const m = mk();
+    m.add({ start: 0, end: 10, source: 'human' });
+    m.add({ start: 40, end: 50, source: 'human' });
+    m.eraseRange(20, 30);
+    const segs = m.list().sort((a, b) => a.start - b.start);
+    expect(segs).toHaveLength(2);
+    expect(segs[0]).toMatchObject({ start: 0, end: 10 });
+    expect(segs[1]).toMatchObject({ start: 40, end: 50 });
+  });
 });

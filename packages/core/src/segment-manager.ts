@@ -93,11 +93,18 @@ export class SegmentManager {
       if (s.start >= start && s.end <= end) {
         this.remove(s.id);
       } else if (s.start < start && s.end > end) {
-        // Split: shrink original to [s.start, start], add new [end, s.end]
+        // Split: shrink original to [s.start, start], add new [end, s.end].
+        // CRITICAL: capture s.end BEFORE calling resize. `resize` mutates the
+        // segment in place, so after it runs `s.end === start`. Reading s.end
+        // afterwards silently passes `start` as the new segment's end, which
+        // makes `add()` throw (`end <= start`) and the back half never gets
+        // created — that was the root cause of "erase middle, everything
+        // after disappears".
+        const originalEnd = s.end;
         this.resize(s.id, s.start, start);
         this.add({
           start: end,
-          end: s.end,
+          end: originalEnd,
           source: s.source,
           reason: s.reason,
           confidence: s.confidence,
@@ -107,7 +114,11 @@ export class SegmentManager {
       } else if (s.start < start) {
         this.resize(s.id, s.start, start);
       } else {
-        this.resize(s.id, end, s.end);
+        // s.start >= start, s.end > end, but not fully inside: trim front.
+        // Capture s.end before mutation just to be consistent (resize below
+        // doesn't need it but future-proof).
+        const originalEnd = s.end;
+        this.resize(s.id, end, originalEnd);
       }
     }
   }
