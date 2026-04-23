@@ -39,22 +39,69 @@ interface RawSegment {
 }
 
 /**
- * Extract the last `{ ... }` JSON object from a possibly-prose-wrapped
- * model response. Claude is instructed to emit JSON only, but we defend
- * against stray leading "Here's your variants:" text anyway.
+ * Extract + parse the JSON object from a (possibly-messy) model response.
+ *
+ * Claude is instructed to emit strict JSON but in practice occasionally:
+ *   - wraps the output in ```json ... ``` fences
+ *   - uses Chinese full-width quotes " " or ' ' as string delimiters
+ *   - leaves trailing commas before } or ]
+ *   - includes a stray leading paragraph like "这是你要的 JSON:"
+ *
+ * We attempt a cascade of repairs: strip prose + fences → parse. On
+ * failure, apply progressively riskier fixes (trailing commas, full-width
+ * quotes) and try again. If all attempts fail, throw with a snippet of
+ * the offending payload so the user can report it.
  */
 function extractJsonObject(raw: string): unknown {
-  const trimmed = raw.trim();
-  // Fast path — response is pure JSON.
-  if (trimmed.startsWith('{') && trimmed.endsWith('}')) {
-    return JSON.parse(trimmed);
-  }
-  const start = trimmed.indexOf('{');
-  const end = trimmed.lastIndexOf('}');
+  // 1. Strip markdown code fences (```json ... ``` or ``` ... ```).
+  const fenceStripped = raw.replace(/```(?:json|JSON)?\s*/g, '').replace(/```/g, '');
+  // 2. Trim to the outermost {...} span.
+  const start = fenceStripped.indexOf('{');
+  const end = fenceStripped.lastIndexOf('}');
   if (start < 0 || end <= start) {
-    throw new Error('Model response contained no JSON object');
+    throw new Error(
+      `Model response contained no JSON object. Got: ${raw.slice(0, 200)}`
+    );
   }
-  return JSON.parse(trimmed.slice(start, end + 1));
+  const candidate = fenceStripped.slice(start, end + 1);
+
+  const attempts: Array<{ label: string; transform: (s: string) => string }> = [
+    { label: 'as-is', transform: (s) => s },
+    // Remove trailing commas before } or ]. Benign and very common.
+    {
+      label: 'strip trailing commas',
+      transform: (s) => s.replace(/,(\s*[}\]])/g, '$1'),
+    },
+    // Last resort: replace full-width quote pairs with ASCII ones.
+    // Only touches "..." and '...' patterns that look like string delimiters.
+    // Trailing-comma strip is applied again on top.
+    {
+      label: 'normalise full-width quotes',
+      transform: (s) =>
+        s
+          .replace(/[\u201C\u201D]/g, '"')
+          .replace(/[\u2018\u2019]/g, "'")
+          .replace(/,(\s*[}\]])/g, '$1'),
+    },
+  ];
+
+  let lastErr: Error | null = null;
+  for (const { label, transform } of attempts) {
+    try {
+      return JSON.parse(transform(candidate));
+    } catch (err) {
+      lastErr = err as Error;
+      // eslint-disable-next-line no-console
+      console.warn(`[highlight-parser] JSON parse (${label}) failed:`, err);
+    }
+  }
+
+  // Everything failed — surface both the error and a snippet so we can see
+  // what Claude sent. Truncate to something chat-friendly.
+  const snippet = candidate.length > 400 ? candidate.slice(0, 400) + '…' : candidate;
+  throw new Error(
+    `Could not parse model JSON: ${lastErr?.message}\n--- payload ---\n${snippet}`
+  );
 }
 
 function isRawVariant(v: unknown): v is RawVariant {

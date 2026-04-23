@@ -5,7 +5,16 @@ import { EventBus } from './event-bus';
 import { SegmentManager } from './segment-manager';
 import { getEffectiveDuration } from './ripple';
 import type { HighlightVariant } from './highlight-parser';
-import type { AiMode, ProjectHandle, QcpProject, Range, Segment, Transcript, VideoMeta } from './types';
+import type {
+  AiMode,
+  ProjectHandle,
+  QcpProject,
+  Range,
+  Segment,
+  SocialCopySetData,
+  Transcript,
+  VideoMeta,
+} from './types';
 
 export class Project {
   readonly id: string;
@@ -17,6 +26,15 @@ export class Project {
   transcript: Transcript | null;
   aiMode: AiMode;
   userOrientation: 'landscape' | 'portrait' | null;
+  /** Preview-only rotation; never affects export. See QcpProject.previewRotation. */
+  previewRotation: 0 | 90 | 180 | 270;
+  /**
+   * Social copy sets — persisted, survives regenerate of highlights /
+   * interviews because the source text is snapshotted inside each set.
+   */
+  socialCopies: SocialCopySetData[];
+  /** User-editable global style note applied to all future generations. */
+  socialStyleNote: string | null;
   createdAt: string;
   modifiedAt: string;
   projectPath: string | null;
@@ -41,6 +59,11 @@ export class Project {
     this.transcript = handle.data.transcript;
     this.aiMode = handle.data.aiMode;
     this.userOrientation = handle.data.userOrientation ?? null;
+    this.previewRotation = normalizeRotation(handle.data.previewRotation);
+    this.socialCopies = Array.isArray(handle.data.socialCopies)
+      ? [...handle.data.socialCopies]
+      : [];
+    this.socialStyleNote = handle.data.socialStyleNote ?? null;
     this.createdAt = handle.data.createdAt;
     this.modifiedAt = handle.data.modifiedAt;
     this.eventBus = eventBus;
@@ -92,6 +115,9 @@ export class Project {
     this.transcript = data.transcript;
     this.aiMode = data.aiMode;
     this.userOrientation = data.userOrientation ?? null;
+    this.previewRotation = normalizeRotation(data.previewRotation);
+    this.socialCopies = Array.isArray(data.socialCopies) ? [...data.socialCopies] : [];
+    this.socialStyleNote = data.socialStyleNote ?? null;
     this.modifiedAt = data.modifiedAt;
     // Same legacy-cutRanges migration logic as the constructor — keep in sync.
     const initialSegments: Segment[] = [...data.deleteSegments];
@@ -133,6 +159,11 @@ export class Project {
 
   setUserOrientation(o: 'landscape' | 'portrait' | null): void {
     this.userOrientation = o;
+    this.modifiedAt = new Date().toISOString();
+  }
+
+  setPreviewRotation(deg: 0 | 90 | 180 | 270): void {
+    this.previewRotation = deg;
     this.modifiedAt = new Date().toISOString();
   }
 
@@ -241,6 +272,9 @@ export class Project {
       deleteSegments: this.segments.list(),
       aiMode: this.aiMode,
       userOrientation: this.userOrientation,
+      previewRotation: this.previewRotation,
+      socialCopies: this.socialCopies,
+      socialStyleNote: this.socialStyleNote,
       createdAt: this.createdAt,
       modifiedAt: new Date().toISOString(),
     };
@@ -324,6 +358,69 @@ export class Project {
 
   findHighlightVariant(id: string): HighlightVariant | undefined {
     return this.highlightVariants.find((v) => v.id === id);
+  }
+
+  // --- Social copy CRUD -----------------------------------------------------
+
+  addSocialCopySet(set: SocialCopySetData): void {
+    this.socialCopies = [set, ...this.socialCopies];
+    this.modifiedAt = new Date().toISOString();
+  }
+
+  updateSocialCopy(
+    setId: string,
+    copyId: string,
+    patch: { title?: string; body?: string; hashtags?: string[] }
+  ): boolean {
+    const setIdx = this.socialCopies.findIndex((s) => s.id === setId);
+    if (setIdx < 0) return false;
+    const oldSet = this.socialCopies[setIdx];
+    const copyIdx = oldSet.copies.findIndex((c) => c.id === copyId);
+    if (copyIdx < 0) return false;
+    const nextCopies = [...oldSet.copies];
+    nextCopies[copyIdx] = {
+      ...nextCopies[copyIdx],
+      ...(patch.title !== undefined ? { title: patch.title } : {}),
+      ...(patch.body !== undefined ? { body: patch.body } : {}),
+      ...(patch.hashtags !== undefined ? { hashtags: [...patch.hashtags] } : {}),
+    };
+    const nextSocial = [...this.socialCopies];
+    nextSocial[setIdx] = { ...oldSet, copies: nextCopies };
+    this.socialCopies = nextSocial;
+    this.modifiedAt = new Date().toISOString();
+    return true;
+  }
+
+  deleteSocialCopy(setId: string, copyId: string): boolean {
+    const setIdx = this.socialCopies.findIndex((s) => s.id === setId);
+    if (setIdx < 0) return false;
+    const oldSet = this.socialCopies[setIdx];
+    const nextCopies = oldSet.copies.filter((c) => c.id !== copyId);
+    if (nextCopies.length === oldSet.copies.length) return false;
+    const nextSocial = [...this.socialCopies];
+    if (nextCopies.length === 0) {
+      // If the user deleted the last copy in a set, drop the whole set too —
+      // an empty set has no useful meaning to retain.
+      nextSocial.splice(setIdx, 1);
+    } else {
+      nextSocial[setIdx] = { ...oldSet, copies: nextCopies };
+    }
+    this.socialCopies = nextSocial;
+    this.modifiedAt = new Date().toISOString();
+    return true;
+  }
+
+  deleteSocialCopySet(setId: string): boolean {
+    const next = this.socialCopies.filter((s) => s.id !== setId);
+    if (next.length === this.socialCopies.length) return false;
+    this.socialCopies = next;
+    this.modifiedAt = new Date().toISOString();
+    return true;
+  }
+
+  setSocialStyleNote(note: string | null): void {
+    this.socialStyleNote = note && note.trim() ? note : null;
+    this.modifiedAt = new Date().toISOString();
   }
 }
 
@@ -438,4 +535,10 @@ async function exists(p: string): Promise<boolean> {
 
 function escapeRegExp(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/** Clamp a persisted rotation value to the 4 legal options. */
+function normalizeRotation(v: unknown): 0 | 90 | 180 | 270 {
+  if (v === 90 || v === 180 || v === 270) return v;
+  return 0;
 }

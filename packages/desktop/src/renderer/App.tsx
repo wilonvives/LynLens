@@ -61,11 +61,11 @@ export function App() {
 
   /**
    * Preview-only rotation, in degrees. PURELY VISUAL: applied as a CSS
-   * transform on the <video> element, never persisted to the QcpProject,
-   * never sent to ffmpeg on export. The source video and all exported
-   * output keep their original orientation metadata intact. We persist the
-   * choice in localStorage keyed by projectId so reopening the same video
-   * remembers the user's preferred viewing angle.
+   * transform on the <video> element, never sent to ffmpeg on export. The
+   * source video and all exported output keep their original orientation
+   * metadata intact. We DO persist the choice into the .qcp (as
+   * previewRotation) so re-opening a project remembers the last angle —
+   * same shape as userOrientation: a display preference, not a content edit.
    */
   const [previewRotation, setPreviewRotation] = useState<0 | 90 | 180 | 270>(0);
   useEffect(() => {
@@ -73,10 +73,16 @@ export function App() {
       setPreviewRotation(0);
       return;
     }
-    const raw = window.localStorage.getItem(`lynlens.previewRotation.${store.projectId}`);
-    const n = raw ? Number(raw) : 0;
-    if (n === 0 || n === 90 || n === 180 || n === 270) setPreviewRotation(n);
-    else setPreviewRotation(0);
+    let cancelled = false;
+    void window.lynlens.getState(store.projectId).then((qcp) => {
+      if (cancelled) return;
+      const r = qcp.previewRotation;
+      if (r === 90 || r === 180 || r === 270) setPreviewRotation(r);
+      else setPreviewRotation(0);
+    });
+    return () => {
+      cancelled = true;
+    };
   }, [store.projectId]);
 
   /**
@@ -115,7 +121,9 @@ export function App() {
       const next = ((prev + 90) % 360) as 0 | 90 | 180 | 270;
       const pid = store.projectId;
       if (pid) {
-        window.localStorage.setItem(`lynlens.previewRotation.${pid}`, String(next));
+        // Fire-and-forget: main persists into the .qcp so next session picks
+        // it up via the hydration effect above.
+        void window.lynlens.setPreviewRotation(pid, next);
       }
       return next;
     });
@@ -407,14 +415,34 @@ export function App() {
       alert('无法获取拖入文件的本地路径,请改用"文件 · 打开视频"菜单。');
       return;
     }
-    const result = await window.lynlens.openVideoByPath(filePath);
-    store.setProject(result);
-    void window.lynlens.getWaveform(result.projectId, 0).then((env) => {
-      store.setWaveform({
-        peak: Float32Array.from(env.peak),
-        rms: Float32Array.from(env.rms),
+    // Route .qcp files to the project opener so users can drag a workflow
+    // file directly instead of having to click "文件 · 打开工程".
+    const isProject = /\.qcp$/i.test(filePath);
+    try {
+      const result = isProject
+        ? await window.lynlens.openProjectByPath(filePath)
+        : await window.lynlens.openVideoByPath(filePath);
+      store.setProject(result);
+
+      // Pull segments + transcript + rotation from the persisted state so the
+      // freshly-opened project comes up with every prior edit intact.
+      if (isProject) {
+        const qcp = await window.lynlens.getState(result.projectId);
+        store.refreshSegments(qcp.deleteSegments);
+        store.setTranscript(qcp.transcript);
+        store.setAiMode(qcp.aiMode);
+        store.setUserOrientation(qcp.userOrientation ?? null);
+      }
+
+      void window.lynlens.getWaveform(result.projectId, 0).then((env) => {
+        store.setWaveform({
+          peak: Float32Array.from(env.peak),
+          rms: Float32Array.from(env.rms),
+        });
       });
-    });
+    } catch (err) {
+      alert(`打开失败: ${(err as Error).message}`);
+    }
   }, []);
 
   // Timeline emits EFFECTIVE seconds; segments live in SOURCE seconds. Map at
@@ -724,6 +752,7 @@ export function App() {
         <HighlightPanel
           effectiveDuration={effectiveDuration}
           videoPath={store.videoPath}
+          previewRotation={previewRotation}
         />
       ) : (
       <>

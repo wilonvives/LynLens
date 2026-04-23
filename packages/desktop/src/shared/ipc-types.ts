@@ -55,6 +55,8 @@ export interface IpcApi {
   openVideoDialog(): Promise<OpenVideoResult | null>;
   openVideoByPath(videoPath: string): Promise<OpenVideoResult>;
   openProjectDialog(): Promise<OpenVideoResult | null>;
+  /** Open a .qcp project from a known file path (drag-and-drop entry point). */
+  openProjectByPath(qcpPath: string): Promise<OpenVideoResult>;
   saveDialog(defaultName: string): Promise<string | null>;
 
   addSegment(req: AddSegmentRequest): Promise<Segment>;
@@ -127,6 +129,8 @@ export interface IpcApi {
   acceptTranscriptSuggestion(projectId: string, segmentId: string): Promise<boolean>;
   clearTranscriptSuggestion(projectId: string, segmentId: string): Promise<boolean>;
   setUserOrientation(projectId: string, o: 'landscape' | 'portrait' | null): Promise<void>;
+  /** Persist the preview rotation in the .qcp so it survives restart. */
+  setPreviewRotation(projectId: string, rotation: 0 | 90 | 180 | 270): Promise<void>;
 
   onEngineEvent(callback: (event: LynLensEvent) => void): () => void;
 

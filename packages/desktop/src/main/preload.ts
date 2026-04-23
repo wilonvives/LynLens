@@ -6,6 +6,7 @@ const api: IpcApi = {
   openVideoDialog: () => ipcRenderer.invoke('open-video-dialog'),
   openVideoByPath: (p) => ipcRenderer.invoke('open-video-by-path', p),
   openProjectDialog: () => ipcRenderer.invoke('open-project-dialog'),
+  openProjectByPath: (qcpPath) => ipcRenderer.invoke('open-project-by-path', qcpPath),
   saveDialog: (n) => ipcRenderer.invoke('save-dialog', n),
   addSegment: (req) => ipcRenderer.invoke('add-segment', req),
   removeSegment: (pid, sid) => ipcRenderer.invoke('remove-segment', pid, sid),
@@ -42,6 +43,7 @@ const api: IpcApi = {
   clearTranscriptSuggestion: (pid, sid) =>
     ipcRenderer.invoke('clear-transcript-suggestion', pid, sid),
   setUserOrientation: (pid, o) => ipcRenderer.invoke('set-user-orientation', pid, o),
+  setPreviewRotation: (pid, rotation) => ipcRenderer.invoke('set-preview-rotation', pid, rotation),
   onEngineEvent: (cb) => {
     const listener = (_ev: Electron.IpcRendererEvent, event: unknown) => cb(event as never);
     ipcRenderer.on('engine-event', listener);

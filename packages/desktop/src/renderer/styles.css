@@ -1139,7 +1139,7 @@ button.ai.active {
 }
 .variant-seg-row {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: 10px;
   color: var(--text2);
 }
@@ -1160,7 +1160,164 @@ button.ai.active {
 .variant-seg-reason {
   color: var(--text2);
   flex: 1;
+  /* Allow the reason to wrap onto multiple lines so long AI explanations
+     aren't truncated to a meaningless ellipsis. The row aligns to the top
+     via .variant-seg-row's align-items so the numeric prefix stays anchored
+     next to the first line of the wrapped reason. */
+  white-space: normal;
+  word-break: break-word;
+  line-height: 1.45;
+}
+
+/* ---------- Highlight split layout (player | cards) ---------- */
+.highlight-body {
+  flex: 1 1 0;
+  display: flex;
+  gap: 18px;
+  min-height: 0;
+}
+.highlight-player {
+  flex: 1 1 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+  min-height: 0;
+}
+.highlight-player-video {
+  flex: 1 1 0;
+  background: #000;
+  border-radius: 6px;
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  position: relative;
+  min-height: 200px;
+}
+.highlight-player-video video {
+  max-width: 100%;
+  max-height: 100%;
+  display: block;
+}
+.highlight-player-overlay {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  color: #888;
+  font-size: 14px;
+  background: rgba(0, 0, 0, 0.55);
+  padding: 8px 16px;
+  border-radius: 4px;
+  pointer-events: none;
+}
+.highlight-player-controls {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 6px 0;
+  flex-shrink: 0;
+}
+.highlight-player-meta {
+  display: flex;
+  flex-direction: column;
+  font-size: 12px;
+  color: var(--text3);
+  flex: 1;
+  min-width: 0;
+}
+.highlight-player-title {
+  color: var(--text1);
+  font-size: 13px;
+  font-weight: 500;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+.highlight-player-pos {
+  font-variant-numeric: tabular-nums;
+}
+
+.highlight-cards {
+  flex: 0 0 400px;
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
+  min-height: 0;
+  padding-right: 4px;
+}
+
+/* ---------- Active / clickable variant card ---------- */
+.variant-card {
+  cursor: pointer;
+}
+.variant-card.active {
+  border-color: #f39c12;
+  box-shadow: 0 0 0 1px #f39c12;
+}
+.variant-card-playing {
+  font-size: 10px;
+  padding: 2px 6px;
+  background: #3d2f16;
+  color: #f39c12;
+  border-radius: 3px;
+  margin-left: 4px;
+}
+
+.variant-seg-row {
+  cursor: pointer;
+  padding: 3px 6px;
+  border-radius: 3px;
+  transition: background 0.1s;
+}
+.variant-seg-row:hover {
+  background: rgba(255, 255, 255, 0.04);
+}
+.variant-seg-row.playing {
+  background: rgba(243, 156, 18, 0.12);
+}
+.variant-seg-row.playing .variant-seg-time {
+  color: #f39c12;
+}
+
+/* ---------- Highlight progress bar ---------- */
+.highlight-progress {
+  position: relative;
+  height: 14px;
+  cursor: pointer;
+  padding: 4px 0;
+  flex-shrink: 0;
+}
+.highlight-progress-bg {
+  display: flex;
+  gap: 2px;
+  height: 6px;
+  background: transparent;
+  border-radius: 3px;
+  overflow: hidden;
+}
+.highlight-progress-seg {
+  background: #2a2a2a;
+  border-radius: 2px;
+  transition: background 0.15s;
+}
+.highlight-progress-seg.current {
+  background: rgba(243, 156, 18, 0.45);
+}
+.highlight-progress:hover .highlight-progress-seg {
+  background: #333;
+}
+.highlight-progress:hover .highlight-progress-seg.current {
+  background: rgba(243, 156, 18, 0.7);
+}
+.highlight-progress-cursor {
+  position: absolute;
+  top: 2px;
+  bottom: 2px;
+  width: 2px;
+  background: #f39c12;
+  transform: translateX(-1px);
+  pointer-events: none;
+  box-shadow: 0 0 4px rgba(243, 156, 18, 0.6);
 }

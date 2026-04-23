@@ -73,10 +73,13 @@ describe('buildHighlightUserPrompt', () => {
 });
 
 describe('buildHighlightSystemPrompt', () => {
-  it('demands JSON-only output and forbids prose', () => {
+  it('demands JSON-only output and forbids prose / fences', () => {
     const sys = buildHighlightSystemPrompt();
     expect(sys).toContain('JSON');
-    expect(sys).toContain('不要任何前后解释');
+    // Strict JSON hygiene: no markdown fences, no trailing commas, no comments.
+    expect(sys).toMatch(/前后不要|不要.*代码块/);
+    expect(sys).toContain('尾逗号');
+    expect(sys).toContain('ASCII');
   });
 });
 

@@ -87,12 +87,29 @@ export interface QcpProject {
    */
   userOrientation?: 'landscape' | 'portrait' | null;
   /**
+   * User-chosen preview rotation in degrees (0 / 90 / 180 / 270). Purely a
+   * display preference for the in-app player — never affects the source
+   * file or export output. Persisted so re-opening a project remembers the
+   * angle the user last viewed it at.
+   */
+  previewRotation?: 0 | 90 | 180 | 270;
+  /**
    * DEPRECATED. Older .qcp files saved during earlier ripple development
    * stored cut ranges here. Current versions put every cut on the segment
    * itself via `status: 'cut'`, so this field is read on load (for migration)
    * but never written. Kept optional so old files still open cleanly.
    */
   cutRanges?: Range[];
+  /**
+   * Social copy generation results, persisted across sessions. Each set
+   * bundles a single "generate" action: the source snapshot at that time,
+   * the user's style note, and one SocialCopy per platform that was asked
+   * for. Kept independent of highlights/interviews so editing those
+   * upstream sources doesn't invalidate previously-generated copy.
+   */
+  socialCopies?: SocialCopySetData[];
+  /** Free-form note the user keeps around to flavour all copy generations. */
+  socialStyleNote?: string | null;
   createdAt: string;
   modifiedAt: string;
 }
@@ -101,6 +118,32 @@ export interface ProjectHandle {
   projectId: string;
   projectPath: string | null;
   data: QcpProject;
+}
+
+/**
+ * Persisted shape for social copy. Mirrors SocialCopySet in the renderer
+ * layer — we intentionally don't import from copywriter-parser here to
+ * keep types.ts as a leaf module (no circular deps).
+ */
+export interface SocialCopyData {
+  id: string;
+  platform: string;
+  title: string;
+  body: string;
+  hashtags: string[];
+}
+
+export interface SocialCopySetData {
+  id: string;
+  sourceType: 'rippled' | 'variant' | 'interview';
+  sourceVariantId?: string;
+  sourceTitle: string;
+  /** Full text snapshot at generation time — makes this set independent. */
+  sourceText: string;
+  userStyleNote?: string | null;
+  copies: SocialCopyData[];
+  createdAt: string;
+  model?: string;
 }
 
 export type LynLensEvent =

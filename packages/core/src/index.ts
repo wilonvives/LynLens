@@ -50,6 +50,20 @@ export {
   parseHighlightResponse,
   type HighlightVariant,
 } from './highlight-parser';
+export {
+  PLATFORM_LABELS,
+  PLATFORM_RULES,
+  type SocialPlatform,
+} from './copywriter-platforms';
+export {
+  buildCopywriterSystemPrompt,
+  buildCopywriterUserPrompt,
+  type CopywriterGenerateInput,
+} from './copywriter-prompts';
+export {
+  parseCopywriterResponse,
+  type SocialCopy,
+} from './copywriter-parser';
 // Ripple helpers: re-exported via `import *` + const bindings so tsc emits
 // direct `exports.foo = ripple.foo` assignments instead of Object.define-
 // Property getters. Getter-based re-exports are invisible to both esbuild's

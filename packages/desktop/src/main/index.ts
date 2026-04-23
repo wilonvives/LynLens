@@ -424,13 +424,7 @@ ipcMain.handle('open-video-by-path', async (_ev, videoPath: string) => {
   };
 });
 
-ipcMain.handle('open-project-dialog', async () => {
-  const result = await dialog.showOpenDialog(mainWindow!, {
-    properties: ['openFile'],
-    filters: [{ name: 'LynLens Project', extensions: ['qcp'] }],
-  });
-  if (result.canceled || result.filePaths.length === 0) return null;
-  const qcpPath = result.filePaths[0];
+async function openProjectFromQcpPath(qcpPath: string) {
   const raw = await fsp.readFile(qcpPath, 'utf-8');
   const parsed = JSON.parse(raw) as { videoPath: string };
   const project = await engine.openFromVideo({
@@ -444,6 +438,21 @@ ipcMain.handle('open-project-dialog', async () => {
     videoPath: parsed.videoPath,
     videoUrl: toMediaUrl(parsed.videoPath),
   };
+}
+
+ipcMain.handle('open-project-dialog', async () => {
+  const result = await dialog.showOpenDialog(mainWindow!, {
+    properties: ['openFile'],
+    filters: [{ name: 'LynLens Project', extensions: ['qcp'] }],
+  });
+  if (result.canceled || result.filePaths.length === 0) return null;
+  return openProjectFromQcpPath(result.filePaths[0]);
+});
+
+ipcMain.handle('open-project-by-path', async (_ev, qcpPath: string) => {
+  // Used by drag-and-drop: user dropped a .qcp file onto the app. Same code
+  // path as the menu dialog, just skips the native file picker.
+  return openProjectFromQcpPath(qcpPath);
 });
 
 ipcMain.handle('save-dialog', async (_ev, defaultName: string) => {
@@ -823,6 +832,19 @@ ipcMain.handle(
   'set-user-orientation',
   async (_ev, projectId: string, o: 'landscape' | 'portrait' | null) => {
     engine.projects.get(projectId).setUserOrientation(o);
+  }
+);
+
+ipcMain.handle(
+  'set-preview-rotation',
+  async (_ev, projectId: string, rotation: 0 | 90 | 180 | 270) => {
+    const project = engine.projects.get(projectId);
+    project.setPreviewRotation(rotation);
+    // Persist immediately so the rotation survives app restarts even if
+    // the user never hits Ctrl+S.
+    if (project.projectPath) {
+      await engine.projects.saveProject(projectId);
+    }
   }
 );
 
