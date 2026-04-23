@@ -8,10 +8,14 @@
  */
 
 import { z } from 'zod';
-import type {
-  LynLensEngine,
-  SegmentSource,
-  SegmentStatus,
+import {
+  buildHighlightSystemPrompt,
+  buildHighlightUserPrompt,
+  parseHighlightResponse,
+  type HighlightStyle,
+  type LynLensEngine,
+  type SegmentSource,
+  type SegmentStatus,
 } from '@lynlens/core';
 
 // Lazy-load the ESM-only Claude SDK. Static `import` would compile to
@@ -433,6 +437,64 @@ async function buildLynLensSdkServer(engine: LynLensEngine) {
           };
         }
       ),
+
+      tool(
+        'generate_highlights',
+        '从已经粗剪(ripple)过的字幕里挑出高光段,生成短视频变体。用户在"高光"tab 点按钮时触发;在聊天里说"帮我生成 3 个高光变体"也可以。style: default(通用精华) / hero(片头) / ai-choice(自由)。',
+        {
+          projectId: z.string(),
+          style: z.enum(['default', 'hero', 'ai-choice'] as const),
+          count: z.number().int().min(1).max(5),
+          targetSeconds: z.number().int().min(5).max(300),
+        },
+        async ({ projectId, style, count, targetSeconds }) => {
+          const project = engine.projects.get(projectId);
+          if (!project.transcript || project.transcript.segments.length === 0) {
+            return {
+              content: [{ type: 'text' as const, text: '请先生成字幕后再生成高光。' }],
+              isError: true,
+            };
+          }
+          const sys = buildHighlightSystemPrompt();
+          const user = buildHighlightUserPrompt({
+            transcript: project.transcript,
+            cutRanges: project.cutRanges,
+            effectiveDuration: project.getEffectiveDuration(),
+            style,
+            count,
+            targetSeconds,
+          });
+          const { text, model } = await runHighlightGeneration({
+            systemPrompt: sys,
+            userPrompt: user,
+          });
+          const variants = parseHighlightResponse(text, project.cutRanges, model);
+          project.setHighlightVariants(variants);
+          return {
+            content: [
+              {
+                type: 'text' as const,
+                text: `生成了 ${variants.length} 个高光变体。` +
+                  variants.map((v) => `\n- ${v.title} (${v.durationSeconds.toFixed(1)}s)`).join(''),
+              },
+            ],
+          };
+        }
+      ),
+
+      tool(
+        'clear_highlights',
+        '清空当前高光变体。通常在用户说"不要这些变体"或切回粗剪 tab 时调用。',
+        { projectId: z.string() },
+        async ({ projectId }) => {
+          const project = engine.projects.get(projectId);
+          const n = project.highlightVariants.length;
+          project.clearHighlightVariants();
+          return {
+            content: [{ type: 'text' as const, text: `清空了 ${n} 个高光变体。` }],
+          };
+        }
+      ),
     ],
   });
 }
@@ -508,6 +570,8 @@ export async function runAgent(
     'mcp__lynlens__update_transcript_segment',
     'mcp__lynlens__suggest_transcript_fix',
     'mcp__lynlens__replace_in_transcript',
+    'mcp__lynlens__generate_highlights',
+    'mcp__lynlens__clear_highlights',
   ];
 
   const queryOptions: Record<string, unknown> = {
@@ -629,4 +693,66 @@ function handleSdkMessage(
       }
     }
   }
+}
+
+/**
+ * One-shot highlight generation. Deliberately separate from runAgent — we
+ * don't want tool use, we don't want multi-turn, we just want Claude to
+ * read the prompt and return JSON. Pipes the raw text response up to the
+ * caller (which runs the core parser).
+ *
+ * Uses the same SDK auth as the chat panel (user's Claude Code subscription),
+ * so this works out of the box on any machine where the chat panel works.
+ */
+export interface HighlightGenerationOptions {
+  systemPrompt: string;
+  userPrompt: string;
+  signal?: AbortSignal;
+}
+
+export async function runHighlightGeneration(
+  opts: HighlightGenerationOptions
+): Promise<{ text: string; model?: string }> {
+  const { query } = await loadSdk();
+  const queryOptions: Record<string, unknown> = {
+    systemPrompt: opts.systemPrompt,
+    maxTurns: 1,
+    permissionMode: 'bypassPermissions' as const,
+    // No MCP server, no built-in tools. Claude gets the prompt and must
+    // answer in one text turn — exactly what we want for JSON generation.
+    tools: [] as string[],
+    allowedTools: [] as string[],
+    settingSources: [] as never[],
+    abortController: opts.signal ? asAbortController(opts.signal) : undefined,
+    stderr: (data: string) => {
+      // eslint-disable-next-line no-console
+      console.error('[highlight-gen-stderr]', data);
+    },
+  };
+
+  let collected = '';
+  let modelSeen: string | undefined;
+
+  for await (const msg of query({
+    prompt: opts.userPrompt,
+    options: queryOptions as Parameters<typeof query>[0]['options'],
+  })) {
+    const anyMsg = msg as unknown as {
+      type?: string;
+      message?: { content?: Array<{ type?: string; text?: string }>; model?: string };
+    };
+    if (anyMsg.type === 'assistant' && anyMsg.message?.content) {
+      if (anyMsg.message.model && !modelSeen) modelSeen = anyMsg.message.model;
+      for (const block of anyMsg.message.content) {
+        if (block.type === 'text' && typeof block.text === 'string') {
+          collected += block.text;
+        }
+      }
+    }
+  }
+
+  if (!collected.trim()) {
+    throw new Error('Model returned no text output');
+  }
+  return { text: collected, model: modelSeen };
 }

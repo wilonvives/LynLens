@@ -5,14 +5,18 @@ import { promises as fsp } from 'node:fs';
 import {
   LynLensEngine,
   WhisperLocalService,
+  buildHighlightSystemPrompt,
+  buildHighlightUserPrompt,
   detectFillers,
   detectRetakes,
   detectSilences,
   extractWaveform,
+  parseHighlightResponse,
   type FfmpegPaths,
+  type HighlightStyle,
 } from '@lynlens/core';
 import type { AddSegmentRequest, ExportRequest } from '../shared/ipc-types';
-import { runAgent, type AgentEvent } from './agent';
+import { runAgent, runHighlightGeneration, type AgentEvent } from './agent';
 import { setupAutoUpdater } from './auto-updater';
 
 function toWebStream(nodeStream: NodeJS.ReadableStream): ReadableStream<Uint8Array> {
@@ -732,6 +736,70 @@ ipcMain.handle(
   async (_ev, projectId: string, segmentId: string) => {
     const project = engine.projects.get(projectId);
     return project.revertRipple(segmentId);
+  }
+);
+
+ipcMain.handle(
+  'generate-highlights',
+  async (
+    _ev,
+    projectId: string,
+    opts: { style: HighlightStyle; count: number; targetSeconds: number }
+  ) => {
+    const project = engine.projects.get(projectId);
+    if (!project.transcript || project.transcript.segments.length === 0) {
+      throw new Error('请先生成字幕后再生成高光变体');
+    }
+    const effectiveDuration = project.getEffectiveDuration();
+    const systemPrompt = buildHighlightSystemPrompt();
+    const userPrompt = buildHighlightUserPrompt({
+      transcript: project.transcript,
+      cutRanges: project.cutRanges,
+      effectiveDuration,
+      style: opts.style,
+      count: Math.max(1, Math.min(5, Math.floor(opts.count || 1))),
+      targetSeconds: Math.max(5, Math.floor(opts.targetSeconds || 30)),
+    });
+    const { text, model } = await runHighlightGeneration({ systemPrompt, userPrompt });
+    const variants = parseHighlightResponse(text, project.cutRanges, model);
+    project.setHighlightVariants(variants);
+    return variants;
+  }
+);
+
+ipcMain.handle('get-highlights', async (_ev, projectId: string) => {
+  const project = engine.projects.get(projectId);
+  return project.highlightVariants;
+});
+
+ipcMain.handle('clear-highlights', async (_ev, projectId: string) => {
+  const project = engine.projects.get(projectId);
+  project.clearHighlightVariants();
+});
+
+ipcMain.handle(
+  'export-highlight',
+  async (_ev, projectId: string, variantId: string, outputPath: string) => {
+    const project = engine.projects.get(projectId);
+    const variant = project.findHighlightVariant(variantId);
+    if (!variant) throw new Error(`Highlight variant not found: ${variantId}`);
+    const keepOverride = variant.segments.map((s) => ({ start: s.start, end: s.end }));
+    const existing = activeExports.get(projectId);
+    if (existing) existing.abort();
+    const ac = new AbortController();
+    activeExports.set(projectId, ac);
+    try {
+      return await engine.exports.export(project, {
+        outputPath,
+        mode: 'fast',          // stream copy, identical bytes
+        quality: 'original',    // irrelevant for fast mode
+        signal: ac.signal,
+        ffmpegPaths: engine.ffmpegPaths,
+        keepOverride,
+      });
+    } finally {
+      activeExports.delete(projectId);
+    }
   }
 );
 

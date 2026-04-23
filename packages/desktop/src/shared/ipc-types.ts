@@ -1,6 +1,8 @@
 import type {
   ExportMode,
   ExportQuality,
+  HighlightStyle,
+  HighlightVariant,
   LynLensEvent,
   QcpProject,
   Segment,
@@ -95,6 +97,26 @@ export interface IpcApi {
   commitRipple(projectId: string): Promise<CommitRippleResult>;
   /** Flip one cut segment back to approved, restoring its range to the timeline. */
   revertRipple(projectId: string, segmentId: string): Promise<boolean>;
+
+  /**
+   * Ask Claude to generate N highlight variants from the already-rippled
+   * timeline's transcript. Variants are session-only — not written to disk.
+   * Returns the generated variants immediately (same shape main stores).
+   */
+  generateHighlights(
+    projectId: string,
+    opts: { style: HighlightStyle; count: number; targetSeconds: number }
+  ): Promise<HighlightVariant[]>;
+  /** Read the currently-stored (ephemeral) highlight variants. */
+  getHighlights(projectId: string): Promise<HighlightVariant[]>;
+  /** Drop all highlight variants — called when user switches back to 粗剪. */
+  clearHighlights(projectId: string): Promise<void>;
+  /** Export one variant to a file; same stream-copy pipeline as regular export. */
+  exportHighlight(
+    projectId: string,
+    variantId: string,
+    outputPath: string
+  ): Promise<ExportResultDto>;
 
   transcribe(
     projectId: string,

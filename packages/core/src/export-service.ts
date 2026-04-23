@@ -17,6 +17,12 @@ export interface ExportOptions {
   format?: 'mp4' | 'mov';
   signal?: AbortSignal;
   ffmpegPaths?: FfmpegPaths;
+  /**
+   * If set, skip the usual "drop approved + cut segments" computation and
+   * use these ranges (source time) as the exact keep list. Used by the
+   * highlight tab to export one variant's segments as a standalone video.
+   */
+  keepOverride?: Range[];
 }
 
 export interface ExportResult {
@@ -39,17 +45,28 @@ export class ExportService {
   async export(project: Project, options: ExportOptions): Promise<ExportResult> {
     const mode: ExportMode = options.mode ?? 'precise';
     const { videoPath, videoMeta } = project;
-    // Export drops TWO things: approved delete segments AND any committed
-    // ripple cuts. computeKeepIntervals merges both into the same keep list.
-    const approvedDeletes = project.segments.getApprovedSegments().map((s) => ({
-      start: s.start,
-      end: s.end,
-    }));
-    const keeps = computeKeepIntervals(
-      videoMeta.duration,
-      approvedDeletes,
-      project.cutRanges
-    );
+    // Keep list computation:
+    //   - Normal flow: drop approved delete segments AND committed ripple
+    //     cuts. computeKeepIntervals merges both into the same keep list.
+    //   - Variant flow: the caller (highlight tab) provides keepOverride
+    //     directly — we just sort+merge to be safe. Everything else (not
+    //     in keepOverride) is dropped.
+    const keeps: Range[] = options.keepOverride
+      ? mergeKeeps(options.keepOverride, videoMeta.duration)
+      : computeKeepIntervals(
+          videoMeta.duration,
+          project.segments.getApprovedSegments().map((s) => ({
+            start: s.start,
+            end: s.end,
+          })),
+          project.cutRanges
+        );
+    const approvedDeletes = options.keepOverride
+      ? []
+      : project.segments.getApprovedSegments().map((s) => ({
+          start: s.start,
+          end: s.end,
+        }));
     const outputPath = path.resolve(options.outputPath);
 
     if (path.resolve(videoPath) === outputPath) {
@@ -59,13 +76,18 @@ export class ExportService {
       throw new Error('Nothing to export: all content is marked deleted');
     }
 
-    const totalCut =
-      project.cutRanges.reduce((sum, r) => sum + (r.end - r.start), 0) +
-      approvedDeletes.reduce((sum, r) => sum + (r.end - r.start), 0);
-    if (totalCut > videoMeta.duration * 0.8) {
-      throw new Error(
-        `Refusing to export: removed ${totalCut.toFixed(2)}s exceeds 80% of total ${videoMeta.duration.toFixed(2)}s`
-      );
+    // 80%-deleted safety check only applies to the normal "trim delete
+    // segments" flow. For variant export, keeping <20% of the source is
+    // normal (that IS the highlight). Skip the check when keepOverride set.
+    if (!options.keepOverride) {
+      const totalCut =
+        project.cutRanges.reduce((sum, r) => sum + (r.end - r.start), 0) +
+        approvedDeletes.reduce((sum, r) => sum + (r.end - r.start), 0);
+      if (totalCut > videoMeta.duration * 0.8) {
+        throw new Error(
+          `Refusing to export: removed ${totalCut.toFixed(2)}s exceeds 80% of total ${videoMeta.duration.toFixed(2)}s`
+        );
+      }
     }
 
     await fs.mkdir(path.dirname(outputPath), { recursive: true });
@@ -291,4 +313,30 @@ async function rmrf(p: string): Promise<void> {
   } catch {
     /* ignore */
   }
+}
+
+/**
+ * Normalise a variant's segment list into a safe keep list: sort, clamp to
+ * [0, duration], drop empty ranges, merge overlaps. Reused by highlight
+ * variant export so malformed model output can't crash ffmpeg.
+ */
+function mergeKeeps(raw: readonly Range[], duration: number): Range[] {
+  const clamped: Range[] = [];
+  for (const r of raw) {
+    if (!Number.isFinite(r.start) || !Number.isFinite(r.end)) continue;
+    const s = Math.max(0, r.start);
+    const e = Math.min(duration, r.end);
+    if (e > s) clamped.push({ start: s, end: e });
+  }
+  clamped.sort((a, b) => a.start - b.start);
+  const merged: Range[] = [];
+  for (const r of clamped) {
+    const last = merged[merged.length - 1];
+    if (last && r.start <= last.end) {
+      last.end = Math.max(last.end, r.end);
+    } else {
+      merged.push({ start: r.start, end: r.end });
+    }
+  }
+  return merged;
 }

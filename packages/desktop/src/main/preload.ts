@@ -27,6 +27,11 @@ const api: IpcApi = {
   rejectAllPending: (pid) => ipcRenderer.invoke('reject-all-pending', pid),
   commitRipple: (pid) => ipcRenderer.invoke('commit-ripple', pid),
   revertRipple: (pid, segmentId) => ipcRenderer.invoke('revert-ripple', pid, segmentId),
+  generateHighlights: (pid, opts) => ipcRenderer.invoke('generate-highlights', pid, opts),
+  getHighlights: (pid) => ipcRenderer.invoke('get-highlights', pid),
+  clearHighlights: (pid) => ipcRenderer.invoke('clear-highlights', pid),
+  exportHighlight: (pid, vid, outputPath) =>
+    ipcRenderer.invoke('export-highlight', pid, vid, outputPath),
   transcribe: (pid, opts) => ipcRenderer.invoke('transcribe', pid, opts),
   updateTranscriptSegment: (pid, sid, text) =>
     ipcRenderer.invoke('update-transcript-segment', pid, sid, text),
