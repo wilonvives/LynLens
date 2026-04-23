@@ -717,6 +717,19 @@ ipcMain.handle('reject-all-pending', async (_ev, projectId: string) => {
   return pending.length;
 });
 
+ipcMain.handle('commit-ripple', async (_ev, projectId: string) => {
+  const project = engine.projects.get(projectId);
+  return project.commitRipple();
+});
+
+ipcMain.handle(
+  'revert-ripple',
+  async (_ev, projectId: string, cutStart: number, cutEnd: number) => {
+    const project = engine.projects.get(projectId);
+    return project.revertRipple(cutStart, cutEnd);
+  }
+);
+
 ipcMain.handle(
   'update-transcript-segment',
   async (_ev, projectId: string, segmentId: string, newText: string) => {

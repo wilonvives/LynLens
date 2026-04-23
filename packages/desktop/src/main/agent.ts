@@ -306,6 +306,48 @@ async function buildLynLensSdkServer(engine: LynLensEngine) {
       ),
 
       tool(
+        'commit_ripple',
+        '对所有 approved 删除段执行 ripple 剪切:把它们从时间轴里压掉,后面的内容整体往前填补,时间轴变短。只动 approved 的段,pending 和 rejected 不动。用户说"剪掉/执行剪切/ripple"或者确认一批删除段后要真动手时调用。调用前最好让用户知道会删多少秒。',
+        { projectId: z.string() },
+        async ({ projectId }) => {
+          const project = engine.projects.get(projectId);
+          const result = project.commitRipple();
+          const msg =
+            result.cutSegmentIds.length === 0
+              ? '没有 approved 段,无需剪切。'
+              : `剪掉 ${result.cutSegmentIds.length} 段,共 ${result.totalCutSeconds.toFixed(2)} 秒,时间轴长度变为 ${result.effectiveDuration.toFixed(2)} 秒。`;
+          return {
+            content: [{ type: 'text' as const, text: msg }],
+          };
+        }
+      ),
+
+      tool(
+        'revert_ripple',
+        '撤销某一段已经执行的 ripple 剪切。需要明确的 source-time 起止秒数,通常只在用户说"取消刚才那刀"时使用。',
+        {
+          projectId: z.string(),
+          cutStart: z.number(),
+          cutEnd: z.number(),
+        },
+        async ({ projectId, cutStart, cutEnd }) => {
+          const project = engine.projects.get(projectId);
+          const ok = project.revertRipple(cutStart, cutEnd);
+          return {
+            content: [
+              {
+                type: 'text' as const,
+                text: ok
+                  ? `已恢复 [${cutStart.toFixed(2)}, ${cutEnd.toFixed(2)}] 这一刀。`
+                  : `找不到 [${cutStart}, ${cutEnd}] 这一刀。`,
+              },
+            ],
+            isError: !ok,
+          };
+        }
+      ),
+
+      tool(
         'set_mode',
         '设置 AI 工作模式。L2 = 添加 AI 段进 pending 等审核; L3 = 直接 approved。',
         {
@@ -461,6 +503,8 @@ export async function runAgent(
     'mcp__lynlens__remove_segments',
     'mcp__lynlens__set_segment_status',
     'mcp__lynlens__approve_all_pending',
+    'mcp__lynlens__commit_ripple',
+    'mcp__lynlens__revert_ripple',
     'mcp__lynlens__set_mode',
     'mcp__lynlens__update_transcript_segment',
     'mcp__lynlens__suggest_transcript_fix',

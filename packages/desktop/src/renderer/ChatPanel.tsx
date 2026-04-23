@@ -20,6 +20,8 @@ const TOOL_LABELS: Record<string, string> = {
   'mcp__lynlens__remove_segments': '删除标记段',
   'mcp__lynlens__set_segment_status': '更新段状态',
   'mcp__lynlens__approve_all_pending': '批准全部待审',
+  'mcp__lynlens__commit_ripple': '执行剪切',
+  'mcp__lynlens__revert_ripple': '撤销剪切',
   'mcp__lynlens__set_mode': '切换 AI 模式',
   'mcp__lynlens__update_transcript_segment': '修改字幕',
   'mcp__lynlens__suggest_transcript_fix': '提交字幕建议',
