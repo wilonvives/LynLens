@@ -1116,8 +1116,7 @@ export function App() {
             className="ai"
             onClick={async () => {
               if (!store.projectId) return;
-              const n = await window.lynlens.approveAllPending(store.projectId);
-              console.log(`approved ${n} segments`);
+              await window.lynlens.approveAllPending(store.projectId);
             }}
           >
             ✓ 全部批准 (Shift+A)

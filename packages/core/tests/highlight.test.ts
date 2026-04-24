@@ -65,7 +65,7 @@ describe('buildHighlightUserPrompt', () => {
       targetSeconds: 30,
     });
     expect(prompt).toContain('120.0');
-    expect(prompt).toContain('目标变体数量: 3');
+    expect(prompt).toContain('变体数量: 3');
     expect(prompt).toContain('30 秒');
     expect(prompt).toContain('片头风格');
     expect(prompt).toContain('alpha');

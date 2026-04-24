@@ -683,6 +683,800 @@ async function buildMcpServer(engine: LynLensEngine) {
     }
   );
 
+  // ──────────────────────────────────────────────────────────────
+  // Segment edit: reject / erase / resize / undo / save
+  // ──────────────────────────────────────────────────────────────
+  server.registerTool(
+    'reject_segment',
+    {
+      description: '拒绝(否决)一个待审 AI 段。对应 UI 里的 ✗ 按钮。',
+      inputSchema: { projectId: z.string(), segmentId: z.string() },
+    },
+    async (args: { projectId: string; segmentId: string }) => {
+      const project = engine.projects.get(args.projectId);
+      project.segments.reject(args.segmentId, 'codex');
+      return {
+        content: [
+          { type: 'text' as const, text: `段 ${args.segmentId.slice(0, 8)} 已拒绝` },
+        ],
+      };
+    }
+  );
+
+  server.registerTool(
+    'reject_all_pending',
+    {
+      description: '一键拒绝所有待审 AI 段。',
+      inputSchema: { projectId: z.string() },
+    },
+    async (args: { projectId: string }) => {
+      const project = engine.projects.get(args.projectId);
+      const pending = project.segments.list().filter((s) => s.status === 'pending');
+      for (const s of pending) project.segments.reject(s.id, 'codex');
+      return {
+        content: [{ type: 'text' as const, text: `拒绝了 ${pending.length} 个待审段` }],
+      };
+    }
+  );
+
+  server.registerTool(
+    'erase_range',
+    {
+      description:
+        '擦除某个时间范围内所有标记段。time 为 source 秒。用户说"别删 0:10-0:20 那段的任何标记"时用。',
+      inputSchema: {
+        projectId: z.string(),
+        start: z.number().nonnegative(),
+        end: z.number().positive(),
+      },
+    },
+    async (args: { projectId: string; start: number; end: number }) => {
+      const project = engine.projects.get(args.projectId);
+      const before = project.segments.list().length;
+      project.segments.eraseRange(args.start, args.end);
+      const after = project.segments.list().length;
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: `擦除 ${args.start.toFixed(2)}-${args.end.toFixed(2)}: 删掉 ${before - after} 个标记`,
+          },
+        ],
+      };
+    }
+  );
+
+  server.registerTool(
+    'resize_segment',
+    {
+      description: '调整一个已有删除段的起止时间(source 秒)。',
+      inputSchema: {
+        projectId: z.string(),
+        segmentId: z.string(),
+        start: z.number().nonnegative(),
+        end: z.number().positive(),
+      },
+    },
+    async (args: {
+      projectId: string;
+      segmentId: string;
+      start: number;
+      end: number;
+    }) => {
+      const project = engine.projects.get(args.projectId);
+      const seg = project.segments.resize(args.segmentId, args.start, args.end);
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: seg
+              ? `段 ${args.segmentId.slice(0, 8)} 已改到 ${args.start.toFixed(2)}-${args.end.toFixed(2)}`
+              : `找不到段 ${args.segmentId}`,
+          },
+        ],
+        isError: !seg,
+      };
+    }
+  );
+
+  server.registerTool(
+    'undo',
+    {
+      description: '撤销上一步删除段操作。',
+      inputSchema: { projectId: z.string() },
+    },
+    async (args: { projectId: string }) => {
+      const ok = engine.projects.get(args.projectId).segments.undo();
+      return {
+        content: [
+          { type: 'text' as const, text: ok ? '已撤销' : '没有可撤销的操作' },
+        ],
+        isError: !ok,
+      };
+    }
+  );
+
+  server.registerTool(
+    'redo',
+    {
+      description: '重做上一次撤销的操作。',
+      inputSchema: { projectId: z.string() },
+    },
+    async (args: { projectId: string }) => {
+      const ok = engine.projects.get(args.projectId).segments.redo();
+      return {
+        content: [
+          { type: 'text' as const, text: ok ? '已重做' : '没有可重做的操作' },
+        ],
+        isError: !ok,
+      };
+    }
+  );
+
+  server.registerTool(
+    'save_project',
+    {
+      description: '把当前项目状态写到 .qcp 文件。',
+      inputSchema: { projectId: z.string() },
+    },
+    async (args: { projectId: string }) => {
+      const savedPath = await engine.projects.saveProject(args.projectId);
+      return {
+        content: [{ type: 'text' as const, text: `已保存: ${savedPath}` }],
+      };
+    }
+  );
+
+  // ──────────────────────────────────────────────────────────────
+  // Transcript
+  // ──────────────────────────────────────────────────────────────
+  server.registerTool(
+    'accept_transcript_suggestion',
+    {
+      description:
+        '接受某段字幕的 AI 建议(用建议文本覆盖原文,相当于用户点 ✓ 接受)。',
+      inputSchema: { projectId: z.string(), segmentId: z.string() },
+    },
+    async (args: { projectId: string; segmentId: string }) => {
+      const ok = engine.projects
+        .get(args.projectId)
+        .acceptTranscriptSuggestion(args.segmentId);
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: ok
+              ? `已接受 ${args.segmentId.slice(0, 8)} 的建议`
+              : '找不到该段或无建议',
+          },
+        ],
+        isError: !ok,
+      };
+    }
+  );
+
+  server.registerTool(
+    'clear_transcript_suggestion',
+    {
+      description: '忽略某段字幕的 AI 建议(原文不变)。',
+      inputSchema: { projectId: z.string(), segmentId: z.string() },
+    },
+    async (args: { projectId: string; segmentId: string }) => {
+      const ok = engine.projects
+        .get(args.projectId)
+        .clearTranscriptSuggestion(args.segmentId);
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: ok
+              ? `已忽略 ${args.segmentId.slice(0, 8)} 的建议`
+              : '找不到该段或无建议',
+          },
+        ],
+      };
+    }
+  );
+
+  server.registerTool(
+    'update_transcript_segment_time',
+    {
+      description:
+        '调整某段字幕的起止时间(source 秒)。级联规则:与前/后段碰到时,邻居的就近边会让位。',
+      inputSchema: {
+        projectId: z.string(),
+        segmentId: z.string(),
+        newStart: z.number().nonnegative(),
+        newEnd: z.number().positive(),
+      },
+    },
+    async (args: {
+      projectId: string;
+      segmentId: string;
+      newStart: number;
+      newEnd: number;
+    }) => {
+      const ok = engine.projects
+        .get(args.projectId)
+        .updateTranscriptSegmentTime(args.segmentId, args.newStart, args.newEnd);
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: ok
+              ? `已更新 ${args.segmentId.slice(0, 8)}: ${args.newStart.toFixed(2)}-${args.newEnd.toFixed(2)}`
+              : '更新失败',
+          },
+        ],
+        isError: !ok,
+      };
+    }
+  );
+
+  // ──────────────────────────────────────────────────────────────
+  // Highlights — inspection / pinning / deletion / export
+  // ──────────────────────────────────────────────────────────────
+  server.registerTool(
+    'get_highlights',
+    {
+      description: '列出当前项目的所有高光变体及各自的段落(用于定位 variantId / segmentIdx)。',
+      inputSchema: { projectId: z.string() },
+    },
+    async (args: { projectId: string }) => {
+      const project = engine.projects.get(args.projectId);
+      const slim = project.highlightVariants.map((v) => ({
+        id: v.id,
+        title: v.title,
+        style: v.style,
+        pinned: !!v.pinned,
+        durationSeconds: Number(v.durationSeconds.toFixed(2)),
+        segments: v.segments.map((s) => ({
+          start: Number(s.start.toFixed(3)),
+          end: Number(s.end.toFixed(3)),
+          reason: s.reason,
+        })),
+      }));
+      return {
+        content: [{ type: 'text' as const, text: JSON.stringify(slim, null, 2) }],
+      };
+    }
+  );
+
+  server.registerTool(
+    'set_highlight_pinned',
+    {
+      description:
+        '收藏 / 取消收藏一个高光变体。收藏过的不会被「重新生成」覆盖。',
+      inputSchema: {
+        projectId: z.string(),
+        variantId: z.string(),
+        pinned: z.boolean(),
+      },
+    },
+    async (args: { projectId: string; variantId: string; pinned: boolean }) => {
+      const ok = engine.projects
+        .get(args.projectId)
+        .setHighlightVariantPinned(args.variantId, args.pinned);
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: ok
+              ? `变体 ${args.variantId.slice(0, 8)} ${args.pinned ? '已收藏' : '已取消收藏'}`
+              : '变体不存在',
+          },
+        ],
+        isError: !ok,
+      };
+    }
+  );
+
+  server.registerTool(
+    'delete_highlight_variant',
+    {
+      description:
+        '永久删除整个高光变体(包括收藏的,不做二次确认)。用户明确说"删掉 #2 这个变体"时调用。',
+      inputSchema: { projectId: z.string(), variantId: z.string() },
+    },
+    async (args: { projectId: string; variantId: string }) => {
+      const ok = engine.projects.get(args.projectId).deleteHighlightVariant(args.variantId);
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: ok ? `已删除变体 ${args.variantId.slice(0, 8)}` : '变体不存在',
+          },
+        ],
+        isError: !ok,
+      };
+    }
+  );
+
+  // ──────────────────────────────────────────────────────────────
+  // Speakers
+  // ──────────────────────────────────────────────────────────────
+  server.registerTool(
+    'diarize',
+    {
+      description:
+        '跑说话人识别,给每段字幕打标签。speakerCount 可选(默认 AI 自动)。跑完后用 rename_speaker 给人取名。',
+      inputSchema: {
+        projectId: z.string(),
+        speakerCount: z.number().int().min(1).max(8).optional(),
+      },
+    },
+    async (args: { projectId: string; speakerCount?: number }) => {
+      try {
+        const { runDiarization } = await import('./diarize-helper');
+        const diar = await runDiarization(engine, args.projectId, {
+          speakerCount: args.speakerCount,
+        });
+        return {
+          content: [
+            {
+              type: 'text' as const,
+              text: `识别完成,engine=${diar.engine},说话人: ${diar.speakers.join(', ') || '(空)'}`,
+            },
+          ],
+        };
+      } catch (err) {
+        return {
+          content: [{ type: 'text' as const, text: (err as Error).message }],
+          isError: true,
+        };
+      }
+    }
+  );
+
+  server.registerTool(
+    'rename_speaker',
+    {
+      description: '给说话人 ID 起显示名字,比如 S1 改叫「主持人」。name 为空则取消命名。',
+      inputSchema: {
+        projectId: z.string(),
+        speakerId: z.string(),
+        name: z.string().nullable(),
+      },
+    },
+    async (args: { projectId: string; speakerId: string; name: string | null }) => {
+      engine.projects.get(args.projectId).renameSpeaker(args.speakerId, args.name);
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: args.name ? `${args.speakerId} → "${args.name}"` : `${args.speakerId} 取消命名`,
+          },
+        ],
+      };
+    }
+  );
+
+  server.registerTool(
+    'merge_speakers',
+    {
+      description: '把所有被标成 from 的字幕段重新标成 to。',
+      inputSchema: {
+        projectId: z.string(),
+        from: z.string(),
+        to: z.string(),
+      },
+    },
+    async (args: { projectId: string; from: string; to: string }) => {
+      const n = engine.projects.get(args.projectId).mergeSpeakers(args.from, args.to);
+      return {
+        content: [
+          { type: 'text' as const, text: `把 ${n} 段从 ${args.from} 合并到 ${args.to}` },
+        ],
+      };
+    }
+  );
+
+  server.registerTool(
+    'set_segment_speaker',
+    {
+      description: '改单一字幕段的说话人标签。speaker 为空则清除标签。',
+      inputSchema: {
+        projectId: z.string(),
+        transcriptSegmentId: z.string(),
+        speaker: z.string().nullable(),
+      },
+    },
+    async (args: {
+      projectId: string;
+      transcriptSegmentId: string;
+      speaker: string | null;
+    }) => {
+      const ok = engine.projects
+        .get(args.projectId)
+        .setSegmentSpeaker(args.transcriptSegmentId, args.speaker);
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: ok
+              ? args.speaker
+                ? `${args.transcriptSegmentId.slice(0, 8)} → ${args.speaker}`
+                : `${args.transcriptSegmentId.slice(0, 8)} 清除标签`
+              : '段不存在',
+          },
+        ],
+        isError: !ok,
+      };
+    }
+  );
+
+  server.registerTool(
+    'auto_assign_unlabeled_speakers',
+    {
+      description: '给所有未标记字幕段自动指派说话人(按就近原则)。',
+      inputSchema: { projectId: z.string() },
+    },
+    async (args: { projectId: string }) => {
+      const n = engine.projects.get(args.projectId).autoAssignUnlabeledSpeakers();
+      return {
+        content: [{ type: 'text' as const, text: `自动指派了 ${n} 段` }],
+      };
+    }
+  );
+
+  server.registerTool(
+    'clear_speakers',
+    {
+      description: '清空所有说话人标签。',
+      inputSchema: { projectId: z.string() },
+    },
+    async (args: { projectId: string }) => {
+      engine.projects.get(args.projectId).clearSpeakers();
+      return {
+        content: [{ type: 'text' as const, text: '所有说话人标签已清除' }],
+      };
+    }
+  );
+
+  // ──────────────────────────────────────────────────────────────
+  // Social copies
+  // ──────────────────────────────────────────────────────────────
+  server.registerTool(
+    'get_social_copies',
+    {
+      description: '列出所有已生成的文案集(每组里有多个平台的文案)。',
+      inputSchema: { projectId: z.string() },
+    },
+    async (args: { projectId: string }) => {
+      const sets = engine.projects.get(args.projectId).socialCopies;
+      return {
+        content: [{ type: 'text' as const, text: JSON.stringify(sets, null, 2) }],
+      };
+    }
+  );
+
+  server.registerTool(
+    'update_social_copy',
+    {
+      description: '改一条生成的文案(标题/正文/hashtags)。patch 里只传要改的字段。',
+      inputSchema: {
+        projectId: z.string(),
+        setId: z.string(),
+        copyId: z.string(),
+        title: z.string().optional(),
+        body: z.string().optional(),
+        hashtags: z.array(z.string()).optional(),
+      },
+    },
+    async (args: {
+      projectId: string;
+      setId: string;
+      copyId: string;
+      title?: string;
+      body?: string;
+      hashtags?: string[];
+    }) => {
+      const ok = engine.projects
+        .get(args.projectId)
+        .updateSocialCopy(args.setId, args.copyId, {
+          title: args.title,
+          body: args.body,
+          hashtags: args.hashtags,
+        });
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: ok ? `已更新 ${args.copyId.slice(0, 8)}` : '找不到对应文案',
+          },
+        ],
+        isError: !ok,
+      };
+    }
+  );
+
+  server.registerTool(
+    'delete_social_copy',
+    {
+      description: '从某个文案集里删一个平台的文案。',
+      inputSchema: {
+        projectId: z.string(),
+        setId: z.string(),
+        copyId: z.string(),
+      },
+    },
+    async (args: { projectId: string; setId: string; copyId: string }) => {
+      const ok = engine.projects
+        .get(args.projectId)
+        .deleteSocialCopy(args.setId, args.copyId);
+      return {
+        content: [
+          { type: 'text' as const, text: ok ? '已删除' : '找不到对应文案' },
+        ],
+        isError: !ok,
+      };
+    }
+  );
+
+  server.registerTool(
+    'delete_social_copy_set',
+    {
+      description: '永久删除一整组文案(包含的所有平台条目)。',
+      inputSchema: { projectId: z.string(), setId: z.string() },
+    },
+    async (args: { projectId: string; setId: string }) => {
+      const ok = engine.projects.get(args.projectId).deleteSocialCopySet(args.setId);
+      return {
+        content: [
+          { type: 'text' as const, text: ok ? '已删除文案集' : '找不到' },
+        ],
+        isError: !ok,
+      };
+    }
+  );
+
+  server.registerTool(
+    'set_social_style_note',
+    {
+      description:
+        '设置全局「风格说明」文本 —— 下次生成文案时会被拼进 prompt。空字符串或 null 清除。',
+      inputSchema: {
+        projectId: z.string(),
+        note: z.string().nullable(),
+      },
+    },
+    async (args: { projectId: string; note: string | null }) => {
+      engine.projects.get(args.projectId).setSocialStyleNote(args.note);
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: args.note
+              ? `风格说明已设为: ${args.note.slice(0, 60)}`
+              : '风格说明已清除',
+          },
+        ],
+      };
+    }
+  );
+
+  // ──────────────────────────────────────────────────────────────
+  // Generate social copies (was missing from Codex side; parity with Claude)
+  // ──────────────────────────────────────────────────────────────
+  server.registerTool(
+    'generate_social_copies',
+    {
+      description:
+        '为指定平台生成社群媒体文案。sourceType=rippled 用粗剪后的完整字幕;=variant 则用某个高光变体(需 sourceVariantId)。platforms 数组并行生成。',
+      inputSchema: {
+        projectId: z.string(),
+        sourceType: z.enum(['rippled', 'variant']),
+        sourceVariantId: z.string().optional(),
+        platforms: z.array(
+          z.enum(['xiaohongshu', 'instagram', 'tiktok', 'youtube', 'twitter'])
+        ),
+        userStyleNote: z.string().optional(),
+      },
+    },
+    async (args: {
+      projectId: string;
+      sourceType: 'rippled' | 'variant';
+      sourceVariantId?: string;
+      platforms: string[];
+      userStyleNote?: string;
+    }) => {
+      const project = engine.projects.get(args.projectId);
+      if (!project.transcript || project.transcript.segments.length === 0) {
+        return {
+          content: [{ type: 'text' as const, text: '请先生成字幕后再生成文案。' }],
+          isError: true,
+        };
+      }
+      // Inline text-assembly + parallel-generate, mirroring the IPC
+      // handler in main/index.ts. We don't delegate through ipcMain so
+      // this stays free of Electron-internal coupling.
+      let sourceText: string;
+      let sourceTitle: string;
+      if (args.sourceType === 'variant') {
+        if (!args.sourceVariantId) {
+          return {
+            content: [
+              { type: 'text' as const, text: 'sourceType=variant 时必须提供 sourceVariantId' },
+            ],
+            isError: true,
+          };
+        }
+        const variant = project.findHighlightVariant(args.sourceVariantId);
+        if (!variant) {
+          return {
+            content: [
+              { type: 'text' as const, text: `找不到变体 ${args.sourceVariantId}` },
+            ],
+            isError: true,
+          };
+        }
+        sourceTitle = `高光变体:${variant.title}`;
+        const lines: string[] = [];
+        for (const vs of variant.segments) {
+          for (const t of project.transcript.segments) {
+            if (t.end <= vs.start || t.start >= vs.end) continue;
+            const txt = t.text.trim();
+            if (txt) lines.push(txt);
+          }
+        }
+        sourceText = lines.join('\n');
+      } else {
+        sourceTitle = '粗剪完整版';
+        const lines: string[] = [];
+        for (const t of project.transcript.segments) {
+          const fullyInCut = project.cutRanges.some(
+            (c) => t.start >= c.start && t.end <= c.end
+          );
+          if (fullyInCut) continue;
+          const txt = t.text.trim();
+          if (txt) lines.push(txt);
+        }
+        sourceText = lines.join('\n');
+      }
+
+      const { runCopywriterViaCurrentProvider } = await import('./agent-dispatcher');
+      const platformResults = await Promise.allSettled(
+        args.platforms.map((platform) =>
+          runCopywriterViaCurrentProvider({
+            sourceTitle,
+            sourceText,
+            platform: platform as 'xiaohongshu' | 'instagram' | 'tiktok' | 'youtube' | 'twitter',
+            userStyleNote: args.userStyleNote ?? project.socialStyleNote ?? undefined,
+          })
+        )
+      );
+      const copies: Array<{
+        id: string;
+        platform: string;
+        title: string;
+        body: string;
+        hashtags: string[];
+      }> = [];
+      const failures: string[] = [];
+      let model: string | undefined;
+      for (let i = 0; i < platformResults.length; i++) {
+        const r = platformResults[i];
+        if (r.status === 'fulfilled') {
+          copies.push({
+            id: r.value.copy.id,
+            platform: r.value.copy.platform,
+            title: r.value.copy.title,
+            body: r.value.copy.body,
+            hashtags: r.value.copy.hashtags,
+          });
+          if (r.value.model) model = r.value.model;
+        } else {
+          failures.push(`${args.platforms[i]}: ${(r.reason as Error).message}`);
+        }
+      }
+      if (copies.length === 0) {
+        return {
+          content: [
+            { type: 'text' as const, text: `全部平台生成失败:\n${failures.join('\n')}` },
+          ],
+          isError: true,
+        };
+      }
+      const setId = `sc_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+      project.addSocialCopySet({
+        id: setId,
+        sourceType: args.sourceType,
+        sourceVariantId: args.sourceVariantId,
+        sourceTitle,
+        sourceText,
+        userStyleNote: args.userStyleNote ?? null,
+        copies,
+        createdAt: new Date().toISOString(),
+        model,
+      });
+      const summary =
+        `生成了 ${copies.length} 个平台的文案。` +
+        copies
+          .map((c) => `\n- ${c.platform}: ${(c.title || c.body).slice(0, 40)}`)
+          .join('') +
+        (failures.length > 0 ? `\n\n失败: ${failures.join('\n')}` : '');
+      return { content: [{ type: 'text' as const, text: summary }] };
+    }
+  );
+
+  // ──────────────────────────────────────────────────────────────
+  // Export
+  // ──────────────────────────────────────────────────────────────
+  server.registerTool(
+    'export_final_video',
+    {
+      description:
+        '导出最终成片(粗剪执行 ripple 之后的完整视频)。outputPath 必须给绝对路径。mode: fast 流拷贝秒级 / precise 重编码。',
+      inputSchema: {
+        projectId: z.string(),
+        outputPath: z.string(),
+        mode: z.enum(['fast', 'precise']).default('fast'),
+        quality: z.enum(['low', 'medium', 'high']).default('medium'),
+      },
+    },
+    async (args: {
+      projectId: string;
+      outputPath: string;
+      mode: 'fast' | 'precise';
+      quality: 'low' | 'medium' | 'high';
+    }) => {
+      const project = engine.projects.get(args.projectId);
+      const result = await engine.exports.export(project, {
+        outputPath: args.outputPath,
+        mode: args.mode,
+        quality: args.quality,
+      });
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: `导出完成: ${result.outputPath} (${(result.sizeBytes / 1e6).toFixed(1)}MB)`,
+          },
+        ],
+      };
+    }
+  );
+
+  server.registerTool(
+    'export_highlight_variant',
+    {
+      description: '导出某一个高光变体成单独的视频文件。outputPath 必须给绝对路径。',
+      inputSchema: {
+        projectId: z.string(),
+        variantId: z.string(),
+        outputPath: z.string(),
+      },
+    },
+    async (args: { projectId: string; variantId: string; outputPath: string }) => {
+      const project = engine.projects.get(args.projectId);
+      const variant = project.findHighlightVariant(args.variantId);
+      if (!variant) {
+        return {
+          content: [{ type: 'text' as const, text: `变体 ${args.variantId} 不存在` }],
+          isError: true,
+        };
+      }
+      const keepOverride = variant.segments.map((s) => ({
+        start: s.start,
+        end: s.end,
+      }));
+      const result = await engine.exports.export(project, {
+        outputPath: args.outputPath,
+        mode: 'fast',
+        quality: 'medium',
+        keepOverride,
+      });
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: `变体 ${args.variantId.slice(0, 8)} 导出完成: ${result.outputPath} (${(result.sizeBytes / 1e6).toFixed(1)}MB)`,
+          },
+        ],
+      };
+    }
+  );
+
   return server;
 }
 
@@ -725,33 +1519,15 @@ export async function startMcpHttpServer(engine: LynLensEngine): Promise<McpHttp
         res.writeHead(404).end('not found');
         return;
       }
-      // eslint-disable-next-line no-console
-      console.log(
-        '[mcp-http] ←',
-        req.method,
-        req.url,
-        'session=',
-        req.headers['mcp-session-id'] ?? '(new)'
-      );
 
       const sessionId = req.headers['mcp-session-id'];
       if (typeof sessionId === 'string' && transports.has(sessionId)) {
         const b = await readJson(req);
-        // eslint-disable-next-line no-console
-        console.log(
-          '[mcp-http] body:',
-          b === undefined ? '(no body)' : JSON.stringify(b).slice(0, 400)
-        );
         await transports.get(sessionId)!.handleRequest(req, res, b);
         return;
       }
 
       const body = await readJson(req);
-      // eslint-disable-next-line no-console
-      console.log(
-        '[mcp-http] init body:',
-        body === undefined ? '(no body)' : JSON.stringify(body).slice(0, 400)
-      );
       // Each session gets its own McpServer — the Protocol layer inside the
       // SDK tracks request/response correlation per-transport and refuses
       // to multiplex. We used to share one server; that manifested as the
