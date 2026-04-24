@@ -2,262 +2,292 @@
 
 **口播视频 AI 快剪工具 · AI-First Architecture**
 
-> 一个可以被 AI 操控、也可以被人手动操控的"视频去废引擎"。AI 通过 MCP 读取文字稿、做出剪辑决策、生成标记;人类通过 UI 审核或直接操作。两种模式可自由切换。
+> 一个可以被 AI 操控、也可以被人手动操控的"视频去废引擎"。AI 通过 MCP 协议读取文字稿、做剪辑决策、改字幕、生成高光片段、写社媒文案;人类通过 Electron UI 审核、微调、直接操作。两种模式随时切换,**同一份项目状态,同一套工具**。
 
 ## 仓库结构
 
 ```
 lynlens/
 ├─ packages/
-│  ├─ core/          # Core Engine - 业务核心,UI 无关的 TypeScript/Node 包
+│  ├─ core/                           # Core Engine — UI 无关的业务核心
 │  │   ├─ src/
-│  │   │   ├─ types.ts / event-bus.ts
-│  │   │   ├─ segment-manager.ts    # 标记段增删改 + 重叠合并 + undo/redo
-│  │   │   ├─ project-manager.ts    # 打开/保存 .qcp 工程文件
-│  │   │   ├─ ffmpeg.ts             # probe / 波形提取 / 进度式 ffmpeg 调用
-│  │   │   ├─ export-service.ts     # 快速模式 + 精确模式
-│  │   │   ├─ transcription.ts      # whisper.cpp 本地 + OpenAI API + 静音检测
-│  │   │   ├─ safety.ts             # 80% 删除上限 / 50 次调用上限 / 禁覆盖原视频
-│  │   │   └─ engine.ts             # 组合根
-│  │   └─ tests/                    # 20 个单元测试
+│  │   │   ├─ types.ts                # .qcp 工程文件的持久化类型
+│  │   │   ├─ event-bus.ts            # 跨层事件总线
+│  │   │   ├─ segment-manager.ts      # 删除段增删改 + 重叠合并 + undo/redo 200 步
+│  │   │   ├─ project-manager.ts      # 打开/保存 .qcp;聚合根
+│  │   │   ├─ ripple.ts               # source ↔ effective 时间换算
+│  │   │   ├─ variant-status.ts       # 高光变体失效检测(纯函数)
+│  │   │   ├─ ffmpeg.ts               # probe / 波形 / 进度式 ffmpeg
+│  │   │   ├─ export-service.ts       # fast(流拷贝)+ precise(重编码)
+│  │   │   ├─ transcription.ts        # whisper.cpp 本地 + OpenAI API + 静音/语气词/重拍检测
+│  │   │   ├─ diarization.ts          # 说话人识别基础设施
+│  │   │   ├─ diarization-sherpa.ts   # sherpa-onnx 真实引擎(可选)
+│  │   │   ├─ highlight-prompts.ts    # 高光变体生成 prompt
+│  │   │   ├─ highlight-parser.ts     # Claude/Codex 回传 JSON → 变体
+│  │   │   ├─ copywriter-platforms.ts # xhs/ig/tt/yt/tw 规则
+│  │   │   ├─ copywriter-prompts.ts   # 文案生成 prompt
+│  │   │   ├─ copywriter-parser.ts    # 模型回传 → SocialCopy
+│  │   │   ├─ subtitle.ts             # 字幕排版(横/竖屏行数)
+│  │   │   ├─ safety.ts               # 80% 删除上限 / 50 次调用上限 / 禁覆盖源
+│  │   │   └─ engine.ts               # 组合根
+│  │   └─ tests/                      # 118 个单元测试
 │  │
-│  ├─ mcp-server/    # MCP Server - 把 Core 暴露给 Claude/Cursor(stdio)
-│  │   └─ src/tools/index.ts        # 9 个工具(含 ai_mark_silence)
-│  │
-│  ├─ desktop/       # Electron 桌面应用(UI)
-│  │   ├─ src/main/                 # 主进程 + preload
-│  │   ├─ src/renderer/             # React + Canvas 时间轴 + 审核面板
-│  │   ├─ src/shared/ipc-types.ts
-│  │   ├─ resources/ffmpeg/         # 打包时的 ffmpeg 二进制(gitignored)
+│  ├─ desktop/                        # Electron 桌面应用(主要入口)
+│  │   ├─ src/main/
+│  │   │   ├─ index.ts                # 主进程 + 所有 IPC handlers
+│  │   │   ├─ preload.ts              # contextBridge 暴露 IpcApi
+│  │   │   ├─ agent.ts                # Claude Agent SDK(进程内 MCP 工具)
+│  │   │   ├─ agent-codex.ts          # OpenAI Codex SDK(外部 HTTP MCP)
+│  │   │   ├─ agent-dispatcher.ts     # 按当前 provider 分发
+│  │   │   ├─ mcp-http-server.ts      # 本地 HTTP MCP server(给 Codex)
+│  │   │   ├─ diarize-helper.ts       # 共享的说话人识别路由
+│  │   │   └─ auto-updater.ts         # electron-updater 集成
+│  │   ├─ src/renderer/               # React + Canvas 时间轴
+│  │   ├─ src/shared/ipc-types.ts     # IpcApi 类型定义
+│  │   ├─ resources/
+│  │   │   ├─ ffmpeg/                 # 打包二进制(gitignored,bootstrap 下载)
+│  │   │   ├─ whisper/                # 打包二进制(gitignored,bootstrap 下载)
+│  │   │   └─ diarization/            # 打包二进制(gitignored,bootstrap 下载)
 │  │   └─ electron-builder.yml
 │  │
-│  └─ cli/           # 命令行工具
-│      └─ src/index.ts              # probe / info / export
+│  ├─ mcp-server/                     # 外部 MCP Server — 给 Claude Desktop / Cursor 直连
+│  │   └─ src/tools/index.ts          # stdio MCP(独立进程,不依赖 Electron)
+│  │
+│  └─ cli/                            # 命令行工具 — probe / info / export
 │
 ├─ scripts/
-│  └─ download-ffmpeg.mjs           # 平台 ffmpeg 二进制下载器
+│  ├─ download-ffmpeg.mjs             # ffmpeg 下载器
+│  ├─ download-whisper.mjs            # whisper.cpp 下载器
+│  └─ download-diarization.mjs        # sherpa-onnx 下载器
 ├─ pnpm-workspace.yaml
 └─ package.json
 ```
+
+## 核心能力
+
+| 领域 | 能力 |
+|---|---|
+| 转录 | whisper.cpp 本地(离线免费)/ OpenAI API / 空回退。支持词级时间戳。 |
+| 自动标记 | 停顿 / 语气词 / 重拍 三类信号。全部进 pending 等人或 AI 审核。 |
+| 手工编辑 | 时间轴拖选标记、擦除、调边、撤销/重做 200 步。 |
+| 字幕 | 内联编辑、± 微调时间、点时间戳跳转、说话人标签、横跨剪切警告、自动滚动跟播。 |
+| 剪切 | Ripple cut 把批准段整段压掉,时间轴自动缩短;随时可还原。 |
+| 高光变体 | 让 AI 从粗剪后的字幕里挑段组合,同风格多变体;持久化到 .qcp;收藏/删除/逐段微调。 |
+| 说话人识别 | sherpa-onnx 本地引擎(可选)+ mock 回退;重命名、合并、最近邻自动补标签。 |
+| 文案生成 | 五个平台(小红书/Instagram/TikTok/YouTube/Twitter)并行生成,支持自定义风格说明。 |
+| 导出 | 流拷贝(秒级)/ 重编码(画面一致)。成片 + 单独变体。 |
+
+## AI 集成(44 个 MCP 工具)
+
+**两条路径,同样的工具集**:
+
+1. **内嵌 Agent 窗口**(推荐)— 点应用顶部的 `AGENT` 按钮,开独立聊天弹窗
+   - 可选 **Claude Code**(`@anthropic-ai/claude-agent-sdk`,进程内 MCP)
+   - 可选 **OpenAI Codex**(`@openai/codex-sdk`,通过本地 HTTP MCP)
+   - 两边**同一套 44 个工具**,在 header 的下拉里随时切
+
+2. **外部 MCP Server** — `packages/mcp-server` 跑 stdio,给 Claude Desktop / Cursor / 其他 MCP 客户端连
+
+### 工具清单(44 个,按领域)
+
+| 领域 | 工具 |
+|---|---|
+| **项目** | `get_project_state` · `transcribe` · `save_project` · `set_mode` |
+| **删除段** | `add_segments` · `remove_segments` · `erase_range` · `resize_segment` · `set_segment_status` · `approve_all_pending` · `reject_segment` · `reject_all_pending` · `undo` · `redo` · `commit_ripple` · `revert_ripple` · `ai_mark_silence` |
+| **字幕** | `update_transcript_segment` · `update_transcript_segment_time` · `suggest_transcript_fix` · `accept_transcript_suggestion` · `clear_transcript_suggestion` · `replace_in_transcript` |
+| **说话人** | `diarize` · `rename_speaker` · `merge_speakers` · `set_segment_speaker` · `auto_assign_unlabeled_speakers` · `clear_speakers` |
+| **高光** | `generate_highlights` · `get_highlights` · `clear_highlights` · `set_highlight_pinned` · `delete_highlight_variant` · `update_highlight_variant_segment` · `add_highlight_variant_segment` · `delete_highlight_variant_segment` · `reorder_highlight_variant_segment` |
+| **文案** | `generate_social_copies` · `get_social_copies` · `update_social_copy` · `delete_social_copy` · `delete_social_copy_set` · `set_social_style_note` |
+| **导出** | `export_final_video` · `export_highlight_variant` |
+
+所有工具在 `packages/desktop/src/main/agent.ts`(Claude)和 `packages/desktop/src/main/mcp-http-server.ts`(Codex)都有实现;UI 和 Agent 用的是**同一个 engine 实例**,状态完全同步。
 
 ## 环境要求
 
 - Node.js ≥ 20
 - pnpm ≥ 10
-- **ffmpeg / ffprobe**:`pnpm bootstrap:ffmpeg` 自动下载到 `packages/desktop/resources/ffmpeg/<platform>/`
-- **whisper.cpp + ggml-base 模型**:`pnpm bootstrap:whisper` 自动下载到 `packages/desktop/resources/whisper/<platform>/`(本地离线转录;~150 MB)
+- **ffmpeg / ffprobe** — `pnpm bootstrap:ffmpeg` 自动下载
+- **whisper.cpp + ggml-base 模型** — `pnpm bootstrap:whisper`(~150 MB,本地离线转录)
+- **sherpa-onnx 说话人模型**(可选) — `pnpm bootstrap:diarization`(如果要真实说话人识别;不装回退 mock)
+- **Agent 要用的话**:
+  - Claude 路径:需要本机有 `claude` CLI(Claude Code),登录过
+  - Codex 路径:需要 OpenAI Codex CLI,首次运行会弹 ChatGPT 登录
 
-## 安装(一次性)
+## 安装
 
 ```bash
 pnpm install
-pnpm bootstrap:ffmpeg   # 下载 ffmpeg.exe / ffprobe.exe
-pnpm bootstrap:whisper  # 下载 whisper-cli + ggml-base 模型
-pnpm build              # 构建 4 个包
-pnpm test               # 26 个单元测试(应全通过)
+pnpm bootstrap:ffmpeg     # 下 ffmpeg 二进制
+pnpm bootstrap:whisper    # 下 whisper.cpp + 模型
+pnpm bootstrap:diarization # 可选 — 下 sherpa-onnx
+pnpm build                # 构建所有包
+pnpm test                 # 118 个单元测试全绿
 ```
 
-> pnpm 首次会提示 `approve-builds`,选 electron 和 esbuild,或直接信任本仓库的 `pnpm.onlyBuiltDependencies` 配置。
-
-## 开发模式
-
-**Electron 桌面应用(推荐):**
+## 开发
 
 ```bash
+# 跑 Electron 桌面(推荐)
 pnpm --filter @lynlens/desktop dev
-# 同时跑: Vite renderer (5173) + tsc main watch + Electron 等 Vite 起来后启动
-```
+# 等价于: concurrently -k "vite" "tsc main --watch" "wait-on :5173 && electron"
 
-**单独开发 Core / MCP / CLI:**
+# 单独跑 core
+pnpm dev:core
 
-```bash
-pnpm dev:core           # tsc --watch
-pnpm dev:mcp            # tsx src/index.ts (stdio 模式,Claude 连接用)
+# 单独跑外部 MCP server(给 Claude Desktop 用的 stdio 版本)
+pnpm dev:mcp
+
+# CLI
 pnpm dev:cli -- probe foo.mp4
 ```
 
-## 使用 CLI
+## 打包(发版给用户)
 
 ```bash
-# 读取视频元信息
-node packages/cli/dist/index.js probe ./demo.mp4
+# 1. 确保二进制资源都下好了
+pnpm bootstrap:ffmpeg
+pnpm bootstrap:whisper
+pnpm bootstrap:diarization
 
-# 查看 .qcp 工程
-node packages/cli/dist/index.js info ./demo.qcp
-
-# 导出(默认精确模式)
-node packages/cli/dist/index.js export ./demo.qcp -o ./demo_edited.mp4 -m precise -q high
+# 2. 构建 + 打包
+pnpm package:desktop
+# → packages/desktop/release/ 产出 .dmg / .exe / .AppImage
 ```
 
-**已端到端验证**: 10s 测试视频,删除 `[2,4]` + `[6.5,7.5]` 两段 → precise 模式导出 7s `_edited.mp4`,fast 模式同样产出文件。
+**打包前的 checklist**:
+- [ ] `pnpm test` 全过
+- [ ] `pnpm typecheck` 无错
+- [ ] 在无 `~/.codex/config.toml` / `~/.claude.json` 的干净机器测试 — 聊天应当提示「未登录」而不是崩
+- [ ] 用一个真视频走完:打开 → 转录 → 识别说话人 → 粗剪 → 生成高光 → 编辑 → 生成文案 → 导出成片
+- [ ] macOS 打包需要证书 + 公证(见下)
 
-## 注册 MCP 到 Claude 桌面版
+### macOS 公证(发版给公众必须)
 
-1. 确保 MCP Server 已构建:`pnpm --filter @lynlens/mcp-server build`
-2. 编辑 Claude 配置(Windows: `%APPDATA%\Claude\claude_desktop_config.json`;macOS: `~/Library/Application Support/Claude/claude_desktop_config.json`):
+```bash
+# 在 electron-builder.yml 里配 afterSign + notarize
+# 需要 Apple Developer 账号,设置环境变量:
+export APPLE_ID=...
+export APPLE_ID_PASSWORD=...  # app-specific password
+export APPLE_TEAM_ID=...
+pnpm package:desktop
+```
+
+### Windows 打包限制
+
+`electron-builder` 解包 `winCodeSign` 含 macOS 符号链接,需:
+- **Developer Mode** 开启,或
+- **管理员权限** 运行终端
+
+本仓库已做 CJS 改造 + `asar: false` 绕过 pnpm workspace 符号链接兼容性问题。
+
+## 注册外部 MCP 到 Claude Desktop
+
+外部 `packages/mcp-server` 是**独立进程**,可以不启动 LynLens 就让 Claude Desktop 操作 `.qcp` 文件。
+
+```bash
+pnpm --filter @lynlens/mcp-server build
+```
+
+编辑 Claude Desktop 配置:
+- Windows: `%APPDATA%\Claude\claude_desktop_config.json`
+- macOS: `~/Library/Application Support/Claude/claude_desktop_config.json`
 
 ```json
 {
   "mcpServers": {
     "lynlens": {
       "command": "node",
-      "args": ["C:/Users/Wilon/Desktop/APP Store/APPs/LynLens/packages/mcp-server/dist/index.js"],
-      "env": {
-        "OPENAI_API_KEY": "sk-..."
-      }
+      "args": ["/absolute/path/to/lynlens/packages/mcp-server/dist/index.js"],
+      "env": { "OPENAI_API_KEY": "sk-..." }
     }
   }
 }
 ```
 
-3. 重启 Claude 桌面版,在对话里直接说:
-   > "帮我剪 D:/今天的录像.mp4,去掉停顿和口误,导出到桌面"
+## AI 预标记的三种信号(基于波形 + 转录)
 
-### MCP 工具清单 (9 个)
+| 信号 | 条件 | 依赖 |
+|---|---|---|
+| **静音段** | 波形峰值超过 `minPauseSec`(默认 1.0s)的停顿 | 只需波形 |
+| **语气词** | 识别 `嗯 / 呃 / 那个 / 就是 / um / uh` 等,支持重复形「嗯嗯嗯」 | 需转录 |
+| **重拍/重复段** | bigram Jaccard 相似度 ≥ 0.8 的连续句对(保留后者) | 需转录 |
 
-| Tool                    | 用途                                                    |
-| ----------------------- | ------------------------------------------------------- |
-| `open_project`          | 打开视频/工程文件,返回 projectId                      |
-| `transcribe`            | 视频转录 → 带词级时间戳文字稿(whisper.cpp / OpenAI)  |
-| `get_project_state`     | 查询项目完整状态(AI 决策依据)                       |
-| `add_segments`          | 批量添加删除段(必须带 reason)                       |
-| `remove_segments`       | 移除误加的段(AI 自我纠错)                           |
-| `set_mode`              | L2 审核 / L3 全自动                                   |
-| `preview`               | 生成短预览 mp4 供 AI/人类检查                         |
-| `export`                | 导出成品(L2 模式下要求所有段已批准)                |
-| `ai_mark_silence`       | **内置**:基于静音检测标记所有 >1s 停顿为 AI 段        |
+所有 AI 标记 `source = 'ai'`;`L2` 模式进 pending、`L3` 模式直接 approved。
 
-### 转录引擎
+## 架构
 
-- **whisper.cpp 本地**(默认,隐私):跑 `pnpm bootstrap:whisper` 后自动发现。手动覆盖用 `LYNLENS_WHISPER_BIN` / `LYNLENS_WHISPER_MODEL` 环境变量。
-- **OpenAI API**:设置 `OPENAI_API_KEY` 即可。单文件 ≤25MB 自动上传。
-- **都没有**:回退 `NullTranscriptionService`(转录返回空)。`ai_mark_silence` 不依赖转录,始终可用。
+```
+┌─────────────────────────────────────────────────┐
+│  用户界面层                                       │
+│  ├─ Electron 主窗口(粗剪/高光/文案)             │
+│  ├─ 独立 Agent 弹窗(Claude / Codex 可切换)      │
+│  └─ Claude Desktop / Cursor(通过外部 MCP)       │
+└──────────┬──────────────────────┬───────────────┘
+           │ IPC                  │ MCP (stdio + HTTP)
+           ▼                      ▼
+┌─────────────────────────────────────────────────┐
+│  packages/desktop/src/main                       │
+│  ├─ index.ts — IPC handlers                     │
+│  ├─ agent.ts — Claude 进程内工具(44)            │
+│  ├─ mcp-http-server.ts — Codex HTTP 工具(44)    │
+│  └─ agent-dispatcher.ts — provider 路由          │
+└──────────┬──────────────────────────────────────┘
+           │
+           ▼
+┌─────────────────────────────────────────────────┐
+│  @lynlens/core                                   │
+│  • Project · SegmentManager · ExportService      │
+│  • TranscriptionService · Diarization            │
+│  • Highlight · Copywriter · Safety               │
+└─────────────────────────────────────────────────┘
+```
 
-### AI 预标记的三种信号
+**设计原则**:
 
-点 UI 里的「🤖 AI 预标记」或通过 MCP `ai_mark_silence` 工具触发:
-
-1. **静音段** 📻 — 基于波形峰值检测超过 `minPauseSec`(默认 1s)的停顿
-2. **语气词** 💬 — 只有在已转录(有 transcript)时生效,识别 `嗯 / 呃 / 那个 / 就是 / um / uh` 等,支持重复形 `嗯嗯嗯`
-3. **重拍/重复段** 🔁 — 转录后用 bigram Jaccard 相似度 ≥ 0.8 识别连续两句非常相像的句子(保留后者,删前者)
-
-所有标记 `source = 'ai'`,L2 模式下进入 `pending` 待审核状态;L3 模式下自动 `approved`。
+1. `@lynlens/core` 不依赖 Electron / React — 任何 UI 操作都可以通过 MCP 实现,反之亦然
+2. AI 和人类共享同一个 `SegmentManager` — 每段打 source 标(human / ai)+ status(pending / approved / rejected / cut)
+3. 删除段编辑 → `Ctrl+Z` 撤销 200 步;高光变体改动自动清 sourceSnapshot;字幕级联编辑保 500ms 最小时长
+4. Safety 硬约束在 Core 层强制:禁止 output == source,删除总时长 ≤ 80%,MCP 单会话调用上限 50 次
 
 ## 键盘快捷键(UI)
 
-| 快捷键               | 功能                      |
-| -------------------- | ------------------------- |
-| `空格`               | 播放 / 暂停               |
-| `J` / `K` / `L`      | 倒放 / 暂停 / 快放        |
-| `← / →`              | 后退 / 前进 1s            |
-| `Shift + ← / →`      | 后退 / 前进 5s            |
-| `,` / `.`            | 后退 / 前进 1 帧          |
-| `D`(按住)          | 刷选删除(松开完成)     |
-| `Delete`             | 删除时间轴拖选段          |
-| `Shift + A`          | 批准所有待审 AI 段        |
-| `Ctrl + R`           | 触发 AI 预标记            |
-| `Ctrl + Z / Y`       | 撤销 / 重做(200 步)    |
-| `Ctrl + S`           | 保存工程                  |
-| `Ctrl + E`           | 导出                       |
-| `+` / `-` / `0`      | 时间轴缩放 / 适应窗口    |
-| `Esc`                | 退出预览模式              |
+| 快捷键 | 功能 |
+|---|---|
+| `空格` | 播放 / 暂停 |
+| `J` / `K` / `L` | 倒放 / 暂停 / 快放 |
+| `← / →` | 后退 / 前进 1s |
+| `Shift + ← / →` | 后退 / 前进 5s |
+| `,` / `.` | 后退 / 前进 1 帧 |
+| `D`(按住) | 刷选删除(松开完成) |
+| `Shift+拖拽` | 标记删除段 |
+| `Cmd/Ctrl+拖拽` | 擦除时间范围 |
+| `Cmd+Shift+拖拽`(蓝框两端) | 拖动调整字幕时间戳 |
+| `Delete` | 删除时间轴拖选段 |
+| `Shift + A` | 批准所有待审 AI 段 |
+| `Ctrl + R` | 触发 AI 预标记 |
+| `Ctrl + Z / Y` | 撤销 / 重做 |
+| `Ctrl + S` | 保存工程 |
+| `Ctrl + E` | 导出 |
+| `+` / `-` / `0` | 时间轴缩放 / 适应窗口 |
+| `Esc` | 退出预览模式 |
 
-## 架构核心(三层)
-
-```
-┌─────────────────────────────────────────────┐
-│  Claude 桌面 / Cursor / 其他 AI            │
-└─────────────────┬───────────────────────────┘
-                  │ MCP 协议 (stdio)
-                  ▼
-┌─────────────────────────────────────────────┐
-│  @lynlens/mcp-server                       │
-│  9 个工具(含内置 ai_mark_silence)        │
-└─────────────────┬───────────────────────────┘
-                  │ 直接依赖
-                  ▼
-┌─────────────────────────────────────────────┐
-│  @lynlens/core  (CJS,业务核心)            │
-│  • SegmentManager(undo 200 步+重叠合并)  │
-│  • ProjectManager + .qcp 序列化           │
-│  • ExportService(fast / precise)          │
-│  • TranscriptionService(whisper / API)    │
-│  • detectSilences(内置 AI 预标记算法)    │
-│  • EventBus + Safety                      │
-└───────┬────────────────────────┬───────────┘
-        │                        │
-        ▼                        ▼
-  @lynlens/desktop          @lynlens/cli
-  (Electron UI)             (脚本/批处理)
-```
-
-**设计原则:**
-
-1. `@lynlens/core` 不依赖 electron/react/UI — 任何 UI 操作都可通过 MCP 实现,反之亦然
-2. AI 和人类共享同一个 SegmentManager — 每段打标(human/ai)+ 状态(pending/approved/rejected)
-3. Safety 硬性约束在 Core 层强制:
-   - 禁止 output 路径 == source 路径
-   - 删除总时长不得超过原片 80%
-   - MCP 单会话调用上限 50 次
-
-## 打包 (Windows / macOS)
-
-```bash
-# 1. 下载平台 ffmpeg 二进制(自动识别 win/mac-x64/mac-arm64)
-pnpm bootstrap:ffmpeg
-
-# 2. 打包
-pnpm package:desktop
-# → packages/desktop/release/ 下生成 .exe 或 .dmg
-```
-
-### ⚠ Windows 打包已知限制
-
-`electron-builder` 在打包时需要解压 `winCodeSign`(含 macOS 符号链接),要求:
-
-- **Developer Mode** 开启(`设置 → 更新和安全 → 开发者选项 → 开发人员模式`),或
-- 以**管理员权限**运行 PowerShell/终端
-
-否则会报 `Cannot create symbolic link : A required privilege is not held by the client`。
-
-本仓库已做 CJS 改造以绕过 pnpm workspace 符号链接与 ASAR 的兼容性问题(`asar: false`)。
-
-## 里程碑完成状态
-
-| M#    | 内容                                                | 状态 |
-| ----- | --------------------------------------------------- | ---- |
-| M0    | pnpm monorepo 脚手架                               | ✅   |
-| M1    | Core Engine 基础(Project/Segment/Bus)            | ✅   |
-| M2    | Core FFmpeg / 波形 / 导出(fast+precise)         | ✅   |
-| M3    | 转录:whisper.cpp 本地 + OpenAI API + 静音/语气词/重拍检测 | ✅   |
-| M4    | MCP Server + 9 个工具                              | ✅   |
-| M5    | CLI (probe / info / export)                        | ✅   |
-| M6-M9 | Electron UI(播放/时间轴/标记/审核/预览/导出/字幕条) | ✅   |
-| M10   | 跨平台打包(需 Developer Mode 开启后运行)      | ⚠ 条件完成 |
-
-**已覆盖的验收项** (参考说明书 §7):
-
-- C1-C12 Core 验收:全通过,单元测试 20/20
-- M1-M7 MCP 验收:9 个工具注册 + stdio daemon
-- U1-U16 UI 验收:主要工作流 MVP 通过
-- 性能:10s 视频精确导出 <10s、快速导出 <5s(ffmpeg 本地)
-
-## AI 用户使用示例(Claude 桌面版)
+## AI 使用示例
 
 ```
-你: 帮我剪 D:/今天的录像.mp4,先看一下里面说了什么,
-     然后去掉所有超过 1 秒的停顿和明显的口误,
-     导出到桌面 clean.mp4
+你: 帮我剪 ~/Desktop/录像.mp4,转录后去掉停顿和语气词,
+    再挑 3 个 30 秒左右的高光片段,最后生成小红书文案。
 
-Claude: [依次调用]
-  1. open_project({ videoPath: "D:/今天的录像.mp4" })
-  2. transcribe({ projectId, engine: "whisper-local" })
-  3. get_project_state({ projectId })  → 读取文字稿
-  4. ai_mark_silence({ projectId, minPauseSec: 1.0 })  → 停顿段
-  5. add_segments({ projectId, segments: [...] })  → 口误段
-  6. set_mode({ projectId, mode: "L3" })  → 自动导出
-  7. export({ projectId, outputPath: "桌面/clean.mp4" })
-
-Claude: "已完成,删除了 23 段,成品时长从 15:30 减到 12:05,
-        保存在桌面 clean.mp4"
+Agent 会依次调用:
+  1. transcribe(projectId)
+  2. ai_mark_silence(projectId, minPauseSec=1.0)
+  3. approve_all_pending(projectId)
+  4. commit_ripple(projectId)           ← 真正剪掉
+  5. generate_highlights(projectId, style='default', count=3, targetSeconds=30)
+  6. set_highlight_pinned(projectId, variantId, pinned=true)  ← 收藏你喜欢的
+  7. generate_social_copies(projectId, sourceType='variant', sourceVariantId=..., platforms=['xiaohongshu'])
+  8. export_final_video(projectId, outputPath='~/Desktop/clean.mp4')
 ```
+
+---
+
+**当前版本**: 0.2.0 · **测试**: 118 unit tests 全过 · **打包目标**: macOS (arm64/x64), Windows (x64)
