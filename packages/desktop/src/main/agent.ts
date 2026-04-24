@@ -1,28 +1,25 @@
 /**
  * In-process Claude agent wired directly to the local LynLens engine.
  *
- * We expose the engine as an "SDK MCP server" that lives in this Electron
- * main process. The Claude agent SDK streams model output and tool calls;
- * tool handlers mutate the engine synchronously, so the renderer sees the
- * resulting EventBus events immediately — no file watching required.
+ * Exposes the engine as an "SDK MCP server" that lives in the Electron
+ * main process. Tool definitions come from `./agent-tools/` — shared
+ * with `mcp-http-server.ts` (Codex path) so we register the same 46
+ * tools from ONE source of truth.
+ *
+ * Also hosts two one-shot entry points used by non-chat flows:
+ *   - runHighlightGeneration: single-turn prompt, text out
+ *   - runCopywriterForPlatform: same shape, platform-specialised
  */
 
-import { z } from 'zod';
 import {
   buildCopywriterSystemPrompt,
   buildCopywriterUserPrompt,
-  buildHighlightSystemPrompt,
-  buildHighlightUserPrompt,
   parseCopywriterResponse,
-  parseHighlightResponse,
   type CopywriterGenerateInput,
-  type HighlightStyle,
   type LynLensEngine,
-  type SegmentSource,
-  type SegmentStatus,
   type SocialCopy,
-  type SocialPlatform,
 } from '@lynlens/core';
+import { ALL_TOOLS } from './agent-tools';
 
 // Lazy-load the ESM-only Claude SDK. Static `import` would compile to
 // `require()` in CJS, which is rejected at runtime (ERR_REQUIRE_ESM).
@@ -52,1263 +49,30 @@ export type AgentEvent =
   | { type: 'error'; message: string };
 
 /**
- * Build the SDK MCP server with engine-backed tool handlers.
+ * Build the SDK MCP server by iterating our shared ALL_TOOLS list. Each
+ * tool def gives us name/description/schema/handler — we hand those to
+ * Claude's `tool()` helper and capture the engine in a closure so the
+ * handler can mutate shared project state.
  */
 async function buildLynLensSdkServer(engine: LynLensEngine) {
   const { createSdkMcpServer, tool } = await loadSdk();
   return createSdkMcpServer({
     name: 'lynlens-inproc',
     version: '0.1.0',
-    tools: [
+    // Cast through `any` on the handler's return — Claude SDK's tool()
+    // has a slightly richer content union than our ToolResult (audio /
+    // image content types we don't use). The shape is a structural
+    // subset, so the cast is safe at runtime.
+    tools: ALL_TOOLS.map((def) =>
       tool(
-        'get_project_state',
-        '获取当前项目状态(视频信息、字幕段文本、所有删除段、AI 模式)。返回精简结构:字幕段只含 id/start/end/text,不含词级时间戳(省 token)。需要逐词定位时直接操作 text。',
-        {
-          projectId: z.string().describe('项目 ID(从 LynLens UI 打开视频后自动生成;不要从任何路径或 session 文件名里猜)'),
-        },
-        async ({ projectId }) => {
-          const project = engine.projects.get(projectId);
-          const qcp = project.toQcp();
-          // Slim down transcript: drop word-level timestamps to keep the
-          // tool-result under Claude Code's truncation threshold when the
-          // video is long (40+ segments × 20+ words each blows past 60KB).
-          const slim = {
-            ...qcp,
-            transcript: qcp.transcript
-              ? {
-                  language: qcp.transcript.language,
-                  segmentCount: qcp.transcript.segments.length,
-                  segments: qcp.transcript.segments.map((s) => ({
-                    id: s.id,
-                    start: Number(s.start.toFixed(3)),
-                    end: Number(s.end.toFixed(3)),
-                    text: s.text,
-                  })),
-                }
-              : null,
-          };
-          return {
-            content: [
-              {
-                type: 'text' as const,
-                text: JSON.stringify(slim, null, 2),
-              },
-            ],
-          };
-        }
-      ),
-
-      tool(
-        'transcribe',
-        '对当前项目的视频进行语音转文字(本地 whisper.cpp)。返回带词级时间戳的字幕。',
-        {
-          projectId: z.string(),
-          language: z.string().default('auto').describe('zh / en / auto'),
-        },
-        async ({ projectId, language }) => {
-          const project = engine.projects.get(projectId);
-          engine.eventBus.emit({
-            type: 'transcription.started',
-            projectId,
-            engine: 'whisper-local',
-          });
-          try {
-            const transcript = await engine.transcription.transcribe(project.videoPath, {
-              language,
-              onProgress: (percent) =>
-                engine.eventBus.emit({
-                  type: 'transcription.progress',
-                  projectId,
-                  percent,
-                }),
-            });
-            project.setTranscript(transcript);
-            engine.eventBus.emit({
-              type: 'transcription.completed',
-              projectId,
-              segmentCount: transcript.segments.length,
-            });
-            return {
-              content: [
-                {
-                  type: 'text' as const,
-                  text: `转录完成: ${transcript.segments.length} 段, 语言=${transcript.language}`,
-                },
-              ],
-            };
-          } catch (err) {
-            engine.eventBus.emit({
-              type: 'transcription.failed',
-              projectId,
-              error: (err as Error).message,
-            });
-            throw err;
-          }
-        }
-      ),
-
-      tool(
-        'ai_mark_silence',
-        '内置静音检测(可选:若已有字幕,还会识别语气词和重复段)。添加的段都进 pending 待审状态。',
-        {
-          projectId: z.string(),
-          minPauseSec: z.number().positive().default(1.0),
-          silenceThreshold: z.number().min(0).max(1).default(0.03),
-        },
-        async ({ projectId, minPauseSec, silenceThreshold }) => {
-          const project = engine.projects.get(projectId);
-          const { detectSilences, detectFillers, detectRetakes, extractWaveform } =
-            await import('@lynlens/core');
-          const env = await extractWaveform(project.videoPath, 4000, engine.ffmpegPaths);
-          const silences = detectSilences(env.peak, project.videoMeta.duration, {
-            minPauseSec,
-            silenceThreshold,
-          });
-          let fillerCount = 0;
-          let retakeCount = 0;
-          const ids: string[] = [];
-          for (const s of silences) {
-            const seg = project.segments.add({
-              start: s.start,
-              end: s.end,
-              source: 'ai',
-              reason: s.reason,
-              confidence: 0.75,
-              aiModel: 'builtin-silence',
-            });
-            ids.push(seg.id);
-          }
-          if (project.transcript) {
-            for (const f of detectFillers(project.transcript)) {
-              const seg = project.segments.add({
-                start: f.start,
-                end: f.end,
-                source: 'ai',
-                reason: f.reason,
-                confidence: f.confidence,
-                aiModel: 'builtin-filler',
-              });
-              ids.push(seg.id);
-              fillerCount += 1;
-            }
-            for (const r of detectRetakes(project.transcript)) {
-              const seg = project.segments.add({
-                start: r.start,
-                end: r.end,
-                source: 'ai',
-                reason: r.reason,
-                confidence: r.confidence,
-                aiModel: 'builtin-retake',
-              });
-              ids.push(seg.id);
-              retakeCount += 1;
-            }
-          }
-          return {
-            content: [
-              {
-                type: 'text' as const,
-                text: `已标 ${ids.length} 段: 停顿 ${silences.length}, 语气词 ${fillerCount}, 重复 ${retakeCount}`,
-              },
-            ],
-          };
-        }
-      ),
-
-      tool(
-        'add_segments',
-        '手动添加需要删除的段(一般配合已有字幕做精细标记)。',
-        {
-          projectId: z.string(),
-          segments: z
-            .array(
-              z.object({
-                start: z.number().nonnegative(),
-                end: z.number().positive(),
-                reason: z.string(),
-                confidence: z.number().min(0).max(1).optional(),
-              })
-            )
-            .min(1),
-        },
-        async ({ projectId, segments }) => {
-          const project = engine.projects.get(projectId);
-          const ids: string[] = [];
-          for (const s of segments) {
-            const seg = project.segments.add({
-              start: s.start,
-              end: s.end,
-              source: 'ai' as SegmentSource,
-              reason: s.reason,
-              confidence: s.confidence,
-              aiModel: 'claude-agent',
-            });
-            ids.push(seg.id);
-          }
-          return {
-            content: [
-              { type: 'text' as const, text: `添加 ${ids.length} 段: ${ids.join(', ')}` },
-            ],
-          };
-        }
-      ),
-
-      tool(
-        'remove_segments',
-        '移除之前添加的删除段(纠错 / 响应用户"保留 #3"之类的要求)。',
-        {
-          projectId: z.string(),
-          segmentIds: z.array(z.string()).min(1),
-        },
-        async ({ projectId, segmentIds }) => {
-          const project = engine.projects.get(projectId);
-          for (const id of segmentIds) project.segments.remove(id);
-          return {
-            content: [
-              { type: 'text' as const, text: `移除 ${segmentIds.length} 段` },
-            ],
-          };
-        }
-      ),
-
-      tool(
-        'set_segment_status',
-        '修改某个段的审核状态(approve / reject)。常用于"保留这几段"或"删掉这几段的待审"。',
-        {
-          projectId: z.string(),
-          segmentId: z.string(),
-          status: z.enum(['approved', 'rejected', 'pending'] as const),
-        },
-        async ({ projectId, segmentId, status }) => {
-          const project = engine.projects.get(projectId);
-          if (status === 'approved') project.segments.approve(segmentId, 'claude');
-          else if (status === 'rejected') project.segments.reject(segmentId, 'claude');
-          else {
-            // To set to pending we directly mutate (no public API yet)
-            const seg = project.segments.find(segmentId);
-            if (seg) seg.status = 'pending' as SegmentStatus;
-          }
-          return {
-            content: [
-              {
-                type: 'text' as const,
-                text: `段 ${segmentId.slice(0, 8)} 状态→${status}`,
-              },
-            ],
-          };
-        }
-      ),
-
-      tool(
-        'approve_all_pending',
-        '一键批准所有待审核的 AI 段(用户说"全部接受"时调用)。',
-        { projectId: z.string() },
-        async ({ projectId }) => {
-          const project = engine.projects.get(projectId);
-          const pending = project.segments.list().filter((s) => s.status === 'pending');
-          for (const s of pending) project.segments.approve(s.id, 'claude');
-          return {
-            content: [
-              { type: 'text' as const, text: `批准了 ${pending.length} 个待审段` },
-            ],
-          };
-        }
-      ),
-
-      tool(
-        'commit_ripple',
-        '对所有 approved 删除段执行 ripple 剪切:把它们从时间轴里压掉,后面的内容整体往前填补,时间轴变短。只动 approved 的段,pending 和 rejected 不动。用户说"剪掉/执行剪切/ripple"或者确认一批删除段后要真动手时调用。调用前最好让用户知道会删多少秒。',
-        { projectId: z.string() },
-        async ({ projectId }) => {
-          const project = engine.projects.get(projectId);
-          const result = project.commitRipple();
-          const msg =
-            result.cutSegmentIds.length === 0
-              ? '没有 approved 段,无需剪切。'
-              : `剪掉 ${result.cutSegmentIds.length} 段,共 ${result.totalCutSeconds.toFixed(2)} 秒,时间轴长度变为 ${result.effectiveDuration.toFixed(2)} 秒。`;
-          return {
-            content: [{ type: 'text' as const, text: msg }],
-          };
-        }
-      ),
-
-      tool(
-        'revert_ripple',
-        '撤销某一段已经执行的 ripple 剪切:把指定段从 cut 状态恢复为 approved,时间轴会重新变长。参数是要恢复的 segment id。',
-        {
-          projectId: z.string(),
-          segmentId: z.string(),
-        },
-        async ({ projectId, segmentId }) => {
-          const project = engine.projects.get(projectId);
-          const ok = project.revertRipple(segmentId);
-          return {
-            content: [
-              {
-                type: 'text' as const,
-                text: ok
-                  ? `已恢复段 ${segmentId.slice(0, 8)}。`
-                  : `找不到 cut 状态的段 ${segmentId}。`,
-              },
-            ],
-            isError: !ok,
-          };
-        }
-      ),
-
-      tool(
-        'set_mode',
-        '设置 AI 工作模式。L2 = 添加 AI 段进 pending 等审核; L3 = 直接 approved。',
-        {
-          projectId: z.string(),
-          mode: z.enum(['L2', 'L3'] as const),
-        },
-        async ({ projectId, mode }) => {
-          engine.projects.get(projectId).setMode(mode);
-          return {
-            content: [{ type: 'text' as const, text: `模式→${mode}` }],
-          };
-        }
-      ),
-
-      tool(
-        'suggest_transcript_fix',
-        '对某一段字幕提出一个修改建议(不会立刻改动原文)。UI 会在那段下方显示"✓ 接受 / ✗ 忽略",用户点击后才生效。用于疑似错字、同音字修正、专有名词统一等需要人眼确认的改动。',
-        {
-          projectId: z.string(),
-          segmentId: z.string(),
-          newText: z.string().describe('建议的新文本'),
-          reason: z.string().optional().describe('为什么要改 (简短,一句话)'),
-        },
-        async ({ projectId, segmentId, newText, reason }) => {
-          const project = engine.projects.get(projectId);
-          const ok = project.suggestTranscriptFix(segmentId, newText, reason);
-          return {
-            content: [
-              {
-                type: 'text' as const,
-                text: ok
-                  ? `已对段 ${segmentId.slice(0, 8)} 提交建议,等用户确认。`
-                  : `未找到字幕段 ${segmentId}`,
-              },
-            ],
-            isError: !ok,
-          };
-        }
-      ),
-
-      tool(
-        'update_transcript_segment',
-        '【直接改】修正某一段字幕文字,立刻生效,不经过审核。只在"很明显不需要确认"的机械错误时用(如字面的拼写错);有歧义的改动请改用 suggest_transcript_fix。',
-        {
-          projectId: z.string(),
-          segmentId: z.string(),
-          newText: z.string(),
-        },
-        async ({ projectId, segmentId, newText }) => {
-          const project = engine.projects.get(projectId);
-          const ok = project.updateTranscriptSegment(segmentId, newText);
-          return {
-            content: [
-              {
-                type: 'text' as const,
-                text: ok
-                  ? `已直接更新字幕段 ${segmentId.slice(0, 8)}`
-                  : `未找到字幕段 ${segmentId}`,
-              },
-            ],
-            isError: !ok,
-          };
-        }
-      ),
-
-      tool(
-        'replace_in_transcript',
-        '全局查找替换字幕文字(批量修错字 / 统一专有名词)。返回改动的段数。',
-        {
-          projectId: z.string(),
-          find: z.string().min(1),
-          replace: z.string(),
-        },
-        async ({ projectId, find, replace }) => {
-          const project = engine.projects.get(projectId);
-          const n = project.replaceInTranscript(find, replace);
-          return {
-            content: [
-              {
-                type: 'text' as const,
-                text: `替换 "${find}" → "${replace}": ${n} 段被改动`,
-              },
-            ],
-          };
-        }
-      ),
-
-      tool(
-        'generate_highlights',
-        '从已经粗剪(ripple)过的字幕里挑出高光段,生成短视频变体。用户在"高光"tab 点按钮时触发;在聊天里说"帮我生成 3 个高光变体"也可以。style: default(通用精华) / hero(片头) / ai-choice(自由)。',
-        {
-          projectId: z.string(),
-          style: z.enum(['default', 'hero', 'ai-choice'] as const),
-          count: z.number().int().min(1).max(5),
-          targetSeconds: z.number().int().min(5).max(300),
-        },
-        async ({ projectId, style, count, targetSeconds }) => {
-          const project = engine.projects.get(projectId);
-          if (!project.transcript || project.transcript.segments.length === 0) {
-            return {
-              content: [{ type: 'text' as const, text: '请先生成字幕后再生成高光。' }],
-              isError: true,
-            };
-          }
-          const sys = buildHighlightSystemPrompt();
-          const user = buildHighlightUserPrompt({
-            transcript: project.transcript,
-            cutRanges: project.cutRanges,
-            effectiveDuration: project.getEffectiveDuration(),
-            style,
-            count,
-            targetSeconds,
-          });
-          const { text, model } = await runHighlightGeneration({
-            systemPrompt: sys,
-            userPrompt: user,
-          });
-          const variants = parseHighlightResponse(text, project.cutRanges, model, style);
-          project.setHighlightVariants(variants);
-          return {
-            content: [
-              {
-                type: 'text' as const,
-                text: `生成了 ${variants.length} 个高光变体。` +
-                  variants.map((v) => `\n- ${v.title} (${v.durationSeconds.toFixed(1)}s)`).join(''),
-              },
-            ],
-          };
-        }
-      ),
-
-      tool(
-        'clear_highlights',
-        '清空当前高光变体。通常在用户说"不要这些变体"或切回粗剪 tab 时调用。',
-        { projectId: z.string() },
-        async ({ projectId }) => {
-          const project = engine.projects.get(projectId);
-          const n = project.highlightVariants.length;
-          project.clearHighlightVariants();
-          return {
-            content: [{ type: 'text' as const, text: `清空了 ${n} 个高光变体。` }],
-          };
-        }
-      ),
-
-      tool(
-        'update_highlight_variant_segment',
-        '修改某一段高光的起止时间(source 时间,单位秒)和/或描述文字。用户说"第 3 段前移 2 秒"/"第 1 段缩短到 5 秒"/"改描述为…"时调用。先用 get_project_state 查当前 variants 和 segments 对应的 idx。不能和同变体的其他段重叠;时长 < 0.2s 或出视频范围会被拒。',
-        {
-          projectId: z.string(),
-          variantId: z.string(),
-          segmentIdx: z.number().int().min(0),
-          newStart: z.number().nonnegative(),
-          newEnd: z.number().positive(),
-          newReason: z.string().optional(),
-        },
-        async ({ projectId, variantId, segmentIdx, newStart, newEnd, newReason }) => {
-          const project = engine.projects.get(projectId);
-          const ok = project.updateHighlightVariantSegment(
-            variantId,
-            segmentIdx,
-            newStart,
-            newEnd,
-            newReason
-          );
-          return {
-            content: [
-              {
-                type: 'text' as const,
-                text: ok
-                  ? `已更新变体 ${variantId.slice(0, 8)} 的第 ${segmentIdx + 1} 段`
-                  : `更新失败 —— 可能和其他段重叠、越界、或段长 < 0.2s。用 get_project_state 复核一下当前状态。`,
-              },
-            ],
-            isError: !ok,
-          };
-        }
-      ),
-
-      tool(
-        'add_highlight_variant_segment',
-        '给某个高光变体加一段(source 时间)。用户说"在第 3 段后加一段 1:20 到 1:25"/"漏了开头那句,补上"时调用。新段追加到变体末尾(用 reorder 改顺序)。必须和现有段不重叠。',
-        {
-          projectId: z.string(),
-          variantId: z.string(),
-          startSec: z.number().nonnegative(),
-          endSec: z.number().positive(),
-          reason: z.string().default('AI 手动添加'),
-        },
-        async ({ projectId, variantId, startSec, endSec, reason }) => {
-          const project = engine.projects.get(projectId);
-          const ok = project.addHighlightVariantSegment(
-            variantId,
-            startSec,
-            endSec,
-            reason
-          );
-          return {
-            content: [
-              {
-                type: 'text' as const,
-                text: ok
-                  ? `已添加新段到变体 ${variantId.slice(0, 8)}: ${startSec.toFixed(2)} - ${endSec.toFixed(2)}`
-                  : `添加失败 —— 和现有段重叠、越界或长度 < 0.2s。`,
-              },
-            ],
-            isError: !ok,
-          };
-        }
-      ),
-
-      tool(
-        'delete_highlight_variant_segment',
-        '从某个高光变体里删掉一段。用户说"第 2 段不要"时调用。变体必须剩至少一段(否则整个变体就空了,拒绝)。',
-        {
-          projectId: z.string(),
-          variantId: z.string(),
-          segmentIdx: z.number().int().min(0),
-        },
-        async ({ projectId, variantId, segmentIdx }) => {
-          const project = engine.projects.get(projectId);
-          const ok = project.deleteHighlightVariantSegment(variantId, segmentIdx);
-          return {
-            content: [
-              {
-                type: 'text' as const,
-                text: ok
-                  ? `已删除变体 ${variantId.slice(0, 8)} 的第 ${segmentIdx + 1} 段`
-                  : `删除失败 —— 可能是最后一段(保留至少 1 段)或编号越界。`,
-              },
-            ],
-            isError: !ok,
-          };
-        }
-      ),
-
-      tool(
-        'reorder_highlight_variant_segment',
-        '调整变体里段落的播放顺序。用户说"把第 3 段挪到第 1 段之前"/"最后一段先播"时调用。时间不变,只改数组顺序。',
-        {
-          projectId: z.string(),
-          variantId: z.string(),
-          fromIdx: z.number().int().min(0),
-          toIdx: z.number().int().min(0),
-        },
-        async ({ projectId, variantId, fromIdx, toIdx }) => {
-          const project = engine.projects.get(projectId);
-          const ok = project.reorderHighlightVariantSegment(variantId, fromIdx, toIdx);
-          return {
-            content: [
-              {
-                type: 'text' as const,
-                text: ok
-                  ? `已把变体 ${variantId.slice(0, 8)} 的第 ${fromIdx + 1} 段移到第 ${toIdx + 1} 位`
-                  : `重排失败 —— 编号越界。`,
-              },
-            ],
-            isError: !ok,
-          };
-        }
-      ),
-
-      // ──────────────────────────────────────────────────────────────
-      // Segment edit: reject / erase / resize / undo / save
-      // ──────────────────────────────────────────────────────────────
-      tool(
-        'reject_segment',
-        '拒绝(否决)一个待审 AI 段。对应 UI 里的 ✗ 按钮。用户说"第 2 个不要"或"这个错了"时调用。',
-        { projectId: z.string(), segmentId: z.string() },
-        async ({ projectId, segmentId }) => {
-          const project = engine.projects.get(projectId);
-          project.segments.reject(segmentId, 'claude');
-          return {
-            content: [
-              { type: 'text' as const, text: `段 ${segmentId.slice(0, 8)} 已拒绝` },
-            ],
-          };
-        }
-      ),
-
-      tool(
-        'reject_all_pending',
-        '一键拒绝所有待审 AI 段。用户说"全部不要"或"推倒重来"时用。',
-        { projectId: z.string() },
-        async ({ projectId }) => {
-          const project = engine.projects.get(projectId);
-          const pending = project.segments.list().filter((s) => s.status === 'pending');
-          for (const s of pending) project.segments.reject(s.id, 'claude');
-          return {
-            content: [
-              { type: 'text' as const, text: `拒绝了 ${pending.length} 个待审段` },
-            ],
-          };
-        }
-      ),
-
-      tool(
-        'erase_range',
-        '擦除某个时间范围内所有标记段(把它们从 deleteSegments 里整段移除)。用户说"别删 0:10-0:20 那段的任何标记"时用。time 为 source 秒。',
-        {
-          projectId: z.string(),
-          start: z.number().nonnegative(),
-          end: z.number().positive(),
-        },
-        async ({ projectId, start, end }) => {
-          const project = engine.projects.get(projectId);
-          const before = project.segments.list().length;
-          project.segments.eraseRange(start, end);
-          const after = project.segments.list().length;
-          return {
-            content: [
-              {
-                type: 'text' as const,
-                text: `擦除 ${start.toFixed(2)}-${end.toFixed(2)}: 删掉 ${before - after} 个标记`,
-              },
-            ],
-          };
-        }
-      ),
-
-      tool(
-        'resize_segment',
-        '调整一个已有删除段的起止时间(source 秒)。用户说"把 #3 号段改到 0:05-0:08"时用。',
-        {
-          projectId: z.string(),
-          segmentId: z.string(),
-          start: z.number().nonnegative(),
-          end: z.number().positive(),
-        },
-        async ({ projectId, segmentId, start, end }) => {
-          const project = engine.projects.get(projectId);
-          const seg = project.segments.resize(segmentId, start, end);
-          return {
-            content: [
-              {
-                type: 'text' as const,
-                text: seg
-                  ? `段 ${segmentId.slice(0, 8)} 已改到 ${start.toFixed(2)}-${end.toFixed(2)}`
-                  : `找不到段 ${segmentId}`,
-              },
-            ],
-            isError: !seg,
-          };
-        }
-      ),
-
-      tool(
-        'undo',
-        '撤销上一步删除段操作(只影响 deleteSegments,不影响字幕/转录/高光)。用户说"撤销"/"退一步"时用。',
-        { projectId: z.string() },
-        async ({ projectId }) => {
-          const project = engine.projects.get(projectId);
-          const ok = project.segments.undo();
-          return {
-            content: [
-              { type: 'text' as const, text: ok ? '已撤销' : '没有可撤销的操作' },
-            ],
-            isError: !ok,
-          };
-        }
-      ),
-
-      tool(
-        'redo',
-        '重做上一次撤销的操作。',
-        { projectId: z.string() },
-        async ({ projectId }) => {
-          const project = engine.projects.get(projectId);
-          const ok = project.segments.redo();
-          return {
-            content: [
-              { type: 'text' as const, text: ok ? '已重做' : '没有可重做的操作' },
-            ],
-            isError: !ok,
-          };
-        }
-      ),
-
-      tool(
-        'save_project',
-        '把当前项目状态写到 .qcp 文件。默认保存到 get_qcp_path 返回的路径。用户说"保存"时调用。',
-        { projectId: z.string() },
-        async ({ projectId }) => {
-          const savedPath = await engine.projects.saveProject(projectId);
-          return {
-            content: [{ type: 'text' as const, text: `已保存: ${savedPath}` }],
-          };
-        }
-      ),
-
-      // ──────────────────────────────────────────────────────────────
-      // Transcript
-      // ──────────────────────────────────────────────────────────────
-      tool(
-        'accept_transcript_suggestion',
-        '接受某段字幕的 AI 建议(用建议文本覆盖原文,相当于用户点 ✓ 接受)。先 suggest_transcript_fix 提建议,用户或 AI 自己确认后再 accept。',
-        { projectId: z.string(), segmentId: z.string() },
-        async ({ projectId, segmentId }) => {
-          const ok = engine.projects.get(projectId).acceptTranscriptSuggestion(segmentId);
-          return {
-            content: [
-              {
-                type: 'text' as const,
-                text: ok ? `已接受 ${segmentId.slice(0, 8)} 的建议` : '找不到该段或无建议',
-              },
-            ],
-            isError: !ok,
-          };
-        }
-      ),
-
-      tool(
-        'clear_transcript_suggestion',
-        '忽略某段字幕的 AI 建议(相当于用户点 ✗ 忽略,原文不变)。',
-        { projectId: z.string(), segmentId: z.string() },
-        async ({ projectId, segmentId }) => {
-          const ok = engine.projects.get(projectId).clearTranscriptSuggestion(segmentId);
-          return {
-            content: [
-              {
-                type: 'text' as const,
-                text: ok ? `已忽略 ${segmentId.slice(0, 8)} 的建议` : '找不到该段或无建议',
-              },
-            ],
-          };
-        }
-      ),
-
-      tool(
-        'update_transcript_segment_time',
-        '调整某段字幕的起止时间(source 秒)。级联规则:与前/后段碰到时,邻居的就近边会让位。用户说"第 5 段往后推 0.3 秒"/"第 3 段到 0:10-0:14"时调用。',
-        {
-          projectId: z.string(),
-          segmentId: z.string(),
-          newStart: z.number().nonnegative(),
-          newEnd: z.number().positive(),
-        },
-        async ({ projectId, segmentId, newStart, newEnd }) => {
-          const ok = engine.projects
-            .get(projectId)
-            .updateTranscriptSegmentTime(segmentId, newStart, newEnd);
-          return {
-            content: [
-              {
-                type: 'text' as const,
-                text: ok
-                  ? `已更新 ${segmentId.slice(0, 8)}: ${newStart.toFixed(2)}-${newEnd.toFixed(2)}`
-                  : '更新失败 —— 可能参数非法或段不存在',
-              },
-            ],
-            isError: !ok,
-          };
-        }
-      ),
-
-      // ──────────────────────────────────────────────────────────────
-      // Highlights — inspection / pinning / deletion / export
-      // ──────────────────────────────────────────────────────────────
-      tool(
-        'get_highlights',
-        '列出当前项目的所有高光变体及各自的段落。可以用来定位 variantId / segmentIdx 再调其它工具修改。',
-        { projectId: z.string() },
-        async ({ projectId }) => {
-          const project = engine.projects.get(projectId);
-          const slim = project.highlightVariants.map((v) => ({
-            id: v.id,
-            title: v.title,
-            style: v.style,
-            pinned: !!v.pinned,
-            durationSeconds: Number(v.durationSeconds.toFixed(2)),
-            segments: v.segments.map((s) => ({
-              start: Number(s.start.toFixed(3)),
-              end: Number(s.end.toFixed(3)),
-              reason: s.reason,
-            })),
-          }));
-          return {
-            content: [{ type: 'text' as const, text: JSON.stringify(slim, null, 2) }],
-          };
-        }
-      ),
-
-      tool(
-        'set_highlight_pinned',
-        '收藏 / 取消收藏一个高光变体。收藏过的变体不会被「重新生成」覆盖。用户说"#3 我留着"时 pinned=true;"取消收藏"时 pinned=false。',
-        {
-          projectId: z.string(),
-          variantId: z.string(),
-          pinned: z.boolean(),
-        },
-        async ({ projectId, variantId, pinned }) => {
-          const ok = engine.projects.get(projectId).setHighlightVariantPinned(variantId, pinned);
-          return {
-            content: [
-              {
-                type: 'text' as const,
-                text: ok
-                  ? `变体 ${variantId.slice(0, 8)} ${pinned ? '已收藏' : '已取消收藏'}`
-                  : '变体不存在',
-              },
-            ],
-            isError: !ok,
-          };
-        }
-      ),
-
-      tool(
-        'delete_highlight_variant',
-        '永久删除整个高光变体(包括收藏的,不做二次确认)。用户明确说"删掉 #2 这个变体"时调用;不确定就先问。',
-        { projectId: z.string(), variantId: z.string() },
-        async ({ projectId, variantId }) => {
-          const ok = engine.projects.get(projectId).deleteHighlightVariant(variantId);
-          return {
-            content: [
-              {
-                type: 'text' as const,
-                text: ok ? `已删除变体 ${variantId.slice(0, 8)}` : '变体不存在',
-              },
-            ],
-            isError: !ok,
-          };
-        }
-      ),
-
-      // ──────────────────────────────────────────────────────────────
-      // Speakers
-      // ──────────────────────────────────────────────────────────────
-      tool(
-        'diarize',
-        '跑说话人识别,给每段字幕打标签(S1, S2, ...)。speakerCount 可选(默认 AI 自动)。跑完后用 rename_speaker 给人取名。',
-        {
-          projectId: z.string(),
-          speakerCount: z.number().int().min(1).max(8).optional(),
-        },
-        async ({ projectId, speakerCount }) => {
-          try {
-            const { runDiarization } = await import('./diarize-helper');
-            const diar = await runDiarization(engine, projectId, { speakerCount });
-            return {
-              content: [
-                {
-                  type: 'text' as const,
-                  text: `识别完成,engine=${diar.engine},说话人: ${diar.speakers.join(', ') || '(空)'}`,
-                },
-              ],
-            };
-          } catch (err) {
-            return {
-              content: [{ type: 'text' as const, text: (err as Error).message }],
-              isError: true,
-            };
-          }
-        }
-      ),
-
-      tool(
-        'rename_speaker',
-        '给说话人 ID 起显示名字,比如把 S1 改叫「主持人」。name 传空字符串或 null 则取消命名,显示回原始 ID。',
-        {
-          projectId: z.string(),
-          speakerId: z.string(),
-          name: z.string().nullable(),
-        },
-        async ({ projectId, speakerId, name }) => {
-          engine.projects.get(projectId).renameSpeaker(speakerId, name);
-          return {
-            content: [
-              {
-                type: 'text' as const,
-                text: name ? `${speakerId} → "${name}"` : `${speakerId} 取消命名`,
-              },
-            ],
-          };
-        }
-      ),
-
-      tool(
-        'merge_speakers',
-        '把所有被标成 from 的字幕段重新标成 to。用户说"S2 和 S4 其实是同一个人,合起来"时用。',
-        {
-          projectId: z.string(),
-          from: z.string(),
-          to: z.string(),
-        },
-        async ({ projectId, from, to }) => {
-          const n = engine.projects.get(projectId).mergeSpeakers(from, to);
-          return {
-            content: [
-              { type: 'text' as const, text: `把 ${n} 段从 ${from} 合并到 ${to}` },
-            ],
-          };
-        }
-      ),
-
-      tool(
-        'set_segment_speaker',
-        '改单一字幕段的说话人标签(修一个错标)。speaker 传空字符串或 null 清除标签。',
-        {
-          projectId: z.string(),
-          transcriptSegmentId: z.string(),
-          speaker: z.string().nullable(),
-        },
-        async ({ projectId, transcriptSegmentId, speaker }) => {
-          const ok = engine.projects
-            .get(projectId)
-            .setSegmentSpeaker(transcriptSegmentId, speaker);
-          return {
-            content: [
-              {
-                type: 'text' as const,
-                text: ok
-                  ? speaker
-                    ? `${transcriptSegmentId.slice(0, 8)} → ${speaker}`
-                    : `${transcriptSegmentId.slice(0, 8)} 清除标签`
-                  : '段不存在',
-              },
-            ],
-            isError: !ok,
-          };
-        }
-      ),
-
-      tool(
-        'auto_assign_unlabeled_speakers',
-        '给所有未标记的字幕段自动指派说话人 —— 按就近原则(最近的已标记段同一个人)。用户说"空着的帮我补全"时用。',
-        { projectId: z.string() },
-        async ({ projectId }) => {
-          const n = engine.projects.get(projectId).autoAssignUnlabeledSpeakers();
-          return {
-            content: [{ type: 'text' as const, text: `自动指派了 ${n} 段` }],
-          };
-        }
-      ),
-
-      tool(
-        'clear_speakers',
-        '清空所有说话人标签,回到识别前的状态。用户说"重新来一次说话人识别"时可先 clear 再 diarize。',
-        { projectId: z.string() },
-        async ({ projectId }) => {
-          engine.projects.get(projectId).clearSpeakers();
-          return {
-            content: [{ type: 'text' as const, text: '所有说话人标签已清除' }],
-          };
-        }
-      ),
-
-      // ──────────────────────────────────────────────────────────────
-      // Social copies (beyond generate)
-      // ──────────────────────────────────────────────────────────────
-      tool(
-        'get_social_copies',
-        '列出所有已生成的文案集(每组里有多个平台的文案)。用来定位 setId/copyId 再修改或删除。',
-        { projectId: z.string() },
-        async ({ projectId }) => {
-          const sets = engine.projects.get(projectId).socialCopies;
-          return {
-            content: [{ type: 'text' as const, text: JSON.stringify(sets, null, 2) }],
-          };
-        }
-      ),
-
-      tool(
-        'update_social_copy',
-        '改一条生成的文案(标题/正文/hashtags)。patch 里只传要改的字段。用户说"第 2 组的小红书正文改成…"时用。',
-        {
-          projectId: z.string(),
-          setId: z.string(),
-          copyId: z.string(),
-          title: z.string().optional(),
-          body: z.string().optional(),
-          hashtags: z.array(z.string()).optional(),
-        },
-        async ({ projectId, setId, copyId, title, body, hashtags }) => {
-          const ok = engine.projects
-            .get(projectId)
-            .updateSocialCopy(setId, copyId, { title, body, hashtags });
-          return {
-            content: [
-              {
-                type: 'text' as const,
-                text: ok ? `已更新 ${copyId.slice(0, 8)}` : '找不到对应文案',
-              },
-            ],
-            isError: !ok,
-          };
-        }
-      ),
-
-      tool(
-        'delete_social_copy',
-        '从某个文案集里删一个平台的文案。如果集合最后只剩一条,用 delete_social_copy_set 整组删。',
-        {
-          projectId: z.string(),
-          setId: z.string(),
-          copyId: z.string(),
-        },
-        async ({ projectId, setId, copyId }) => {
-          const ok = engine.projects.get(projectId).deleteSocialCopy(setId, copyId);
-          return {
-            content: [
-              { type: 'text' as const, text: ok ? '已删除' : '找不到对应文案' },
-            ],
-            isError: !ok,
-          };
-        }
-      ),
-
-      tool(
-        'delete_social_copy_set',
-        '永久删除一整组文案(包含的所有平台条目)。',
-        { projectId: z.string(), setId: z.string() },
-        async ({ projectId, setId }) => {
-          const ok = engine.projects.get(projectId).deleteSocialCopySet(setId);
-          return {
-            content: [
-              { type: 'text' as const, text: ok ? '已删除文案集' : '找不到' },
-            ],
-            isError: !ok,
-          };
-        }
-      ),
-
-      tool(
-        'set_social_style_note',
-        '设置全局「风格说明」文本 —— 下次生成文案时会被拼进 prompt,让模型贴近这个风格。空字符串或 null 清除。',
-        { projectId: z.string(), note: z.string().nullable() },
-        async ({ projectId, note }) => {
-          engine.projects.get(projectId).setSocialStyleNote(note);
-          return {
-            content: [
-              {
-                type: 'text' as const,
-                text: note ? `风格说明已设为: ${note.slice(0, 60)}` : '风格说明已清除',
-              },
-            ],
-          };
-        }
-      ),
-
-      // ──────────────────────────────────────────────────────────────
-      // Export
-      // ──────────────────────────────────────────────────────────────
-      tool(
-        'export_final_video',
-        '导出最终成片(粗剪执行 ripple 之后的完整视频)。outputPath 必须给绝对路径。mode: fast(默认,流拷贝,秒级)/precise(重编码,画面一致)。quality 仅 precise 模式用: low/medium/high。用户说"导出到 /path/foo.mp4"时用。',
-        {
-          projectId: z.string(),
-          outputPath: z.string(),
-          mode: z.enum(['fast', 'precise']).default('fast'),
-          quality: z.enum(['low', 'medium', 'high']).default('medium'),
-        },
-        async ({ projectId, outputPath, mode, quality }) => {
-          const project = engine.projects.get(projectId);
-          const result = await engine.exports.export(project, {
-            outputPath,
-            mode,
-            quality,
-          });
-          return {
-            content: [
-              {
-                type: 'text' as const,
-                text: `导出完成: ${result.outputPath} (${(result.sizeBytes / 1e6).toFixed(1)}MB, ${result.durationSeconds.toFixed(1)}s)`,
-              },
-            ],
-          };
-        }
-      ),
-
-      tool(
-        'export_highlight_variant',
-        '导出某一个高光变体成单独的视频文件。outputPath 必须给绝对路径。用户说"导出第 2 个变体到 /path/highlight.mp4"时用。',
-        {
-          projectId: z.string(),
-          variantId: z.string(),
-          outputPath: z.string(),
-        },
-        async ({ projectId, variantId, outputPath }) => {
-          const project = engine.projects.get(projectId);
-          const variant = project.findHighlightVariant(variantId);
-          if (!variant) {
-            return {
-              content: [{ type: 'text' as const, text: `变体 ${variantId} 不存在` }],
-              isError: true,
-            };
-          }
-          const keepOverride = variant.segments.map((s) => ({
-            start: s.start,
-            end: s.end,
-          }));
-          const result = await engine.exports.export(project, {
-            outputPath,
-            mode: 'fast',
-            quality: 'medium',
-            keepOverride,
-          });
-          return {
-            content: [
-              {
-                type: 'text' as const,
-                text: `变体 ${variantId.slice(0, 8)} 导出完成: ${result.outputPath} (${(result.sizeBytes / 1e6).toFixed(1)}MB)`,
-              },
-            ],
-          };
-        }
-      ),
-
-      tool(
-        'generate_social_copies',
-        '为指定平台生成社群媒体文案。输入源可以是粗剪完整版(sourceType=rippled,用字幕拼文本)或某个高光变体(sourceType=variant + sourceVariantId)。platforms 数组里每个平台会被并行调用一次,各自返回独立文案(标题/正文/hashtag)。',
-        {
-          projectId: z.string(),
-          sourceType: z.enum(['rippled', 'variant'] as const),
-          sourceVariantId: z.string().optional(),
-          platforms: z.array(
-            z.enum(['xiaohongshu', 'instagram', 'tiktok', 'youtube', 'twitter'] as const)
-          ),
-          userStyleNote: z.string().optional(),
-        },
-        async ({ projectId, sourceType, sourceVariantId, platforms, userStyleNote }) => {
-          const project = engine.projects.get(projectId);
-          if (!project.transcript || project.transcript.segments.length === 0) {
-            return {
-              content: [{ type: 'text' as const, text: '请先生成字幕后再生成文案。' }],
-              isError: true,
-            };
-          }
-          // Assemble source text based on sourceType. For 'rippled' we use
-          // transcript lines whose time overlaps any kept region (everything
-          // outside cut segments). For 'variant' we use lines inside the
-          // variant's own source-time segments.
-          let sourceText: string;
-          let sourceTitle: string;
-          if (sourceType === 'variant') {
-            if (!sourceVariantId) {
-              return {
-                content: [{ type: 'text' as const, text: 'sourceType=variant 时必须提供 sourceVariantId' }],
-                isError: true,
-              };
-            }
-            const variant = project.findHighlightVariant(sourceVariantId);
-            if (!variant) {
-              return {
-                content: [{ type: 'text' as const, text: `找不到变体 ${sourceVariantId}` }],
-                isError: true,
-              };
-            }
-            sourceTitle = `高光变体：${variant.title}`;
-            sourceText = assembleVariantText(project.transcript.segments, variant.segments);
-          } else {
-            sourceTitle = '粗剪完整版';
-            sourceText = assembleRippledText(project.transcript.segments, project.cutRanges);
-          }
-
-          const results = await Promise.allSettled(
-            platforms.map((platform) =>
-              runCopywriterForPlatform({
-                sourceTitle,
-                sourceText,
-                platform,
-                userStyleNote: userStyleNote ?? project.socialStyleNote ?? undefined,
-              })
-            )
-          );
-          const copies: SocialCopy[] = [];
-          const failures: string[] = [];
-          let model: string | undefined;
-          for (let i = 0; i < results.length; i++) {
-            const r = results[i];
-            if (r.status === 'fulfilled') {
-              copies.push(r.value.copy);
-              if (r.value.model) model = r.value.model;
-            } else {
-              failures.push(`${platforms[i]}: ${(r.reason as Error).message}`);
-            }
-          }
-
-          if (copies.length === 0) {
-            return {
-              content: [{ type: 'text' as const, text: `全部平台生成失败:\n${failures.join('\n')}` }],
-              isError: true,
-            };
-          }
-
-          const setId = newId();
-          project.addSocialCopySet({
-            id: setId,
-            sourceType,
-            sourceVariantId,
-            sourceTitle,
-            sourceText,
-            userStyleNote: userStyleNote ?? null,
-            copies: copies.map((c) => ({
-              id: c.id,
-              platform: c.platform,
-              title: c.title,
-              body: c.body,
-              hashtags: c.hashtags,
-            })),
-            createdAt: new Date().toISOString(),
-            model,
-          });
-
-          const summary =
-            `生成了 ${copies.length} 个平台的文案。` +
-            copies.map((c) => `\n- ${c.platform}: ${c.title.slice(0, 40) || c.body.slice(0, 40)}`).join('') +
-            (failures.length > 0 ? `\n\n失败的平台:\n${failures.join('\n')}` : '');
-          return { content: [{ type: 'text' as const, text: summary }] };
-        }
-      ),
-    ],
+        def.name,
+        def.description,
+        def.schema,
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        async (args) => (await def.handler(args, engine)) as any
+      )
+    ),
   });
-}
-
-function newId(): string {
-  return `sc_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
-}
-
-/**
- * Assemble transcript text for the "rippled full version" source:
- * every transcript line whose range overlaps ANY kept interval (i.e. not
- * fully inside a cut range). Lines joined with \n so Claude sees them as
- * distinct caption-sized beats.
- */
-function assembleRippledText(
-  transcriptSegs: ReadonlyArray<{ start: number; end: number; text: string }>,
-  cutRanges: ReadonlyArray<{ start: number; end: number }>
-): string {
-  const lines: string[] = [];
-  for (const t of transcriptSegs) {
-    const fullyInCut = cutRanges.some((c) => t.start >= c.start && t.end <= c.end);
-    if (fullyInCut) continue;
-    const txt = t.text.trim();
-    if (txt) lines.push(txt);
-  }
-  return lines.join('\n');
-}
-
-/** Assemble text for a highlight variant source — only lines inside its segments. */
-function assembleVariantText(
-  transcriptSegs: ReadonlyArray<{ start: number; end: number; text: string }>,
-  variantSegs: ReadonlyArray<{ start: number; end: number }>
-): string {
-  const lines: string[] = [];
-  for (const v of variantSegs) {
-    for (const t of transcriptSegs) {
-      if (t.end <= v.start || t.start >= v.end) continue;
-      const txt = t.text.trim();
-      if (txt) lines.push(txt);
-    }
-  }
-  return lines.join('\n');
 }
 
 export interface AgentOptions {
@@ -1329,7 +93,7 @@ const SYSTEM_PROMPT = `
 你是 LynLens 的内置剪辑助手,专门帮用户剪口播视频并审校字幕。用户会在打开的项目里直接看到你的操作。
 
 核心原则:
-- 永远先调 get_project_state 看当前视频信息、已有段、字幕状态。
+- 永远先调 get_project_state 看当前视频信息、已有段、字幕状态、高光变体。
 - 默认用 L2 模式(pending 待审),让用户最后决定;除非用户明确说"全部自动"。
 - 回答简洁,用中文。抓重点(总段数、风险、建议)即可,不要大段列出所有段落。
 - 只做剪辑和字幕相关的操作,不要乱走。
@@ -1346,21 +110,23 @@ const SYSTEM_PROMPT = `
 - 每段都要给清楚的 reason(停顿 N 秒 / 语气词「嗯」 / 重拍 等)。
 
 字幕审校(用户明确要求时才做):
-- 先 get_project_state 看 transcript.segments(每段有 id/start/end/text,没有词级时间戳 — 不需要)。
-- 默认用 **suggest_transcript_fix** 对可疑段提出建议 — 建议会出现在 UI 那段下方,用户看到"✓接受/✗忽略"再决定。
-- replace_in_transcript 只在用户明确说"全局替换 X 为 Y"时用 — 直接生效,不需要审核。
-- update_transcript_segment 直接改 — 只用于**机械错误**(如字面打错),不要主动用。
+- 先 get_project_state 看 transcript.segments。
+- 默认用 **suggest_transcript_fix** 对可疑段提出建议 — UI 会显示"✓接受/✗忽略"让用户决定。
+- replace_in_transcript 只在用户明确说"全局替换 X 为 Y"时用。
+- update_transcript_segment 只用于机械错误。
 - 做完后,简短汇报你标了几段建议、理由是什么,让用户去 UI 审核。
 
 高光变体微调(用户说"第 3 段前移 2 秒"/"去掉第 1 段"/"把最后一段挪前面"/"改一下那段描述"这类话时):
-- 先 get_project_state 看 highlightVariants 里每个 variant 的 id 和 segments 数组(segments[idx].start/end/reason)。
-- 调用对应工具:
+- 先 get_project_state 或 get_highlights 看每个 variant 的 id 和 segments[idx].start/end/reason。
+- 调对应工具:
   * update_highlight_variant_segment — 改某段的起止或描述
-  * add_highlight_variant_segment — 加新段(source 时间)
+  * add_highlight_variant_segment — 加新段
   * delete_highlight_variant_segment — 删段
   * reorder_highlight_variant_segment — 换顺序
-- 所有时间都是 **source 秒**(从视频头算)。用户可能用 "2:30" 这种人读格式,自己换算成秒。
-- 每步改完都**简短汇报做了什么**,别一口气改 10 处还不说。改错了用户会立刻说"撤销"。
+- 所有时间都是 **source 秒**(从视频头算)。用户用 "2:30" 这种人读格式,自己换算成秒。
+- 每步改完都简短汇报做了什么,别一口气改 10 处还不说。改错了用户会立刻说"撤销"。
+
+说话人、文案、导出 —— 同类思路:先 get_project_state 看 ids,再调对应工具;outputPath 要绝对路径,用户没给就先问。
 `.trim();
 
 /**
@@ -1375,58 +141,11 @@ export async function runAgent(
   const { query } = await loadSdk();
   const sdkServer = await buildLynLensSdkServer(engine);
 
-  // Restrict the embedded agent to ONLY our lynlens tools. If Claude ever needs
-  // something it can't do (e.g. "read the script from this txt file"), we can
-  // loosen this list later. For now: no filesystem / bash / network access.
-  const ALLOWED_TOOLS = [
-    'mcp__lynlens__get_project_state',
-    'mcp__lynlens__transcribe',
-    'mcp__lynlens__ai_mark_silence',
-    'mcp__lynlens__add_segments',
-    'mcp__lynlens__remove_segments',
-    'mcp__lynlens__set_segment_status',
-    'mcp__lynlens__approve_all_pending',
-    'mcp__lynlens__commit_ripple',
-    'mcp__lynlens__revert_ripple',
-    'mcp__lynlens__set_mode',
-    'mcp__lynlens__update_transcript_segment',
-    'mcp__lynlens__suggest_transcript_fix',
-    'mcp__lynlens__replace_in_transcript',
-    'mcp__lynlens__generate_highlights',
-    'mcp__lynlens__clear_highlights',
-    'mcp__lynlens__update_highlight_variant_segment',
-    'mcp__lynlens__add_highlight_variant_segment',
-    'mcp__lynlens__delete_highlight_variant_segment',
-    'mcp__lynlens__reorder_highlight_variant_segment',
-    'mcp__lynlens__generate_social_copies',
-    // Editing workflow additions (batch A-F audit)
-    'mcp__lynlens__reject_segment',
-    'mcp__lynlens__reject_all_pending',
-    'mcp__lynlens__erase_range',
-    'mcp__lynlens__resize_segment',
-    'mcp__lynlens__undo',
-    'mcp__lynlens__redo',
-    'mcp__lynlens__save_project',
-    'mcp__lynlens__accept_transcript_suggestion',
-    'mcp__lynlens__clear_transcript_suggestion',
-    'mcp__lynlens__update_transcript_segment_time',
-    'mcp__lynlens__get_highlights',
-    'mcp__lynlens__set_highlight_pinned',
-    'mcp__lynlens__delete_highlight_variant',
-    'mcp__lynlens__diarize',
-    'mcp__lynlens__rename_speaker',
-    'mcp__lynlens__merge_speakers',
-    'mcp__lynlens__set_segment_speaker',
-    'mcp__lynlens__auto_assign_unlabeled_speakers',
-    'mcp__lynlens__clear_speakers',
-    'mcp__lynlens__get_social_copies',
-    'mcp__lynlens__update_social_copy',
-    'mcp__lynlens__delete_social_copy',
-    'mcp__lynlens__delete_social_copy_set',
-    'mcp__lynlens__set_social_style_note',
-    'mcp__lynlens__export_final_video',
-    'mcp__lynlens__export_highlight_variant',
-  ];
+  // Allow-list exactly the tools we registered, prefixed with the MCP
+  // server namespace. Derived from ALL_TOOLS so adding a tool in the
+  // shared registry auto-flows to the allow-list — no more forgetting
+  // to edit two places.
+  const ALLOWED_TOOLS = ALL_TOOLS.map((t) => `mcp__lynlens__${t.name}`);
 
   const queryOptions: Record<string, unknown> = {
     systemPrompt: SYSTEM_PROMPT + `\n\n当前项目 ID: ${projectId}`,
@@ -1450,10 +169,9 @@ export async function runAgent(
   if (resumeSessionId) queryOptions.resume = resumeSessionId;
 
   let sessionId: string | null = resumeSessionId ?? null;
-
-  // Per-run de-duplication: the SDK can emit the same assistant / user
-  // message twice (partial + final, or retries), which would otherwise
-  // surface as duplicate tool chips in the chat UI.
+  // Per-run de-dupe: the SDK can emit the same assistant / user message
+  // twice (partial + final, or retries), which would otherwise surface
+  // as duplicate tool chips in the chat UI.
   const seenUuids = new Set<string>();
 
   try {
@@ -1497,13 +215,22 @@ function handleSdkMessage(
   const anyMsg = msg as unknown as {
     type: string;
     uuid?: string;
-    message?: { id?: string; content?: Array<{ type: string; text?: string; name?: string; input?: Record<string, unknown>; tool_use_id?: string; content?: unknown; is_error?: boolean }> };
+    message?: {
+      id?: string;
+      content?: Array<{
+        type: string;
+        text?: string;
+        name?: string;
+        input?: Record<string, unknown>;
+        tool_use_id?: string;
+        content?: unknown;
+        is_error?: boolean;
+      }>;
+    };
     subtype?: string;
   };
 
-  // Skip any assistant/user message we have already processed. The SDK
-  // occasionally re-emits the same message (partial + final, or cached
-  // repeats) which would surface as duplicate tool chips in the UI.
+  // Skip any assistant/user message we have already processed.
   if (anyMsg.type === 'assistant' || anyMsg.type === 'user') {
     const id = anyMsg.uuid ?? anyMsg.message?.id;
     if (id) {
@@ -1536,7 +263,9 @@ function handleSdkMessage(
           typeof c === 'string'
             ? c
             : Array.isArray(c)
-              ? c.map((p: { type: string; text?: string }) => (p.type === 'text' ? p.text ?? '' : '')).join('')
+              ? c
+                  .map((p: { type: string; text?: string }) => (p.type === 'text' ? p.text ?? '' : ''))
+                  .join('')
               : JSON.stringify(c);
         onEvent({
           type: 'tool_result',
@@ -1550,13 +279,10 @@ function handleSdkMessage(
 }
 
 /**
- * One-shot highlight generation. Deliberately separate from runAgent — we
- * don't want tool use, we don't want multi-turn, we just want Claude to
- * read the prompt and return JSON. Pipes the raw text response up to the
- * caller (which runs the core parser).
- *
- * Uses the same SDK auth as the chat panel (user's Claude Code subscription),
- * so this works out of the box on any machine where the chat panel works.
+ * One-shot highlight generation. Deliberately separate from runAgent —
+ * no tool use, no multi-turn, just "give the prompt, get text back".
+ * The MCP HTTP server uses this too (via agent-dispatcher) so both
+ * Claude and Codex paths share the same orchestration.
  */
 export interface HighlightGenerationOptions {
   systemPrompt: string;
@@ -1572,8 +298,6 @@ export async function runHighlightGeneration(
     systemPrompt: opts.systemPrompt,
     maxTurns: 1,
     permissionMode: 'bypassPermissions' as const,
-    // No MCP server, no built-in tools. Claude gets the prompt and must
-    // answer in one text turn — exactly what we want for JSON generation.
     tools: [] as string[],
     allowedTools: [] as string[],
     settingSources: [] as never[],
@@ -1611,12 +335,7 @@ export async function runHighlightGeneration(
   return { text: collected, model: modelSeen };
 }
 
-/**
- * One-shot copywriter call for a single platform. Same shape as the
- * highlight generator — just different prompt composition. Returns the
- * parsed SocialCopy so the caller can bundle multiple platforms into one
- * set (assembled in parallel via Promise.all).
- */
+/** One-shot copywriter call for a single platform. */
 export async function runCopywriterForPlatform(
   input: CopywriterGenerateInput,
   signal?: AbortSignal
