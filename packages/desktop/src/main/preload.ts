@@ -48,13 +48,22 @@ const api: IpcApi = {
     ipcRenderer.invoke('update-social-style-preset', pid, presetId, patch),
   deleteSocialStylePreset: (pid, presetId) =>
     ipcRenderer.invoke('delete-social-style-preset', pid, presetId),
-  diarize: (pid) => ipcRenderer.invoke('diarize', pid),
+  diarize: (pid, opts) => ipcRenderer.invoke('diarize', pid, opts),
   renameSpeaker: (pid, speakerId, name) =>
     ipcRenderer.invoke('rename-speaker', pid, speakerId, name),
   clearSpeakers: (pid) => ipcRenderer.invoke('clear-speakers', pid),
+  mergeSpeakers: (pid, from, to) => ipcRenderer.invoke('merge-speakers', pid, from, to),
+  setSegmentSpeaker: (pid, segId, speaker) =>
+    ipcRenderer.invoke('set-segment-speaker', pid, segId, speaker),
+  autoAssignUnlabeledSpeakers: (pid) =>
+    ipcRenderer.invoke('auto-assign-unlabeled-speakers', pid),
   transcribe: (pid, opts) => ipcRenderer.invoke('transcribe', pid, opts),
   updateTranscriptSegment: (pid, sid, text) =>
     ipcRenderer.invoke('update-transcript-segment', pid, sid, text),
+  updateTranscriptSegmentTime: (pid, sid, start, end) =>
+    ipcRenderer.invoke('update-transcript-segment-time', pid, sid, start, end),
+  setTranscriptWarningFingerprint: (pid, sid, fp) =>
+    ipcRenderer.invoke('set-transcript-warning-fingerprint', pid, sid, fp),
   replaceInTranscript: (pid, find, replace) =>
     ipcRenderer.invoke('replace-in-transcript', pid, find, replace),
   acceptTranscriptSuggestion: (pid, sid) =>

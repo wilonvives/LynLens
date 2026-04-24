@@ -13,7 +13,11 @@ export {
 
 // Diarization helpers — pure functions only (listSpeakers takes the
 // renderer's Transcript shape and walks it, no Node.js dependencies).
-export { listSpeakers } from '../../../core/src/diarization';
+export {
+  displaySpeakerName,
+  listSpeakers,
+  listSpeakersInOrder,
+} from '../../../core/src/diarization';
 
 // Platform labels are a pure data constant — safe for browser.
 export { PLATFORM_LABELS } from '../../../core/src/copywriter-platforms';

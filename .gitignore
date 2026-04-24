@@ -17,4 +17,7 @@ coverage/
 .idea/
 packages/desktop/resources/ffmpeg/
 packages/desktop/resources/whisper/
+packages/desktop/resources/diarization/
 *.tsbuildinfo
+# Stray icon exports — keep them out of the repo
+macOS Big Sur App Icon.png

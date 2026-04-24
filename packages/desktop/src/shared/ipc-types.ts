@@ -180,18 +180,56 @@ export interface IpcApi {
    * missing transcript / unrecoverable engine failures.
    */
   diarize(
-    projectId: string
+    projectId: string,
+    opts?: { speakerCount?: number }
   ): Promise<{ engine: 'mock' | 'sherpa-onnx'; speakers: string[]; segmentCount: number }>;
   /** Rename (or clear) the display name for a speaker ID. */
   renameSpeaker(projectId: string, speakerId: string, name: string | null): Promise<void>;
   /** Drop all speaker labels from the transcript + clear engine marker. */
   clearSpeakers(projectId: string): Promise<void>;
+  /** Move every segment tagged `from` to speaker `to` (fixes over-split). */
+  mergeSpeakers(projectId: string, from: string, to: string): Promise<number>;
+  /** Retag one transcript segment's speaker (fixes an isolated mislabel). */
+  setSegmentSpeaker(
+    projectId: string,
+    transcriptSegmentId: string,
+    speaker: string | null
+  ): Promise<boolean>;
+  /**
+   * Sweep every currently-unlabeled transcript segment and assign it the
+   * speaker of its nearest labeled neighbor. Returns the count of newly
+   * labeled segments. Returns 0 (and does nothing) if the transcript has
+   * no labeled segments to copy from.
+   */
+  autoAssignUnlabeledSpeakers(projectId: string): Promise<number>;
 
   transcribe(
     projectId: string,
     opts: { engine?: 'whisper-local' | 'openai-api'; language?: string }
   ): Promise<{ segmentCount: number; language: string; engine: string }>;
   updateTranscriptSegment(projectId: string, segmentId: string, newText: string): Promise<boolean>;
+  /**
+   * Nudge / overwrite a transcript segment's (start,end). Times are source
+   * time (not effective) — the caller is responsible for converting from
+   * effective to source before invoking. Returns false on validation or
+   * lookup failure.
+   */
+  updateTranscriptSegmentTime(
+    projectId: string,
+    segmentId: string,
+    newStart: number,
+    newEnd: number
+  ): Promise<boolean>;
+  /**
+   * Persist (or clear) the dismissal fingerprint for the "straddles a cut"
+   * warning on one transcript segment. Passing null / '' clears it so the
+   * ⚠ will re-appear next render. See `Transcript.warningFingerprint`.
+   */
+  setTranscriptWarningFingerprint(
+    projectId: string,
+    segmentId: string,
+    fingerprint: string | null
+  ): Promise<boolean>;
   replaceInTranscript(projectId: string, find: string, replace: string): Promise<number>;
   acceptTranscriptSuggestion(projectId: string, segmentId: string): Promise<boolean>;
   clearTranscriptSuggestion(projectId: string, segmentId: string): Promise<boolean>;

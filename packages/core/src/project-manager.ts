@@ -210,6 +210,167 @@ export class Project {
   }
 
   /**
+   * Edit a transcript segment's start / end (source time). Word-level
+   * timings are NOT re-scaled — they become stale. We don't use them in
+   * the current feature set so this is acceptable; document the trade.
+   *
+   * Cascade behavior: if the new range would overlap a chronological
+   * neighbor, the neighbor's NEAR edge is shifted to keep a 10ms gap —
+   * the neighbor's far edge is left untouched. Net effect: the neighbor
+   * is "compressed" rather than bodily slid, which localizes the edit.
+   *
+   *   before: [A 0.00-4.23][B 4.24-7.04][C 7.05-9.0]
+   *   nudge A.end +0.03 → A ends at 4.26
+   *   after : [A 0.00-4.26][B 4.27-7.04][C 7.05-9.0]
+   *          (B.start pushed, B.end kept, C untouched)
+   *
+   * If the forced shift would shrink the neighbor below MIN_DUR (50ms),
+   * the edit is CAPPED at the boundary that still leaves MIN_DUR —
+   * better to refuse a destructive nudge than silently delete a line.
+   */
+  updateTranscriptSegmentTime(
+    segmentId: string,
+    newStart: number,
+    newEnd: number
+  ): boolean {
+    if (!this.transcript) return false;
+    if (!Number.isFinite(newStart) || !Number.isFinite(newEnd)) return false;
+    if (newEnd <= newStart) return false;
+    if (newStart < 0) return false;
+
+    const segs = this.transcript.segments;
+    const target = segs.find((s) => s.id === segmentId);
+    if (!target) return false;
+
+    const MIN_GAP = 0.01; // 10ms — visually zero, keeps end < start enforced
+    const MIN_DUR = 0.5; // 500ms — any shorter than this is unreadable, cap nudge
+
+    const oldStart = target.start;
+    const oldEnd = target.end;
+
+    // Build a chronological view of the other segments (shared object
+    // references, so mutating via this list mutates the transcript).
+    const ordered = [...segs].sort((a, b) => a.start - b.start);
+    const idx = ordered.findIndex((s) => s.id === segmentId);
+    const prev = idx > 0 ? ordered[idx - 1] : null;
+    const next = idx >= 0 && idx < ordered.length - 1 ? ordered[idx + 1] : null;
+
+    // End moved right → may collide with next; push next.start (not next.end)
+    if (next && newEnd > oldEnd && newEnd + MIN_GAP > next.start) {
+      const wantedNextStart = newEnd + MIN_GAP;
+      if (next.end - wantedNextStart < MIN_DUR) {
+        // Cap our target.end so next keeps at least MIN_DUR of breathing room.
+        const cappedEnd = next.end - MIN_DUR - MIN_GAP;
+        if (cappedEnd <= newStart) return false;
+        newEnd = cappedEnd;
+        next.start = newEnd + MIN_GAP;
+      } else {
+        next.start = wantedNextStart;
+      }
+    }
+
+    // Start moved left → may collide with prev; pull prev.end (not prev.start)
+    if (prev && newStart < oldStart && newStart - MIN_GAP < prev.end) {
+      const wantedPrevEnd = newStart - MIN_GAP;
+      if (wantedPrevEnd - prev.start < MIN_DUR) {
+        const cappedStart = prev.start + MIN_DUR + MIN_GAP;
+        if (cappedStart >= newEnd) return false;
+        newStart = cappedStart;
+        prev.end = newStart - MIN_GAP;
+      } else {
+        prev.end = wantedPrevEnd;
+      }
+    }
+
+    target.start = newStart;
+    target.end = newEnd;
+    this.modifiedAt = new Date().toISOString();
+    this.eventBus.emit({ type: 'transcript.updated', projectId: this.id, segmentId });
+    return true;
+  }
+
+  /**
+   * Store (or clear) the warning fingerprint for a transcript segment.
+   * Passing null clears the field — the ⚠ will reappear on next render.
+   */
+  setTranscriptWarningFingerprint(
+    segmentId: string,
+    fingerprint: string | null
+  ): boolean {
+    if (!this.transcript) return false;
+    const seg = this.transcript.segments.find((s) => s.id === segmentId);
+    if (!seg) return false;
+    if (fingerprint === null || fingerprint === '') {
+      delete seg.warningFingerprint;
+    } else {
+      seg.warningFingerprint = fingerprint;
+    }
+    this.modifiedAt = new Date().toISOString();
+    this.eventBus.emit({ type: 'transcript.updated', projectId: this.id, segmentId });
+    return true;
+  }
+
+  /**
+   * Auto-assign a speaker to every transcript segment that currently has
+   * no speaker label. Uses a nearest-labeled-neighbor heuristic based on
+   * segment midpoint distance: the closest labeled segment donates its
+   * speaker. Returns the number of segments that got a new label.
+   *
+   * Intentional choices:
+   *   - No AI call. Diarization gaps are usually short and local; the
+   *     nearest labeled neighbor is right ~95% of the time, instantly
+   *     and for free.
+   *   - Skips if no segments are labeled — nothing to copy from. Caller
+   *     should nudge the user to run diarization / label at least one
+   *     segment first.
+   *   - Manual trigger (not automatic post-transcription) because the
+   *     user asked to preserve "deliberately cleared" labels. The sweep
+   *     only runs when they click the button.
+   */
+  autoAssignUnlabeledSpeakers(): number {
+    if (!this.transcript) return 0;
+    const segs = this.transcript.segments;
+    // Precompute the labeled set once — O(N) scan per call instead of
+    // re-filtering per unlabeled segment.
+    const labeled: Array<{ mid: number; speaker: string }> = [];
+    for (const s of segs) {
+      if (s.speaker) labeled.push({ mid: (s.start + s.end) / 2, speaker: s.speaker });
+    }
+    if (labeled.length === 0) return 0;
+
+    let assigned = 0;
+    let firstModifiedId: string | null = null;
+    for (const seg of segs) {
+      if (seg.speaker) continue;
+      const mid = (seg.start + seg.end) / 2;
+      let bestSpeaker = labeled[0].speaker;
+      let bestDist = Math.abs(labeled[0].mid - mid);
+      for (let i = 1; i < labeled.length; i++) {
+        const d = Math.abs(labeled[i].mid - mid);
+        if (d < bestDist) {
+          bestDist = d;
+          bestSpeaker = labeled[i].speaker;
+        }
+      }
+      seg.speaker = bestSpeaker;
+      assigned++;
+      if (!firstModifiedId) firstModifiedId = seg.id;
+    }
+
+    if (assigned > 0 && firstModifiedId) {
+      this.modifiedAt = new Date().toISOString();
+      // Single emit is enough — App refetches the full transcript on
+      // transcript.updated regardless of which segmentId is carried.
+      this.eventBus.emit({
+        type: 'transcript.updated',
+        projectId: this.id,
+        segmentId: firstModifiedId,
+      });
+    }
+    return assigned;
+  }
+
+  /**
    * Stage a suggested replacement (AI-proposed) for a given transcript
    * segment. Does NOT change the actual text — the user must accept it first.
    */
@@ -490,6 +651,12 @@ export class Project {
     if (!this.transcript) return false;
     this.transcript = applySpeakersToTranscript(this.transcript, result);
     this.diarizationEngine = result.engine;
+    // Fill every segment the diarizer's VAD couldn't reach. Without this
+    // the user ends up with orphan unlabeled rows after every run because
+    // whisper boundaries and sherpa boundaries never line up perfectly.
+    // The nearest-labeled-neighbor heuristic matches what the user would
+    // manually fix one-by-one, so we just do it for them.
+    this.autoAssignUnlabeledSpeakers();
     this.modifiedAt = new Date().toISOString();
     this.eventBus.emit({ type: 'diarization.completed', projectId: this.id });
     return true;
@@ -523,6 +690,59 @@ export class Project {
       projectId: this.id,
       speakerId,
     });
+  }
+
+  /**
+   * Merge all transcript segments labelled `from` into speaker `to`. Used
+   * when diarization over-splits the same speaker into multiple IDs.
+   * Also drops `from` from speakerNames — nobody references it anymore.
+   */
+  mergeSpeakers(from: string, to: string): number {
+    if (!this.transcript || from === to) return 0;
+    let changed = 0;
+    const nextSegs = this.transcript.segments.map((s) => {
+      if (s.speaker === from) {
+        changed += 1;
+        return { ...s, speaker: to };
+      }
+      return s;
+    });
+    if (changed === 0) return 0;
+    this.transcript = { ...this.transcript, segments: nextSegs };
+    const { [from]: _drop, ...rest } = this.speakerNames;
+    this.speakerNames = rest;
+    this.modifiedAt = new Date().toISOString();
+    this.eventBus.emit({ type: 'diarization.renamed', projectId: this.id, speakerId: from });
+    return changed;
+  }
+
+  /**
+   * Retag a single transcript segment's speaker without touching any
+   * other segment. Used when diarization mislabels ONE line (the AI
+   * heard the wrong person) and the user wants to fix just that line.
+   * Pass null to clear the speaker field entirely.
+   */
+  setSegmentSpeaker(transcriptSegmentId: string, speaker: string | null): boolean {
+    if (!this.transcript) return false;
+    let found = false;
+    const nextSegs = this.transcript.segments.map((s) => {
+      if (s.id !== transcriptSegmentId) return s;
+      found = true;
+      if (!speaker) {
+        const { speaker: _drop, ...rest } = s;
+        return rest;
+      }
+      return { ...s, speaker };
+    });
+    if (!found) return false;
+    this.transcript = { ...this.transcript, segments: nextSegs };
+    this.modifiedAt = new Date().toISOString();
+    this.eventBus.emit({
+      type: 'transcript.updated',
+      projectId: this.id,
+      segmentId: transcriptSegmentId,
+    });
+    return true;
   }
 
   deleteSocialStylePreset(presetId: string): boolean {

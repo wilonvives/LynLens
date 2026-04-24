@@ -42,6 +42,12 @@ interface TimelineProps {
   cutRanges: readonly Range[];
   /** Current playhead in effective seconds. */
   currentTime: number;
+  /**
+   * True while the video is actually playing. Gates the auto-follow view
+   * scroll so it only chases the playhead during real playback — never
+   * while the user is manually scrubbing or dragging.
+   */
+  isPlaying: boolean;
   waveform: { peak: Float32Array; rms: Float32Array } | null;
   /** Segments live in SOURCE time; we map through cutRanges for rendering. */
   segments: Segment[];
@@ -58,6 +64,12 @@ interface TimelineProps {
   onEraseRange: (effStart: number, effEnd: number) => void;
   /** Segment resize/move. Arguments are EFFECTIVE seconds. */
   onResizeSegment: (id: string, effStart: number, effEnd: number) => void;
+  /**
+   * Commit a transcript-subtitle edge resize (Cmd+Shift drag on the blue
+   * frame). Times are SOURCE seconds — the renderer has already run the
+   * same cascade rule the server will, so the parent just fires the IPC.
+   */
+  onResizeSubtitle: (segId: string, srcStart: number, srcEnd: number) => void;
 }
 
 interface View {
@@ -71,6 +83,7 @@ export function Timeline(props: TimelineProps) {
     sourceDuration,
     cutRanges,
     currentTime,
+    isPlaying,
     waveform,
     segments,
     transcript,
@@ -81,6 +94,7 @@ export function Timeline(props: TimelineProps) {
     onMarkRange,
     onEraseRange,
     onResizeSegment,
+    onResizeSubtitle,
   } = props;
   // Keep a ref so long-lived drag handlers (started via mousedown) still see
   // the latest cutRanges without having to retear down on every render.
@@ -106,6 +120,25 @@ export function Timeline(props: TimelineProps) {
     | null
   >(null);
   const [hoverCursor, setHoverCursor] = useState<'default' | 'ew-resize' | 'grab'>('default');
+  /**
+   * Live-preview state for Cmd+Shift drag on the active-subtitle blue frame.
+   * When set: (1) blue frame locks onto this subtitle regardless of playhead,
+   * (2) draw() uses these preview times instead of the segment's real times,
+   * (3) neighbor (if any) is drawn with its near edge shifted too.
+   * All times are SOURCE seconds — same frame as the transcript itself.
+   */
+  const [subEdgeDrag, setSubEdgeDrag] = useState<
+    | null
+    | {
+        segId: string;
+        edge: 'start' | 'end';
+        targetStart: number;
+        targetEnd: number;
+        neighborId: string | null;
+        neighborStart: number | null;
+        neighborEnd: number | null;
+      }
+  >(null);
 
   // Initialise view once duration becomes known, and keep it in bounds when
   // duration changes (a ripple cut shrinks effectiveDuration; an undo grows
@@ -134,6 +167,43 @@ export function Timeline(props: TimelineProps) {
       return { offsetSec: nextOffset, visibleSec: nextVisible };
     });
   }, [duration]);
+
+  /**
+   * Auto-follow while playing: if the playhead is past 60% of the visible
+   * window, slide the view forward so the playhead stays pinned at 60%.
+   *
+   * Skipped when:
+   *   - video is paused (user is browsing / editing, don't hijack the view)
+   *   - a drag is in progress (scrub / mark / erase / subtitle-edge resize)
+   *   - view is already at the right edge (duration reached — let playhead
+   *     run freely to the tail; no more room to scroll)
+   *   - playhead is off-screen (e.g. user seeked far away; lynlens-jump
+   *     event handles recentering in that case)
+   */
+  useEffect(() => {
+    if (!isPlaying) return;
+    if (segDrag || dragging || subEdgeDrag) return;
+    if (duration <= 0 || view.visibleSec <= 0) return;
+    const rel = (currentTime - view.offsetSec) / view.visibleSec; // 0..1
+    if (rel < 0 || rel > 1) {
+      // Playhead is off-screen entirely. Recenter so it sits at 30% of
+      // the visible window and playback resumes from there.
+      const maxOff = Math.max(0, duration - view.visibleSec);
+      const desired = Math.max(
+        0,
+        Math.min(maxOff, currentTime - view.visibleSec * 0.3)
+      );
+      if (Math.abs(desired - view.offsetSec) < 0.001) return;
+      setView((v) => ({ ...v, offsetSec: desired }));
+      return;
+    }
+    if (rel < 0.6) return; // haven't crossed the threshold yet
+    const maxOffset = Math.max(0, duration - view.visibleSec);
+    if (view.offsetSec >= maxOffset - 0.01) return; // already at end
+    const desiredOffset = Math.min(maxOffset, currentTime - view.visibleSec * 0.6);
+    if (Math.abs(desiredOffset - view.offsetSec) < 0.001) return;
+    setView((v) => ({ ...v, offsetSec: desiredOffset }));
+  }, [currentTime, isPlaying, duration, view, segDrag, dragging, subEdgeDrag]);
 
   // Resize canvas to container pixel ratio
   useEffect(() => {
@@ -175,6 +245,127 @@ export function Timeline(props: TimelineProps) {
     const w = canvas.clientWidth;
     if (w <= 0 || view.visibleSec <= 0) return 0;
     return ((sec - view.offsetSec) / view.visibleSec) * w;
+  }
+
+  /**
+   * Find the ACTIVE subtitle at the current playhead. Returns the whole
+   * transcript segment (source-time) or null. Locked to a specific id when
+   * a subtitle-edge drag is in progress so the frame doesn't jump if the
+   * playhead crosses into a neighbor mid-drag.
+   */
+  function getActiveSubtitleSeg() {
+    if (!transcript) return null;
+    if (subEdgeDrag) {
+      return transcript.segments.find((t) => t.id === subEdgeDrag.segId) ?? null;
+    }
+    const srcNow = effectiveToSource(currentTime, cutRanges);
+    return transcript.segments.find((t) => srcNow >= t.start && srcNow < t.end) ?? null;
+  }
+
+  /**
+   * Given the CURRENT mouse x (px) on the canvas, return which edge of the
+   * active subtitle's blue frame the mouse is over — if any. Skipped when
+   * the frame is too narrow (< 20px) to reliably distinguish the two edges.
+   */
+  function hitTestSubEdge(
+    x: number
+  ): { segId: string; edge: 'start' | 'end' } | null {
+    const active = getActiveSubtitleSeg();
+    if (!active) return null;
+    const pieces = mapRangeToEffective(
+      { start: active.start, end: active.end },
+      cutRanges
+    );
+    if (pieces.length === 0) return null;
+    const first = pieces[0];
+    const last = pieces[pieces.length - 1];
+    const firstX = secToPx(first.start);
+    const lastX = secToPx(last.end);
+    if (lastX - firstX < 20) return null; // too narrow, decision 4
+    const HIT = 7;
+    if (Math.abs(x - firstX) <= HIT) return { segId: active.id, edge: 'start' };
+    if (Math.abs(x - lastX) <= HIT) return { segId: active.id, edge: 'end' };
+    return null;
+  }
+
+  /**
+   * Same cascade rule as project-manager.ts's updateTranscriptSegmentTime,
+   * duplicated here so the renderer can show a live preview while the user
+   * drags. The final commit still goes through the IPC (which re-runs the
+   * math server-side, so this is purely cosmetic). MIN_DUR = 500ms matches
+   * the nudge-button behavior — one rule, one number.
+   */
+  function computeSubEdgeCascade(
+    segId: string,
+    edge: 'start' | 'end',
+    newSourceSec: number
+  ): {
+    targetStart: number;
+    targetEnd: number;
+    neighborId: string | null;
+    neighborStart: number | null;
+    neighborEnd: number | null;
+  } | null {
+    if (!transcript) return null;
+    const target = transcript.segments.find((s) => s.id === segId);
+    if (!target) return null;
+    const MIN_GAP = 0.01;
+    const MIN_DUR = 0.5;
+    const maxSrc = sourceDurationRef.current || Infinity;
+
+    let tStart = target.start;
+    let tEnd = target.end;
+    let nId: string | null = null;
+    let nS: number | null = null;
+    let nE: number | null = null;
+
+    const ordered = [...transcript.segments].sort((a, b) => a.start - b.start);
+    const idx = ordered.findIndex((s) => s.id === segId);
+    const prev = idx > 0 ? ordered[idx - 1] : null;
+    const next = idx >= 0 && idx < ordered.length - 1 ? ordered[idx + 1] : null;
+
+    if (edge === 'end') {
+      tEnd = Math.min(maxSrc, Math.max(tStart + MIN_DUR, newSourceSec));
+      if (next && tEnd + MIN_GAP > next.start) {
+        const wanted = tEnd + MIN_GAP;
+        if (next.end - wanted < MIN_DUR) {
+          const cappedEnd = next.end - MIN_DUR - MIN_GAP;
+          if (cappedEnd <= tStart + MIN_DUR) return null;
+          tEnd = cappedEnd;
+          nId = next.id;
+          nS = tEnd + MIN_GAP;
+          nE = next.end;
+        } else {
+          nId = next.id;
+          nS = wanted;
+          nE = next.end;
+        }
+      }
+    } else {
+      tStart = Math.max(0, Math.min(tEnd - MIN_DUR, newSourceSec));
+      if (prev && tStart - MIN_GAP < prev.end) {
+        const wanted = tStart - MIN_GAP;
+        if (wanted - prev.start < MIN_DUR) {
+          const cappedStart = prev.start + MIN_DUR + MIN_GAP;
+          if (cappedStart >= tEnd - MIN_DUR) return null;
+          tStart = cappedStart;
+          nId = prev.id;
+          nS = prev.start;
+          nE = tStart - MIN_GAP;
+        } else {
+          nId = prev.id;
+          nS = prev.start;
+          nE = wanted;
+        }
+      }
+    }
+    return {
+      targetStart: tStart,
+      targetEnd: tEnd,
+      neighborId: nId,
+      neighborStart: nS,
+      neighborEnd: nE,
+    };
   }
 
   function draw() {
@@ -336,6 +527,102 @@ export function Timeline(props: TimelineProps) {
       ctx.strokeRect(x1 + 0.5, 0.5, x2 - x1 - 1, waveHeight - 1);
     }
 
+    // --- active-subtitle frame (purely visual — matches the blue border
+    // on the active card in SubtitlePanel). Drawn over the waveform +
+    // segments but underneath the subtitle strip so the row tint stays
+    // readable. During a Cmd+Shift edge drag: (1) the frame locks onto
+    // the dragged subtitle instead of following the playhead, (2) its
+    // source-range comes from the preview state, (3) the neighbor being
+    // shifted gets a second, fainter frame so the user sees both sides
+    // move in real time.
+    if (transcript) {
+      const activeTSeg = getActiveSubtitleSeg();
+      if (activeTSeg) {
+        const rangeStart = subEdgeDrag ? subEdgeDrag.targetStart : activeTSeg.start;
+        const rangeEnd = subEdgeDrag ? subEdgeDrag.targetEnd : activeTSeg.end;
+        const pieces = mapRangeToEffective(
+          { start: rangeStart, end: rangeEnd },
+          cutRanges
+        );
+        for (const piece of pieces) {
+          const x1 = secToPx(piece.start);
+          const x2 = secToPx(piece.end);
+          if (x2 < 0 || x1 > w) continue;
+          const clampedX1 = Math.max(0, x1);
+          const clampedX2 = Math.min(w, x2);
+          const width = clampedX2 - clampedX1;
+          if (width < 2) continue;
+          const boxW = Math.max(0, width - 2);
+          const boxH = Math.max(0, waveHeight - 2);
+          const radius = Math.min(6, boxW / 2, boxH / 2);
+          ctx.beginPath();
+          ctx.roundRect(clampedX1 + 1, 1, boxW, boxH, radius);
+          ctx.fillStyle = 'rgba(14,122,254,0.10)';
+          ctx.fill();
+          ctx.strokeStyle = 'rgba(14,122,254,0.85)';
+          ctx.lineWidth = 2;
+          ctx.stroke();
+        }
+
+        // Edge grab markers — thin vertical bars at the first piece's
+        // start and the last piece's end. Always drawn so the user has a
+        // visual hint that edges are interactive; Cmd+Shift is the gate,
+        // not discoverability. Only skipped when the whole frame is too
+        // narrow to distinguish the two sides (same 20px rule as hit-test).
+        if (pieces.length > 0) {
+          const first = pieces[0];
+          const last = pieces[pieces.length - 1];
+          const firstX = secToPx(first.start);
+          const lastX = secToPx(last.end);
+          if (lastX - firstX >= 20) {
+            ctx.fillStyle = subEdgeDrag
+              ? 'rgba(14,122,254,1.0)'
+              : 'rgba(14,122,254,0.9)';
+            // 3px wide bars, full waveform height, slightly inset vertically
+            const barW = 3;
+            const barY = 3;
+            const barH = Math.max(0, waveHeight - 6);
+            if (firstX >= -barW && firstX <= w) {
+              ctx.fillRect(Math.round(firstX - barW / 2), barY, barW, barH);
+            }
+            if (lastX >= -barW && lastX <= w) {
+              ctx.fillRect(Math.round(lastX - barW / 2), barY, barW, barH);
+            }
+          }
+        }
+      }
+
+      // Neighbor preview — during an edge drag, render the neighbor's
+      // shifted range as a faint, dashed blue frame so the user sees who
+      // is being pushed around. No fill (keeps underlying waveform clean).
+      if (subEdgeDrag && subEdgeDrag.neighborId && subEdgeDrag.neighborStart != null && subEdgeDrag.neighborEnd != null) {
+        const nPieces = mapRangeToEffective(
+          { start: subEdgeDrag.neighborStart, end: subEdgeDrag.neighborEnd },
+          cutRanges
+        );
+        ctx.save();
+        ctx.setLineDash([4, 3]);
+        ctx.strokeStyle = 'rgba(14,122,254,0.6)';
+        ctx.lineWidth = 1.5;
+        for (const piece of nPieces) {
+          const x1 = secToPx(piece.start);
+          const x2 = secToPx(piece.end);
+          if (x2 < 0 || x1 > w) continue;
+          const clampedX1 = Math.max(0, x1);
+          const clampedX2 = Math.min(w, x2);
+          const width = clampedX2 - clampedX1;
+          if (width < 2) continue;
+          const boxW = Math.max(0, width - 2);
+          const boxH = Math.max(0, waveHeight - 2);
+          const radius = Math.min(6, boxW / 2, boxH / 2);
+          ctx.beginPath();
+          ctx.roundRect(clampedX1 + 1, 1, boxW, boxH, radius);
+          ctx.stroke();
+        }
+        ctx.restore();
+      }
+    }
+
     // --- subtitle strip ---
     if (subtitleHeight > 0 && transcript) {
       ctx.fillStyle = '#1f1f1f';
@@ -350,9 +637,27 @@ export function Timeline(props: TimelineProps) {
       ctx.textBaseline = 'middle';
       const midY = waveHeight + subtitleHeight / 2;
       for (const tseg of transcript.segments) {
+        // During an edge drag, substitute preview times for the two
+        // subtitles being moved so the strip follows the blue frame in
+        // real time instead of snapping only after the commit.
+        let segStart = tseg.start;
+        let segEnd = tseg.end;
+        if (subEdgeDrag) {
+          if (tseg.id === subEdgeDrag.segId) {
+            segStart = subEdgeDrag.targetStart;
+            segEnd = subEdgeDrag.targetEnd;
+          } else if (
+            tseg.id === subEdgeDrag.neighborId &&
+            subEdgeDrag.neighborStart != null &&
+            subEdgeDrag.neighborEnd != null
+          ) {
+            segStart = subEdgeDrag.neighborStart;
+            segEnd = subEdgeDrag.neighborEnd;
+          }
+        }
         // Map source time → effective pieces. A subtitle fully inside a cut
         // vanishes; one straddling a cut is drawn in each kept piece.
-        const pieces = mapRangeToEffective({ start: tseg.start, end: tseg.end }, cutRanges);
+        const pieces = mapRangeToEffective({ start: segStart, end: segEnd }, cutRanges);
         if (pieces.length === 0) continue;
         // Dim any subtitle that falls inside an approved delete-segment
         const inDelete = segments.some(
@@ -448,21 +753,35 @@ export function Timeline(props: TimelineProps) {
         return;
       }
 
-      // Alt + wheel => horizontal pan
-      if (e.altKey) {
+      // Horizontal pan. Three input paths all land here:
+      //   1. Trackpad two-finger horizontal swipe — browser fires wheel
+      //      events with |deltaX| >> |deltaY|. This is what the user
+      //      actually wants on macOS.
+      //   2. Shift + wheel on a regular mouse — common convention for
+      //      horizontal scrolling, preserved for mouse users.
+      //   3. Alt + wheel — legacy mapping; kept so existing muscle memory
+      //      still works.
+      const horizontalIntent =
+        Math.abs(e.deltaX) > Math.abs(e.deltaY) || e.altKey || e.shiftKey;
+      if (horizontalIntent) {
         e.preventDefault();
-        // deltaY > 0 (scroll down) pans forward in time
         const secPerPx = view.visibleSec / rect.width;
-        const delta = e.deltaY * secPerPx * 2;
-        const newOffset = Math.max(
-          0,
-          Math.min(Math.max(0, duration - view.visibleSec), view.offsetSec + delta)
-        );
-        setView({ offsetSec: newOffset, visibleSec: view.visibleSec });
+        // Prefer deltaX when present (trackpad); fall back to deltaY so
+        // Alt+wheel on a mouse still works. Multiplier tuned so trackpad
+        // feels responsive without flying past the end of the clip.
+        const pxDelta = e.deltaX !== 0 ? e.deltaX : e.deltaY;
+        const delta = pxDelta * secPerPx * 1.2;
+        const maxOffset = Math.max(0, duration - view.visibleSec);
+        const newOffset = Math.max(0, Math.min(maxOffset, view.offsetSec + delta));
+        if (newOffset !== view.offsetSec) {
+          setView({ offsetSec: newOffset, visibleSec: view.visibleSec });
+        }
         return;
       }
 
-      // Plain wheel => no action (caller's page scroll is also none here)
+      // Plain vertical wheel => no action. Letting it bubble would scroll
+      // whatever ancestor is scrollable; the timeline is inside a fixed
+      // layout so there's usually nothing to scroll and we just eat it.
     };
     el.addEventListener('wheel', onWheel, { passive: false });
     return () => el.removeEventListener('wheel', onWheel);
@@ -530,6 +849,9 @@ export function Timeline(props: TimelineProps) {
     const startSec = clampSec(mouseXToSec(startX, rect.width));
     const shift = e.shiftKey;
     const ctrl = e.ctrlKey || e.metaKey;
+    // Cmd+Shift (or Ctrl+Shift on non-mac) = "grab subtitle edge". Checked
+    // FIRST so it never falls through to the regular shift/ctrl handlers.
+    const cmdShift = (e.metaKey || e.ctrlKey) && e.shiftKey;
 
     const EDGE = 50;
     let currentX = startX;
@@ -577,6 +899,66 @@ export function Timeline(props: TimelineProps) {
 
       panRaf = requestAnimationFrame(tick);
     };
+
+    // ── Cmd+Shift drag = ADJUST ACTIVE SUBTITLE EDGE ──────────────────────
+    if (cmdShift) {
+      const subHit = hitTestSubEdge(startX);
+      if (!subHit) {
+        // User held Cmd+Shift but missed the edge. Consume the event so we
+        // don't accidentally fall through to a red mark (shift) or erase.
+        e.preventDefault();
+        return;
+      }
+      const seg = transcript?.segments.find((s) => s.id === subHit.segId);
+      if (!seg) return;
+      // Seed preview with the current times — mousemove updates it each
+      // frame. Even a zero-move mouseup stays safe (commits no-op).
+      setSubEdgeDrag({
+        segId: subHit.segId,
+        edge: subHit.edge,
+        targetStart: seg.start,
+        targetEnd: seg.end,
+        neighborId: null,
+        neighborStart: null,
+        neighborEnd: null,
+      });
+      const updatePreview = () => {
+        const effSec = clampSec(mouseXToSec(currentX, rect.width));
+        const srcSec = effectiveToSource(effSec, cutRangesRef.current);
+        const cascade = computeSubEdgeCascade(subHit.segId, subHit.edge, srcSec);
+        if (cascade) {
+          setSubEdgeDrag({
+            segId: subHit.segId,
+            edge: subHit.edge,
+            targetStart: cascade.targetStart,
+            targetEnd: cascade.targetEnd,
+            neighborId: cascade.neighborId,
+            neighborStart: cascade.neighborStart,
+            neighborEnd: cascade.neighborEnd,
+          });
+        }
+        panRaf = requestAnimationFrame(updatePreview);
+      };
+      panRaf = requestAnimationFrame(updatePreview);
+      const move = (ev: MouseEvent) => {
+        currentX = ev.clientX - rect.left;
+      };
+      const up = () => {
+        window.removeEventListener('mousemove', move);
+        window.removeEventListener('mouseup', up);
+        cancelAnimationFrame(panRaf);
+        setSubEdgeDrag((d) => {
+          if (d) {
+            onResizeSubtitle(d.segId, d.targetStart, d.targetEnd);
+          }
+          return null;
+        });
+      };
+      window.addEventListener('mousemove', move);
+      window.addEventListener('mouseup', up);
+      e.preventDefault();
+      return;
+    }
 
     // ── Shift+drag = MARK, Ctrl+drag = ERASE ──────────────────────────────
     if (shift || ctrl) {
@@ -748,11 +1130,21 @@ export function Timeline(props: TimelineProps) {
 
   function onMouseMove(e: React.MouseEvent) {
     // Update hover cursor based on what's under the mouse (only when not dragging).
-    if (segDrag || dragging) return;
+    if (segDrag || dragging || subEdgeDrag) return;
     const canvas = canvasRef.current;
     if (!canvas) return;
     const rect = canvas.getBoundingClientRect();
     const x = e.clientX - rect.left;
+    // Subtitle-edge grab only activates with Cmd+Shift — otherwise we fall
+    // through to the normal segment hit-test so the red boxes keep working.
+    const cmdShift = (e.metaKey || e.ctrlKey) && e.shiftKey;
+    if (cmdShift) {
+      const sub = hitTestSubEdge(x);
+      if (sub) {
+        setHoverCursor('ew-resize');
+        return;
+      }
+    }
     const hit = hitTestSegment(x, rect.width);
     if (!hit) setHoverCursor('default');
     else if (hit.kind === 'move') setHoverCursor('grab');
@@ -765,7 +1157,15 @@ export function Timeline(props: TimelineProps) {
       ref={containerRef}
       onMouseDown={onMouseDown}
       onMouseMove={onMouseMove}
-      style={{ cursor: segDrag ? (segDrag.kind === 'move' ? 'grabbing' : 'ew-resize') : hoverCursor }}
+      style={{
+        cursor: subEdgeDrag
+          ? 'ew-resize'
+          : segDrag
+            ? segDrag.kind === 'move'
+              ? 'grabbing'
+              : 'ew-resize'
+            : hoverCursor,
+      }}
     >
       <canvas ref={canvasRef} />
     </div>

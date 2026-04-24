@@ -5,6 +5,7 @@ import { promises as fsp } from 'node:fs';
 import {
   LynLensEngine,
   MockDiarizationEngine,
+  SherpaOnnxDiarizationEngine,
   WhisperLocalService,
   buildHighlightSystemPrompt,
   buildHighlightUserPrompt,
@@ -13,8 +14,11 @@ import {
   detectSilences,
   extractWaveform,
   parseHighlightResponse,
+  resolveSherpaPaths,
+  type DiarizationEngine,
   type FfmpegPaths,
   type HighlightStyle,
+  type SherpaPaths,
   type SocialPlatform,
 } from '@lynlens/core';
 import type { AddSegmentRequest, ExportRequest } from '../shared/ipc-types';
@@ -131,6 +135,25 @@ function resolveBundledWhisperPaths(): { binaryPath: string; modelPath: string }
   const modelPath = path.join(dir, 'ggml-base.bin');
   if (!fs.existsSync(binaryPath) || !fs.existsSync(modelPath)) return null;
   return { binaryPath, modelPath };
+}
+
+/**
+ * Locate the sherpa-onnx diarization assets the bootstrap script writes
+ * into resources/diarization/<platform>/. Returns null (→ fall back to
+ * mock engine) if any piece is missing — keeps the feature opt-in and
+ * the app usable on machines without the models.
+ */
+function resolveBundledDiarizationBase(): string | null {
+  const platformDir =
+    process.platform === 'darwin'
+      ? process.arch === 'arm64'
+        ? 'mac-arm64'
+        : 'mac-x64'
+      : null;
+  if (!platformDir) return null;
+  return app.isPackaged
+    ? path.join(process.resourcesPath, 'diarization')
+    : path.join(__dirname, '..', '..', '..', 'resources', 'diarization', platformDir);
 }
 
 const engine = new LynLensEngine({ ffmpegPaths: resolveBundledFfmpegPaths() });
@@ -1079,23 +1102,90 @@ ipcMain.handle('get-social-style-presets', async (_ev, projectId: string) => {
 // on failure. Missing transcript is a caller-side error (renderer disables
 // the button), not a silent no-op.
 
-ipcMain.handle('diarize', async (_ev, projectId: string) => {
-  const project = engine.projects.get(projectId);
-  if (!project.transcript || project.transcript.segments.length === 0) {
-    throw new Error('请先生成字幕后再区分说话人');
+ipcMain.handle(
+  'diarize',
+  async (_ev, projectId: string, opts?: { speakerCount?: number }) => {
+    const project = engine.projects.get(projectId);
+    if (!project.transcript || project.transcript.segments.length === 0) {
+      throw new Error('请先生成字幕后再区分说话人');
+    }
+
+    const diarBase = resolveBundledDiarizationBase();
+    let diarEngine: DiarizationEngine;
+    if (diarBase) {
+      const paths = await resolveSherpaPaths(diarBase);
+      if (paths) {
+        // When the caller knows the speaker count, forward it — vastly
+        // more reliable than threshold-based auto-clustering for
+        // short / low-speaker-count content.
+        const count =
+          opts?.speakerCount && opts.speakerCount > 0
+            ? Math.floor(opts.speakerCount)
+            : undefined;
+        diarEngine = new SherpaOnnxDiarizationEngine(paths, engine.ffmpegPaths, {
+          clusterThreshold: 0.9,
+          numClusters: count,
+        });
+      } else {
+        diarEngine = new MockDiarizationEngine(() => project.transcript);
+      }
+    } else {
+      diarEngine = new MockDiarizationEngine(() => project.transcript);
+    }
+
+    const result = await diarEngine.diarize(project.videoPath);
+    project.applyDiarization(result);
+    if (project.projectPath) {
+      await engine.projects.saveProject(projectId);
+    }
+    return {
+      engine: result.engine,
+      speakers: result.speakers,
+      segmentCount: result.segments.length,
+    };
   }
-  const diarEngine = new MockDiarizationEngine(() => project.transcript);
-  const result = await diarEngine.diarize(project.videoPath);
-  project.applyDiarization(result);
-  if (project.projectPath) {
-    await engine.projects.saveProject(projectId);
+);
+
+ipcMain.handle(
+  'merge-speakers',
+  async (_ev, projectId: string, from: string, to: string) => {
+    const project = engine.projects.get(projectId);
+    const n = project.mergeSpeakers(from, to);
+    if (n > 0 && project.projectPath) {
+      await engine.projects.saveProject(projectId);
+    }
+    return n;
   }
-  return {
-    engine: result.engine,
-    speakers: result.speakers,
-    segmentCount: result.segments.length,
-  };
-});
+);
+
+ipcMain.handle(
+  'set-segment-speaker',
+  async (
+    _ev,
+    projectId: string,
+    transcriptSegmentId: string,
+    speaker: string | null
+  ) => {
+    const project = engine.projects.get(projectId);
+    const ok = project.setSegmentSpeaker(transcriptSegmentId, speaker);
+    if (ok && project.projectPath) {
+      await engine.projects.saveProject(projectId);
+    }
+    return ok;
+  }
+);
+
+ipcMain.handle(
+  'auto-assign-unlabeled-speakers',
+  async (_ev, projectId: string) => {
+    const project = engine.projects.get(projectId);
+    const n = project.autoAssignUnlabeledSpeakers();
+    if (n > 0 && project.projectPath) {
+      await engine.projects.saveProject(projectId);
+    }
+    return n;
+  }
+);
 
 ipcMain.handle(
   'rename-speaker',
@@ -1121,6 +1211,36 @@ ipcMain.handle(
   async (_ev, projectId: string, segmentId: string, newText: string) => {
     const project = engine.projects.get(projectId);
     return project.updateTranscriptSegment(segmentId, newText);
+  }
+);
+
+ipcMain.handle(
+  'update-transcript-segment-time',
+  async (
+    _ev,
+    projectId: string,
+    segmentId: string,
+    newStart: number,
+    newEnd: number
+  ) => {
+    const project = engine.projects.get(projectId);
+    const ok = project.updateTranscriptSegmentTime(segmentId, newStart, newEnd);
+    if (ok && project.projectPath) {
+      await engine.projects.saveProject(projectId);
+    }
+    return ok;
+  }
+);
+
+ipcMain.handle(
+  'set-transcript-warning-fingerprint',
+  async (_ev, projectId: string, segmentId: string, fingerprint: string | null) => {
+    const project = engine.projects.get(projectId);
+    const ok = project.setTranscriptWarningFingerprint(segmentId, fingerprint);
+    if (ok && project.projectPath) {
+      await engine.projects.saveProject(projectId);
+    }
+    return ok;
   }
 );
 

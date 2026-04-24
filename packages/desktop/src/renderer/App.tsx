@@ -52,6 +52,19 @@ export function App() {
   const [showQuickMarkDialog, setShowQuickMarkDialog] = useState(false);
   const [workMode, setWorkMode] = useState<WorkMode>('precision');
   const [diarizing, setDiarizing] = useState(false);
+  /**
+   * Mark-over-cut prompt. Set when the user's Shift+drag covers a range
+   * that overlaps one or more cut segments — we pause the normal addSegment
+   * flow and let them pick: extend the cut, restore + re-mark, or cancel.
+   */
+  const [markOverCut, setMarkOverCut] = useState<
+    | null
+    | {
+        srcStart: number;
+        srcEnd: number;
+        overlappingCutIds: string[];
+      }
+  >(null);
 
   // Persisted panel sizes so the user's preferred layout survives restarts.
   const [sidebarWidth, setSidebarWidth] = usePersistedSize('lynlens.sidebarWidth', 340);
@@ -161,6 +174,21 @@ export function App() {
       store.segments
         .filter((s) => s.status === 'cut')
         .map((s) => ({ start: s.start, end: s.end }))
+        .sort((a, b) => a.start - b.start),
+    [store.segments]
+  );
+
+  /**
+   * Same "cut" set but keeping segment ids. SubtitlePanel needs the ids to
+   * build per-subtitle warning fingerprints (so dismissing a ⚠ auto-resets
+   * when the underlying cuts change). Sort by start so the fingerprint is
+   * stable regardless of insertion order.
+   */
+  const cutSegmentsForPanel = useMemo(
+    () =>
+      store.segments
+        .filter((s) => s.status === 'cut')
+        .map((s) => ({ id: s.id, start: s.start, end: s.end }))
         .sort((a, b) => a.start - b.start),
     [store.segments]
   );
@@ -473,6 +501,23 @@ export function App() {
       const start = effectiveToSource(effStart, cutRanges);
       const end = effectiveToSource(effEnd, cutRanges);
       if (end - start < 0.02) return;
+
+      // Check whether the source range intersects any cut segment. If so,
+      // pause and ask the user what they mean — silently absorbing the
+      // mark into a cut (rank merge) was the confusing old behaviour.
+      const overlappingCuts = store.segments.filter(
+        (s) => s.status === 'cut' && !(s.end <= start || s.start >= end)
+      );
+      if (overlappingCuts.length > 0) {
+        setMarkOverCut({
+          srcStart: start,
+          srcEnd: end,
+          overlappingCutIds: overlappingCuts.map((s) => s.id),
+        });
+        return;
+      }
+
+      // No cut in the way — normal flow.
       await window.lynlens.addSegment({
         projectId: store.projectId,
         start,
@@ -481,7 +526,39 @@ export function App() {
         reason: null,
       });
     },
-    [store.projectId, cutRanges]
+    [store.projectId, store.segments, cutRanges]
+  );
+
+  /** Handles the user's choice from the mark-over-cut prompt. */
+  const resolveMarkOverCut = useCallback(
+    async (choice: 'extend-cut' | 'restore-and-mark' | 'cancel') => {
+      const pending = markOverCut;
+      setMarkOverCut(null);
+      if (!pending || !store.projectId || choice === 'cancel') return;
+      const pid = store.projectId;
+
+      if (choice === 'restore-and-mark') {
+        // Revert every overlapping cut first. Each revertRipple flips a
+        // single cut-status segment back to approved; the subsequent
+        // addSegment will then merge with those approved segments (same
+        // class) into one big red box — exactly what the user wants when
+        // they say "I changed my mind about that cut".
+        for (const cutId of pending.overlappingCutIds) {
+          await window.lynlens.revertRipple(pid, cutId);
+        }
+      }
+      // choice === 'extend-cut' falls through with no revert — the new
+      // segment's mergeOverlapping will naturally absorb into the cut
+      // thanks to the status-rank rule (cut > approved).
+      await window.lynlens.addSegment({
+        projectId: pid,
+        start: pending.srcStart,
+        end: pending.srcEnd,
+        source: 'human',
+        reason: null,
+      });
+    },
+    [markOverCut, store.projectId]
   );
 
   const onEraseRange = useCallback(
@@ -829,64 +906,26 @@ export function App() {
         </button>
         <button
           className="ai"
-          disabled={!store.projectId || store.aiStatus === 'transcribing'}
-          onClick={async () => {
+          disabled={!store.projectId || store.aiStatus === 'transcribing' || diarizing}
+          onClick={() => {
             if (!store.projectId) return;
-            // If we haven't asked the user about orientation for this
-            // project yet, open the dialog; the dialog's "确认" will
-            // then kick off the transcription.
-            if (!store.userOrientation) {
-              setShowOrientDialog(true);
-              return;
-            }
-            try {
-              await window.lynlens.transcribe(store.projectId, { language: 'auto' });
-            } catch (err) {
-              alert(`转录失败: ${(err as Error).message}`);
-            }
+            // Always open the combined dialog: orientation + speaker count.
+            // Pre-selecting count up front is the single biggest lever for
+            // good diarization results, so we never skip this step.
+            setShowOrientDialog(true);
           }}
-          title="本地 whisper.cpp 转录(离线)"
+          title="生成字幕 + 按声纹区分说话人,一步完成"
         >
           {store.aiStatus === 'transcribing'
             ? `转录中 ${Math.round(store.transcribeProgress * 100)}%`
-            : store.transcript
-              ? `重新转录 (${store.transcript.segments.length} 段)`
-              : '生成字幕'}
+            : diarizing
+              ? '区分声纹中...'
+              : store.transcript
+                ? `重新转录 (${store.transcript.segments.length} 段)`
+                : '字幕转录'}
         </button>
-        <button
-          className="ai"
-          disabled={!store.projectId || !store.transcript || diarizing}
-          onClick={async () => {
-            if (!store.projectId) return;
-            setDiarizing(true);
-            try {
-              const r = await window.lynlens.diarize(store.projectId);
-              // Pull fresh transcript (speakers now embedded) from main.
-              const qcp = await window.lynlens.getState(store.projectId);
-              store.setTranscript(qcp.transcript);
-              if (r.engine === 'mock') {
-                alert(
-                  `区分完成(演示数据): 识别出 ${r.speakers.length} 位说话人,` +
-                    ` ${r.segmentCount} 段已贴标签。\n\n` +
-                    '注: 目前用的是 mock 引擎,等真实 sherpa-onnx 声纹引擎接入后才是真声纹分析。'
-                );
-              } else {
-                alert(`区分完成: ${r.speakers.length} 位说话人 · ${r.segmentCount} 段已贴标签。`);
-              }
-            } catch (err) {
-              alert(`区分失败: ${(err as Error).message}`);
-            } finally {
-              setDiarizing(false);
-            }
-          }}
-          title={
-            store.transcript
-              ? '按声纹把字幕分成不同说话人 S1/S2。不改字幕内容,不影响其他功能。'
-              : '请先生成字幕'
-          }
-        >
-          {diarizing ? '区分中...' : '区分说话人'}
-        </button>
+        {/* 区分说话人 button merged into 字幕转录 above — same dialog,
+            one-click pipeline. Chat panel MCP still exposes it separately. */}
         <button
           className="ai"
           disabled={!store.projectId}
@@ -1006,6 +1045,7 @@ export function App() {
               userOrientation={store.userOrientation}
               currentTime={currentTime}
               speakerNames={store.speakerNames}
+              cutSegments={cutSegmentsForPanel}
               onJump={onJumpTo}
             />
           )}
@@ -1127,6 +1167,7 @@ export function App() {
           sourceDuration={sourceDuration}
           cutRanges={cutRanges}
           currentTime={effectiveCurrentTime}
+          isPlaying={isPlaying}
           waveform={store.waveform}
           segments={store.segments}
           transcript={store.transcript}
@@ -1137,6 +1178,17 @@ export function App() {
           onMarkRange={onMarkRange}
           onEraseRange={onEraseRange}
           onResizeSegment={onResizeSegment}
+          onResizeSubtitle={(segId, srcStart, srcEnd) => {
+            // Timeline already ran the source-time cascade; server will run
+            // it again (authoritative), which is fine — same result.
+            if (!store.projectId) return;
+            void window.lynlens.updateTranscriptSegmentTime(
+              store.projectId,
+              segId,
+              srcStart,
+              srcEnd
+            );
+          }}
         />
       </div>
       </>
@@ -1157,16 +1209,44 @@ export function App() {
       {showOrientDialog && store.videoMeta && store.projectId && (
         <OrientationDialog
           videoMeta={store.videoMeta}
+          defaultOrientation={store.userOrientation}
           onCancel={() => setShowOrientDialog(false)}
-          onConfirm={async (o) => {
+          onConfirm={async ({ orientation, speakerCount }) => {
             setShowOrientDialog(false);
             if (!store.projectId) return;
-            await window.lynlens.setUserOrientation(store.projectId, o);
-            store.setUserOrientation(o);
+            const pid = store.projectId;
+            // 1. Persist orientation preference first (whisper re-reads
+            //    it for line splitting).
+            await window.lynlens.setUserOrientation(pid, orientation);
+            store.setUserOrientation(orientation);
+
+            // 2. Run whisper.
             try {
-              await window.lynlens.transcribe(store.projectId, { language: 'auto' });
+              await window.lynlens.transcribe(pid, { language: 'auto' });
             } catch (err) {
               alert(`转录失败: ${(err as Error).message}`);
+              return;
+            }
+
+            // 3. Run diarization right after. Pass speakerCount
+            //    (undefined for 'auto') straight to sherpa.
+            setDiarizing(true);
+            try {
+              const count =
+                typeof speakerCount === 'number' ? speakerCount : undefined;
+              const r = await window.lynlens.diarize(pid, { speakerCount: count });
+              const qcp = await window.lynlens.getState(pid);
+              store.setTranscript(qcp.transcript);
+              store.setSpeakerNames(qcp.speakerNames ?? {});
+              const msg =
+                r.engine === 'mock'
+                  ? `转录完成, 声纹用演示数据识别出 ${r.speakers.length} 人。`
+                  : `转录 + 声纹区分完成: ${r.speakers.length} 位说话人, ${r.segmentCount} 段已贴标签。`;
+              alert(msg);
+            } catch (err) {
+              alert(`声纹区分失败 (字幕已生成): ${(err as Error).message}`);
+            } finally {
+              setDiarizing(false);
             }
           }}
         />
@@ -1204,6 +1284,82 @@ export function App() {
           }}
         />
       )}
+      {markOverCut && (
+        <MarkOverCutDialog
+          overlappingCount={markOverCut.overlappingCutIds.length}
+          onChoice={(c) => void resolveMarkOverCut(c)}
+        />
+      )}
+    </div>
+  );
+}
+
+/**
+ * Confirmation dialog shown when a Shift+drag mark intersects one or more
+ * existing cut segments. Three exits:
+ *   - 扩展剪切: new segment is added normally; mergeOverlapping rank
+ *     rule absorbs it into the cut (grows the cut region).
+ *   - 还原并标红框: each overlapping cut is revertRipple'd first, then
+ *     the new segment becomes an approved red box spanning the whole
+ *     range. User can click 剪切 again later to re-commit.
+ *   - 取消: nothing happens.
+ */
+function MarkOverCutDialog({
+  overlappingCount,
+  onChoice,
+}: {
+  overlappingCount: number;
+  onChoice: (c: 'extend-cut' | 'restore-and-mark' | 'cancel') => void;
+}): JSX.Element {
+  return (
+    <div
+      className="dialog-backdrop"
+      onClick={(e) => e.target === e.currentTarget && onChoice('cancel')}
+    >
+      <div className="dialog" style={{ minWidth: 440 }}>
+        <h3>标记碰到了已剪切段</h3>
+        <div style={{ color: 'var(--text2)', fontSize: 13, lineHeight: 1.6 }}>
+          你刚画的红框和 <strong>{overlappingCount}</strong> 处已经剪掉的段重叠。
+          怎么处理?
+        </div>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 14 }}>
+          <div
+            style={{
+              padding: '10px 12px',
+              border: '1px solid #2a2a2a',
+              borderRadius: 6,
+              fontSize: 12,
+              color: 'var(--text3)',
+            }}
+          >
+            <div style={{ color: 'var(--text1)', fontSize: 13, marginBottom: 4 }}>
+              方案 A: 扩展剪切
+            </div>
+            新红框和已有的剪切合并成一个更大的 cut,时间轴继续压缩。
+          </div>
+          <div
+            style={{
+              padding: '10px 12px',
+              border: '1px solid #2a2a2a',
+              borderRadius: 6,
+              fontSize: 12,
+              color: 'var(--text3)',
+            }}
+          >
+            <div style={{ color: 'var(--text1)', fontSize: 13, marginBottom: 4 }}>
+              方案 B: 还原并标红框
+            </div>
+            先把那 {overlappingCount} 刀还原(时间轴会变长),整个范围变红框。想剪再点「剪切」。
+          </div>
+        </div>
+        <div className="dialog-actions">
+          <button onClick={() => onChoice('cancel')}>取消</button>
+          <button onClick={() => onChoice('extend-cut')}>扩展剪切 (A)</button>
+          <button className="primary" onClick={() => onChoice('restore-and-mark')}>
+            还原并标红框 (B)
+          </button>
+        </div>
+      </div>
     </div>
   );
 }

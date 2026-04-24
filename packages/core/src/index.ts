@@ -67,13 +67,21 @@ export {
 export {
   applySpeakersToTranscript,
   clearTranscriptSpeakers,
+  displaySpeakerName,
   listSpeakers,
+  listSpeakersInOrder,
   MockDiarizationEngine,
   runMockDiarization,
   type DiarizationEngine,
   type DiarizationResult,
   type DiarizationSegment,
 } from './diarization';
+export {
+  resolveSherpaPaths,
+  SherpaOnnxDiarizationEngine,
+  type SherpaPaths,
+  type SherpaDiarizationOptions,
+} from './diarization-sherpa';
 // Ripple helpers: re-exported via `import *` + const bindings so tsc emits
 // direct `exports.foo = ripple.foo` assignments instead of Object.define-
 // Property getters. Getter-based re-exports are invisible to both esbuild's

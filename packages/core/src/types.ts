@@ -73,6 +73,15 @@ export interface TranscriptSegment {
    * raw ID when no custom name is set.
    */
   speaker?: string;
+  /**
+   * Fingerprint of the cut segments this subtitle overlapped the last
+   * time the user dismissed the "straddles a cut" warning. Re-computed at
+   * render time from current cuts; if it matches, the ⚠ is hidden. If the
+   * user later adds / removes / merges cuts that touch this subtitle, the
+   * fingerprint no longer matches and the warning reappears. Stored as a
+   * sorted-joined string of cut segment IDs.
+   */
+  warningFingerprint?: string;
 }
 
 export interface Transcript {

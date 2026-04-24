@@ -86,7 +86,7 @@ export function clearTranscriptSpeakers(transcript: Transcript): Transcript {
 
 /**
  * Extract the distinct sorted list of speaker IDs currently present in a
- * transcript. Used by UI to build the renaming panel.
+ * transcript. Sorted alphabetically for a stable order regardless of input.
  */
 export function listSpeakers(transcript: Transcript | null): string[] {
   if (!transcript) return [];
@@ -95,6 +95,44 @@ export function listSpeakers(transcript: Transcript | null): string[] {
     if (t.speaker) set.add(t.speaker);
   }
   return Array.from(set).sort();
+}
+
+/**
+ * Speaker IDs ordered by the time each one FIRST appears in the transcript.
+ * Used for display numbering: the first person to speak becomes "说话人 1",
+ * the second "说话人 2", etc. Matches the user's mental model better than
+ * alphabetical sort — especially when merges / retags have left a sparse
+ * set like [S2, S4].
+ */
+export function listSpeakersInOrder(transcript: Transcript | null): string[] {
+  if (!transcript) return [];
+  const order: string[] = [];
+  const seen = new Set<string>();
+  const sorted = transcript.segments.slice().sort((a, b) => a.start - b.start);
+  for (const t of sorted) {
+    if (t.speaker && !seen.has(t.speaker)) {
+      seen.add(t.speaker);
+      order.push(t.speaker);
+    }
+  }
+  return order;
+}
+
+/**
+ * Resolve the user-facing display label for a raw speaker ID.
+ *
+ * User-assigned name if present, otherwise the raw ID itself (S1, S2, …).
+ * `orderedSpeakers` is accepted for API stability (callers pre-compute it
+ * for ordering rows) even though the function no longer positional-numbers.
+ */
+export function displaySpeakerName(
+  speakerId: string,
+  speakerNames: Record<string, string>,
+  _orderedSpeakers: readonly string[]
+): string {
+  const named = speakerNames[speakerId];
+  if (named && named.trim()) return named;
+  return speakerId;
 }
 
 // ============================================================================

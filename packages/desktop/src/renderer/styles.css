@@ -787,6 +787,20 @@ button.ai.active {
 }
 .sub-card.active { border-color: #0e7afe55; background: #252633; }
 .sub-card.dirty { border-left: 3px solid #f39c12; }
+/* Fully-cut subtitle: the entire range lives inside a ripple cut. Dim
+   the card so the user can tell at a glance it contributes nothing to
+   the effective timeline. Toggleable via ⚙ → 隐藏已被剪切的字幕. */
+.sub-card.cut-full {
+  opacity: 0.45;
+  background: #1b1b22;
+}
+.sub-card.cut-full .sub-text {
+  text-decoration: line-through;
+  text-decoration-color: #555;
+  color: var(--text3);
+}
+/* Partial overlap — still readable, but hint with a soft amber stripe. */
+.sub-card.cut-partial { border-left: 3px solid #8a6d28; }
 
 .sub-head {
   display: flex;
@@ -795,15 +809,99 @@ button.ai.active {
   font-size: 11px;
   color: var(--text3);
   margin-bottom: 4px;
+  flex-wrap: wrap;
 }
 .sub-idx { font-variant-numeric: tabular-nums; }
 .sub-time {
   font-variant-numeric: tabular-nums;
-  cursor: pointer;
   color: var(--accent);
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
 }
-.sub-time:hover { text-decoration: underline; }
+.sub-time-sep { color: var(--text3); padding: 0 2px; }
+.sub-time-edge {
+  cursor: pointer;
+  padding: 1px 4px;
+  border-radius: 3px;
+  transition: background 0.1s, outline-color 0.1s;
+  outline: 1px solid transparent;
+}
+.sub-time-edge:hover {
+  background: rgba(78, 109, 159, 0.15);
+  outline-color: #3a3a3a;
+}
+.sub-time-edit {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: #1a1a22;
+  border: 1px solid var(--accent);
+  border-radius: 3px;
+  padding: 1px 4px;
+}
+.sub-time-input {
+  background: transparent;
+  border: none;
+  outline: none;
+  color: var(--text1);
+  font-variant-numeric: tabular-nums;
+  width: 84px;
+  font: inherit;
+}
+.sub-time-nudge {
+  display: inline-flex;
+  gap: 2px;
+}
+.sub-time-nudge-btn {
+  font-size: 10px;
+  padding: 0 4px;
+  border: 1px solid #3a3a3a;
+  background: #22222a;
+  color: var(--text2);
+  border-radius: 2px;
+  cursor: pointer;
+  font-variant-numeric: tabular-nums;
+  line-height: 16px;
+}
+.sub-time-nudge-btn:hover {
+  background: #2d2d38;
+  border-color: var(--accent);
+  color: var(--text1);
+}
 .sub-dirty { color: #f39c12; }
+.sub-cut-tag {
+  color: #c0392b;
+  font-weight: 600;
+  font-size: 10px;
+  padding: 1px 6px;
+  border: 1px solid #6a2a24;
+  border-radius: 3px;
+  letter-spacing: 0.04em;
+}
+.sub-cut-warning {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 1px 4px;
+  border-radius: 3px;
+  background: rgba(243, 156, 18, 0.12);
+  border: 1px solid rgba(243, 156, 18, 0.35);
+  color: #f39c12;
+}
+.sub-cut-warning-icon { font-size: 12px; }
+.sub-cut-dismiss {
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  font-size: 12px;
+  padding: 0 2px;
+  line-height: 1;
+  color: inherit;
+  opacity: 0.75;
+  transition: opacity 0.1s;
+}
+.sub-cut-dismiss:hover { opacity: 1; }
 .sub-speaker {
   font-size: 10px;
   font-weight: 600;
@@ -816,6 +914,167 @@ button.ai.active {
   transition: filter 0.15s;
 }
 .sub-speaker:hover { filter: brightness(1.2); }
+.sub-speaker-add {
+  font-size: 10px;
+  padding: 2px 7px;
+  border-radius: 3px;
+  background: transparent;
+  color: var(--text3);
+  border: 1px dashed #3a3a3a;
+  cursor: pointer;
+  letter-spacing: 0.02em;
+  transition: color 0.15s, border-color 0.15s, background 0.15s;
+}
+.sub-speaker-add:hover {
+  color: var(--text1);
+  border-color: var(--accent);
+  background: rgba(78, 109, 159, 0.1);
+}
+
+/* ---------- SubtitlePanel settings popover (⚙) ---------- */
+.sub-settings-bar {
+  display: flex;
+  align-items: center;
+  padding: 6px 10px;
+  border-bottom: 1px solid #2a2a2a;
+  font-size: 11px;
+  color: var(--text3);
+  flex-shrink: 0;
+}
+.sub-settings-spacer { flex: 1 1 0; }
+.sub-orient-hint {
+  font-variant-numeric: tabular-nums;
+  color: var(--text3);
+}
+.sub-settings-btn {
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--text3);
+  padding: 3px 5px;
+  border-radius: 4px;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+}
+.sub-settings-btn:hover,
+.sub-settings-btn[aria-expanded='true'] {
+  color: var(--text1);
+  border-color: #3a3a3a;
+  background: #1f1f1f;
+}
+.sub-settings-popover {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 12px;
+  border-bottom: 1px solid #2a2a2a;
+  background: #161616;
+}
+.sub-settings-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--text2);
+}
+
+/* ---------- Per-segment speaker picker (click-badge dialog) ---------- */
+.sp-segpicker {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 4px 0 10px;
+}
+.sp-segpicker-empty {
+  font-size: 12px;
+  color: var(--text3);
+  padding: 8px 4px;
+  line-height: 1.5;
+}
+.sp-segpicker-btn {
+  text-align: left;
+  padding: 8px 12px;
+  font-size: 13px;
+  background: #1a1a1a;
+  border: 1px solid #2e2e2e;
+  color: var(--text1);
+  border-radius: 4px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.sp-segpicker-btn:hover:not(:disabled) {
+  border-color: var(--accent);
+  background: #1f2a3a;
+}
+.sp-segpicker-btn.sp-segpicker-clear {
+  border-color: #3a2727;
+  color: #c77;
+}
+.sp-segpicker-btn.sp-segpicker-clear:hover:not(:disabled) {
+  background: #2a1a1a;
+  border-color: #5a3333;
+}
+.sp-segpicker-raw {
+  color: var(--text3);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---------- Speaker manager (inside ⚙ settings popover) ---------- */
+.sp-mgr {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-top: 8px;
+  border-top: 1px solid #2a2a2a;
+  margin-top: 4px;
+}
+.sp-mgr-empty {
+  font-size: 11px;
+  color: var(--text3);
+  padding-top: 6px;
+  border-top: 1px solid #2a2a2a;
+  margin-top: 4px;
+  line-height: 1.5;
+}
+.sp-mgr-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.sp-mgr-input {
+  flex: 1;
+  padding: 5px 8px;
+  background: #151515;
+  color: var(--text1);
+  border: 1px solid #2e2e2e;
+  border-radius: 4px;
+  font-size: 12px;
+  font-family: inherit;
+  min-width: 0;
+  /* left border set inline (coloured per speaker) */
+}
+.sp-mgr-input:focus {
+  outline: none;
+  border-color: var(--accent);
+  /* keep the coloured left edge even on focus */
+  border-left-width: 4px;
+}
+.sp-mgr-merge {
+  padding: 4px 6px;
+  background: #151515;
+  color: var(--text2);
+  border: 1px solid #2e2e2e;
+  border-radius: 4px;
+  font-size: 11px;
+  cursor: pointer;
+}
+.sp-mgr-merge:hover {
+  border-color: var(--accent);
+  color: var(--text1);
+}
 
 .sub-text {
   width: 100%;
