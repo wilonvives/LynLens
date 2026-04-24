@@ -1,0 +1,78 @@
+/* Top tab bar (cu-jian / gao-guang / wen-an) + AGENT button */
+
+/* ---------- Work mode tabs (粗剪 / 高光) ---------- */
+.work-mode-tabs {
+  display: flex;
+  gap: 2px;
+  padding: 0 12px;
+  background: #1a1a1a;
+  border-bottom: 1px solid #2a2a2a;
+  flex-shrink: 0;
+}
+.work-mode-tab {
+  background: transparent;
+  border: none;
+  color: var(--text3);
+  font-size: 13px;
+  padding: 8px 18px;
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+  transition: color 0.15s, border-color 0.15s;
+}
+.work-mode-tab:hover:not(:disabled) {
+  color: var(--text1);
+  background: transparent;
+}
+.work-mode-tab.active {
+  color: var(--text1);
+  border-bottom-color: var(--accent);
+}
+.work-mode-tab:disabled {
+  color: #555;
+  cursor: not-allowed;
+}
+/* Pushes the AGENT button to the right edge of the tab bar. */
+.work-mode-spacer { flex: 1 1 0; }
+/* Boxed AGENT button — visually distinct from the plain tab buttons so
+   the user sees it as a separate action (opens a popup) rather than
+   another page switcher. */
+.work-mode-agent {
+  margin: 4px 0 4px auto;
+  padding: 4px 16px;
+  background: transparent;
+  color: var(--text1);
+  border: 1px solid #3a3a3a;
+  border-radius: 5px;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s;
+}
+.work-mode-agent:hover:not(:disabled) {
+  border-color: var(--accent);
+  background: rgba(78, 109, 159, 0.08);
+}
+.work-mode-agent:disabled {
+  color: #555;
+  border-color: #2a2a2a;
+  cursor: not-allowed;
+}
+
+/* Popup agent window: ChatPanel fills the entire viewport (no sidebar
+   flex-basis, no fixed width). Styled simply so the chrome comes from
+   the OS window frame. */
+.agent-window-shell {
+  width: 100vw;
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background: #1a1a1a;
+}
+.chat-panel.detached {
+  flex: 1 1 auto;
+  width: 100%;
+  max-width: 100%;
+}
+

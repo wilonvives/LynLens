@@ -1,0 +1,608 @@
+/* Highlight panel: mini-timeline, variant cards, progress bar, segment editor */
+
+/* ---------- Highlight mini-timeline (segment edit mode) ---------- */
+.hl-mini-timeline-wrap {
+  margin-top: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.hl-mini-err {
+  padding: 6px 10px;
+  background: rgba(192, 57, 43, 0.13);
+  border: 1px solid rgba(192, 57, 43, 0.35);
+  color: #ea8a82;
+  font-size: 11px;
+  border-radius: 4px;
+}
+.hl-mini-timeline {
+  display: flex;
+  width: 100%;
+  height: 52px;
+  background: #111;
+  border: 1px solid #2e2e2e;
+  border-radius: 4px;
+  overflow: hidden;
+  font-variant-numeric: tabular-nums;
+  user-select: none;
+}
+.hl-mini-seg {
+  position: relative;
+  display: flex;
+  align-items: stretch;
+  min-width: 30px;
+  background: rgba(78, 109, 159, 0.22);
+  border-right: 1px solid #1a1a1a;
+}
+.hl-mini-seg:last-child { border-right: none; }
+.hl-mini-seg.dragging { background: rgba(14, 122, 254, 0.32); }
+.hl-mini-seg:hover { background: rgba(78, 109, 159, 0.32); }
+.hl-mini-handle {
+  width: 6px;
+  background: rgba(14, 122, 254, 0.6);
+  cursor: ew-resize;
+  flex-shrink: 0;
+}
+.hl-mini-handle:hover { background: rgba(14, 122, 254, 1); }
+.hl-mini-body {
+  flex: 1 1 0;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  padding: 0 4px;
+  font-size: 10px;
+  color: var(--text2);
+  min-width: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+.hl-mini-idx { font-weight: 600; color: var(--text1); font-size: 11px; }
+.hl-mini-time { color: var(--text3); font-size: 9px; white-space: nowrap; }
+.hl-mini-del {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  background: rgba(192, 57, 43, 0.65);
+  color: #fff;
+  border: none;
+  border-radius: 3px;
+  cursor: pointer;
+  font-size: 12px;
+  line-height: 1;
+  opacity: 0;
+  transition: opacity 0.1s, background 0.1s;
+  pointer-events: auto;
+}
+.hl-mini-seg:hover .hl-mini-del { opacity: 1; }
+.hl-mini-del:hover { background: rgba(231, 76, 60, 1); }
+.hl-mini-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 2px;
+}
+.hl-mini-toolbar-hint {
+  font-size: 10px;
+  color: var(--text3);
+  flex: 1 1 auto;
+}
+.hl-mini-add {
+  padding: 4px 12px;
+  background: rgba(78, 109, 159, 0.18);
+  color: var(--accent);
+  border: 1px solid rgba(78, 109, 159, 0.6);
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
+}
+.hl-mini-add:hover {
+  background: rgba(78, 109, 159, 0.32);
+  color: var(--text1);
+  border-color: var(--accent);
+}
+.highlight-player-controls .edit-on {
+  background: rgba(14, 122, 254, 0.2);
+  border-color: var(--accent);
+  color: var(--text1);
+}
+
+/* ---------- Highlight panel (高光 tab) ---------- */
+.highlight-panel {
+  flex: 1 1 0;
+  display: flex;
+  flex-direction: column;
+  padding: 20px 28px;
+  overflow-y: auto;
+  min-height: 0;
+  gap: 18px;
+}
+.highlight-panel-header {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid #2a2a2a;
+}
+.highlight-panel-title {
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--text1);
+}
+.highlight-panel-sub {
+  font-size: 12px;
+  color: var(--text3);
+  margin-top: 2px;
+}
+.highlight-error {
+  padding: 10px 14px;
+  border-radius: 4px;
+  background: #3a1f1f;
+  color: #f0a0a0;
+  font-size: 12px;
+  border: 1px solid #5a2d2d;
+}
+.highlight-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 40px 20px;
+  color: var(--text3);
+  text-align: center;
+  gap: 10px;
+}
+.highlight-empty h2 {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 500;
+  color: var(--text2);
+}
+
+/* ---------- Variant cards ---------- */
+.variant-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.variant-card {
+  background: #1e1e1e;
+  border: 1px solid #2e2e2e;
+  border-radius: 6px;
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  transition: border-color 0.15s;
+}
+.variant-card:hover {
+  border-color: #3e3e3e;
+}
+.variant-card.broken {
+  opacity: 0.72;
+  border-color: #6a2a24;
+}
+.variant-card.broken:hover { border-color: #8a3a34; }
+.variant-card.stale { border-left: 3px solid #8a6d28; }
+.variant-card.pinned { border-left: 3px solid #d69a2c; }
+.variant-card-pin-badge {
+  font-size: 11px;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 3px;
+  background: rgba(214, 154, 44, 0.2);
+  border: 1px solid rgba(214, 154, 44, 0.6);
+  color: #e8b85a;
+  letter-spacing: 0.04em;
+}
+.variant-card-banner {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 8px 10px;
+  border-radius: 4px;
+  font-size: 11px;
+  line-height: 1.45;
+}
+.variant-card-banner.broken {
+  background: rgba(192, 57, 43, 0.13);
+  border: 1px solid rgba(192, 57, 43, 0.35);
+  color: #ea8a82;
+}
+.variant-card-banner.stale {
+  background: rgba(243, 156, 18, 0.1);
+  border: 1px solid rgba(243, 156, 18, 0.3);
+  color: #d6a84a;
+}
+.variant-card-actions .pin-on {
+  background: rgba(214, 154, 44, 0.18);
+  border-color: rgba(214, 154, 44, 0.5);
+  color: #e8b85a;
+}
+.variant-card-actions .pin-off { opacity: 0.85; }
+.variant-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.variant-card-title-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1;
+  min-width: 0;
+}
+.variant-card-index {
+  color: var(--text3);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+.variant-card-title {
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--text1);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.variant-card-style {
+  font-size: 10px;
+  padding: 2px 6px;
+  background: #2a2a3a;
+  color: #b0b0d0;
+  border-radius: 3px;
+}
+.variant-card-meta {
+  font-size: 12px;
+  color: var(--text3);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.variant-card-actions {
+  display: flex;
+  gap: 8px;
+}
+.variant-card-segments {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 10px 12px;
+  background: #161616;
+  border-radius: 4px;
+  font-size: 11px;
+}
+.variant-seg-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  color: var(--text2);
+}
+.variant-seg-idx {
+  color: var(--text3);
+  font-variant-numeric: tabular-nums;
+  width: 16px;
+}
+.variant-seg-time {
+  font-family: ui-monospace, monospace;
+  color: var(--text2);
+  font-variant-numeric: tabular-nums;
+}
+.variant-seg-dur {
+  color: var(--text3);
+  font-variant-numeric: tabular-nums;
+}
+.variant-seg-reason {
+  color: var(--text2);
+  flex: 1;
+  /* Allow the reason to wrap onto multiple lines so long AI explanations
+     aren't truncated to a meaningless ellipsis. The row aligns to the top
+     via .variant-seg-row's align-items so the numeric prefix stays anchored
+     next to the first line of the wrapped reason. */
+  white-space: normal;
+  word-break: break-word;
+  line-height: 1.45;
+}
+
+/* ---------- Highlight split layout (player | cards) ---------- */
+.highlight-body {
+  flex: 1 1 0;
+  display: flex;
+  gap: 18px;
+  min-height: 0;
+}
+.highlight-player {
+  flex: 1 1 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+  min-height: 0;
+}
+.highlight-player-video {
+  flex: 1 1 0;
+  background: #000;
+  border-radius: 6px;
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  position: relative;
+  min-height: 200px;
+}
+.highlight-player-video video {
+  max-width: 100%;
+  max-height: 100%;
+  display: block;
+}
+.highlight-player-overlay {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  color: #888;
+  font-size: 14px;
+  background: rgba(0, 0, 0, 0.55);
+  padding: 8px 16px;
+  border-radius: 4px;
+  pointer-events: none;
+}
+.highlight-player-controls {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 6px 0;
+  flex-shrink: 0;
+}
+.highlight-player-meta {
+  display: flex;
+  flex-direction: column;
+  font-size: 12px;
+  color: var(--text3);
+  flex: 1;
+  min-width: 0;
+}
+.highlight-player-title {
+  color: var(--text1);
+  font-size: 13px;
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.highlight-player-pos {
+  font-variant-numeric: tabular-nums;
+}
+
+.highlight-cards {
+  flex: 0 0 400px;
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
+  min-height: 0;
+  padding-right: 4px;
+}
+
+/* ---------- Active / clickable variant card ---------- */
+.variant-card {
+  cursor: pointer;
+}
+.variant-card.active {
+  border-color: #f39c12;
+  box-shadow: 0 0 0 1px #f39c12;
+}
+.variant-card-playing {
+  font-size: 10px;
+  padding: 2px 6px;
+  background: #3d2f16;
+  color: #f39c12;
+  border-radius: 3px;
+  margin-left: 4px;
+}
+
+.variant-seg-row {
+  cursor: pointer;
+  padding: 3px 6px;
+  border-radius: 3px;
+  transition: background 0.1s;
+}
+.variant-seg-row:hover {
+  background: rgba(255, 255, 255, 0.04);
+}
+.variant-seg-row.playing {
+  background: rgba(243, 156, 18, 0.12);
+}
+.variant-seg-row.playing .variant-seg-time {
+  color: #f39c12;
+}
+/* ---------- Editable segment rows (highlight card expanded view) ---------- */
+.variant-seg-row.editable {
+  cursor: default;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 6px 6px;
+  border-radius: 4px;
+  border: 1px solid transparent;
+}
+.variant-seg-row.editable:hover {
+  background: rgba(255, 255, 255, 0.03);
+  border-color: #2a2a2a;
+}
+.variant-seg-row-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-variant-numeric: tabular-nums;
+  font-size: 11px;
+}
+.variant-seg-row-spacer { flex: 1 1 auto; }
+.variant-seg-sep { color: var(--text3); }
+.variant-seg-time {
+  cursor: pointer;
+  color: var(--accent);
+  padding: 1px 4px;
+  border-radius: 3px;
+  outline: 1px solid transparent;
+}
+.variant-seg-time:hover {
+  background: rgba(78, 109, 159, 0.15);
+  outline-color: #3a3a3a;
+}
+.variant-seg-time-edit {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: #1a1a22;
+  border: 1px solid var(--accent);
+  border-radius: 3px;
+  padding: 1px 4px;
+}
+.variant-seg-time-input {
+  background: transparent;
+  border: none;
+  outline: none;
+  color: var(--text1);
+  font: inherit;
+  width: 84px;
+  font-variant-numeric: tabular-nums;
+}
+.variant-seg-nudge { display: inline-flex; gap: 2px; }
+.variant-seg-nudge button {
+  font-size: 10px;
+  padding: 0 4px;
+  border: 1px solid #3a3a3a;
+  background: #22222a;
+  color: var(--text2);
+  border-radius: 2px;
+  cursor: pointer;
+  font-variant-numeric: tabular-nums;
+  line-height: 16px;
+}
+.variant-seg-nudge button:hover {
+  background: #2d2d38;
+  border-color: var(--accent);
+  color: var(--text1);
+}
+.variant-seg-del {
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  font-size: 12px;
+  line-height: 1;
+  background: transparent;
+  border: 1px solid #3a3a3a;
+  border-radius: 3px;
+  color: var(--text2);
+  cursor: pointer;
+}
+.variant-seg-del:hover:not(:disabled) {
+  background: rgba(192, 57, 43, 0.2);
+  border-color: rgba(231, 76, 60, 0.8);
+  color: #e74c3c;
+}
+.variant-seg-del:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+/* Drag-handle + drag states for row reorder. The whole row is draggable;
+   the grip is a visual cue. cursor:grab on the row hints that the row
+   itself is the drag target. */
+.variant-seg-row.editable { cursor: grab; }
+.variant-seg-row.editable:active { cursor: grabbing; }
+.variant-seg-row.drag-src { opacity: 0.45; }
+.variant-seg-row.drag-hover {
+  background: rgba(14, 122, 254, 0.12);
+  border-color: var(--accent);
+}
+.variant-seg-grip {
+  font-family: ui-monospace, monospace;
+  color: var(--text3);
+  font-size: 13px;
+  padding: 0 4px;
+  letter-spacing: -1px;
+  user-select: none;
+  line-height: 1;
+  transform: scaleY(1.3);
+}
+.variant-seg-row.editable:hover .variant-seg-grip { color: var(--text1); }
+.variant-seg-reason {
+  font-size: 11px;
+  color: var(--text2);
+  padding: 3px 6px;
+  border-radius: 3px;
+  cursor: text;
+  min-height: 20px;
+  line-height: 1.4;
+}
+.variant-seg-reason:hover { background: rgba(255, 255, 255, 0.03); }
+.variant-seg-reason.empty { color: var(--text3); font-style: italic; }
+.variant-seg-reason-input {
+  width: 100%;
+  min-height: 44px;
+  padding: 4px 6px;
+  background: #1a1a22;
+  color: var(--text1);
+  border: 1px solid var(--accent);
+  border-radius: 3px;
+  font: inherit;
+  font-size: 11px;
+  resize: vertical;
+}
+.variant-seg-err {
+  padding: 6px 8px;
+  margin-bottom: 6px;
+  background: rgba(192, 57, 43, 0.13);
+  border: 1px solid rgba(192, 57, 43, 0.35);
+  color: #ea8a82;
+  font-size: 11px;
+  border-radius: 3px;
+}
+
+/* ---------- Highlight progress bar ---------- */
+.highlight-progress {
+  position: relative;
+  height: 14px;
+  cursor: pointer;
+  padding: 4px 0;
+  flex-shrink: 0;
+}
+.highlight-progress-bg {
+  display: flex;
+  gap: 2px;
+  height: 6px;
+  background: transparent;
+  border-radius: 3px;
+  overflow: hidden;
+}
+.highlight-progress-seg {
+  background: #2a2a2a;
+  border-radius: 2px;
+  transition: background 0.15s;
+}
+.highlight-progress-seg.current {
+  background: rgba(243, 156, 18, 0.45);
+}
+.highlight-progress:hover .highlight-progress-seg {
+  background: #333;
+}
+.highlight-progress:hover .highlight-progress-seg.current {
+  background: rgba(243, 156, 18, 0.7);
+}
+.highlight-progress-cursor {
+  position: absolute;
+  top: 2px;
+  bottom: 2px;
+  width: 2px;
+  background: #f39c12;
+  transform: translateX(-1px);
+  pointer-events: none;
+  box-shadow: 0 0 4px rgba(243, 156, 18, 0.6);
+}
+

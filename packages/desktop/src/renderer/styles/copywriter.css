@@ -1,0 +1,320 @@
+/* Copywriter (wen-an) tab: platform cards, style presets, dialogs */
+
+/* ---------- Copywriter (文案) tab ---------- */
+.copy-panel {
+  flex: 1 1 0;
+  display: flex;
+  flex-direction: column;
+  padding: 20px 28px;
+  overflow-y: auto;
+  min-height: 0;
+  gap: 16px;
+}
+.copy-panel-header {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid #2a2a2a;
+}
+.copy-panel-title {
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--text1);
+}
+.copy-panel-sub {
+  font-size: 12px;
+  color: var(--text3);
+  margin-top: 2px;
+}
+.copy-panel-stylenote {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 12px 14px;
+  background: #171717;
+  border: 1px solid #2a2a2a;
+  border-radius: 6px;
+}
+.copy-panel-stylenote label {
+  font-size: 11px;
+  color: var(--text3);
+}
+.copy-panel-stylenote-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.copy-style-save-as {
+  font-size: 11px;
+  padding: 3px 10px;
+}
+.copy-style-presets {
+  margin-top: 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.copy-style-presets-label {
+  font-size: 10px;
+  color: var(--text3);
+}
+.copy-style-presets-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.copy-style-preset {
+  display: inline-flex;
+  align-items: center;
+  gap: 0;
+  background: #1a1a1a;
+  border: 1px solid #2e2e2e;
+  border-radius: 4px;
+  overflow: hidden;
+}
+.copy-style-preset.active {
+  border-color: #4e6d9f;
+  background: #1f2a3a;
+}
+.copy-style-preset-load {
+  font-size: 12px;
+  padding: 4px 10px;
+  background: transparent;
+  border: none;
+  color: var(--text1);
+  border-right: 1px solid #2e2e2e;
+}
+.copy-style-preset-load:hover {
+  background: #252525;
+}
+.copy-style-preset.active .copy-style-preset-load {
+  color: #cfe0f5;
+}
+.copy-style-preset-action {
+  font-size: 10px;
+  padding: 4px 8px;
+  background: transparent;
+  border: none;
+  border-right: 1px solid #2e2e2e;
+  color: var(--text3);
+}
+.copy-style-preset-action:last-child {
+  border-right: none;
+}
+.copy-style-preset-action:hover {
+  background: #252525;
+  color: var(--text1);
+}
+.copy-style-preset-action.delete:hover {
+  background: #2a1a1a;
+  color: #e88;
+}
+
+.copy-set {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px;
+  background: #171717;
+  border: 1px solid #2a2a2a;
+  border-radius: 8px;
+}
+.copy-set-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+}
+.copy-set-spacer {
+  flex: 1 1 0;
+}
+.copy-set-source {
+  font-size: 13px;
+  color: var(--text1);
+  font-weight: 500;
+}
+.copy-set-meta {
+  font-size: 11px;
+  color: var(--text3);
+  margin-top: 2px;
+}
+.copy-set-delete {
+  font-size: 11px;
+  background: transparent;
+  border: 1px solid #3a2727;
+  color: #c77;
+}
+.copy-set-delete:hover {
+  background: #2a1a1a;
+  color: #e88;
+}
+
+.copy-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
+  gap: 12px;
+}
+
+.copy-card {
+  background: #1e1e1e;
+  border: 1px solid #2e2e2e;
+  border-radius: 6px;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+}
+.copy-card-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.copy-card-spacer {
+  flex: 1 1 0;
+}
+.copy-card-platform {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text1);
+}
+.copy-card-saving {
+  font-size: 11px;
+  color: #888;
+  font-style: italic;
+}
+.copy-card-copy-all {
+  font-size: 11px;
+  padding: 3px 10px;
+}
+.copy-card-delete {
+  font-size: 11px;
+  background: transparent;
+  border: 1px solid #3a2727;
+  color: #c77;
+  padding: 2px 8px;
+}
+.copy-card-delete:hover {
+  background: #2a1a1a;
+  color: #e88;
+}
+.copy-card-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.copy-card-field-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.copy-card-field-label label {
+  font-size: 10px;
+  color: var(--text3);
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+.copy-card-field-copy {
+  background: transparent;
+  border: none;
+  padding: 2px 4px;
+  color: var(--text3);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  border-radius: 3px;
+}
+.copy-card-field-copy:hover:not(:disabled) {
+  color: var(--text1);
+  background: #2a2a2a;
+}
+.copy-card-field-copy:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+.copy-icon {
+  vertical-align: middle;
+}
+.copy-card-input {
+  width: 100%;
+  background: #151515;
+  color: var(--text1);
+  border: 1px solid #2e2e2e;
+  border-radius: 4px;
+  padding: 6px 8px;
+  font-size: 12px;
+  line-height: 1.55;
+  font-family: inherit;
+  resize: vertical;
+}
+.copy-card-input:focus {
+  outline: none;
+  border-color: #4e6d9f;
+}
+.copy-card-tagchips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 4px;
+}
+.copy-card-tagchip {
+  font-size: 11px;
+  padding: 2px 6px;
+  background: #2a2a3a;
+  color: #b0b0d0;
+  border-radius: 3px;
+}
+.copy-card-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 2px;
+}
+.copy-card-actions button {
+  font-size: 11px;
+  padding: 4px 10px;
+}
+
+.copy-platform-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 6px;
+}
+.copy-platform-chip {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  background: #1a1a1a;
+  border: 1px solid #2e2e2e;
+  border-radius: 4px;
+  font-size: 12px;
+  color: var(--text2);
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.copy-platform-chip:hover {
+  border-color: #4e6d9f;
+}
+.copy-platform-chip.on {
+  background: #1f2a3a;
+  border-color: #4e6d9f;
+  color: var(--text1);
+}
+.copy-platform-chip input {
+  margin: 0;
+}
+.copy-dialog-global-style {
+  padding: 8px 10px;
+  margin-top: 6px;
+  background: #151515;
+  border: 1px solid #2a2a2a;
+  border-radius: 4px;
+  font-size: 12px;
+  color: var(--text2);
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+

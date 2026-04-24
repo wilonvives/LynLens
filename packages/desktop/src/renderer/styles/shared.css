@@ -1,0 +1,33 @@
+/* Shared UI pieces used by multiple tabs (generating banner, etc.) */
+
+/* ---------- Generating banner (shared by highlight + copywriter) ---------- */
+.gen-banner {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  border-radius: 6px;
+  background: #1f2a3a;
+  border: 1px solid #3a5a8a;
+  color: #cfe0f5;
+  font-size: 12px;
+}
+.gen-banner-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: #4ec9b0;
+  animation: gen-pulse 1.2s ease-in-out infinite;
+  flex-shrink: 0;
+}
+@keyframes gen-pulse {
+  0%, 100% { opacity: 0.25; transform: scale(0.8); }
+  50% { opacity: 1; transform: scale(1.1); }
+}
+.gen-banner-title {
+  color: var(--text1);
+  font-weight: 500;
+}
+.gen-banner-hint {
+  color: var(--text3);
+}

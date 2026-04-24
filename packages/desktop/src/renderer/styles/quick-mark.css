@@ -1,0 +1,93 @@
+/* Quick mark dialog */
+
+/* ---------- Quick mark dialog ---------- */
+.quick-desc {
+  font-size: 13px;
+  color: var(--text2);
+  line-height: 1.6;
+  margin-bottom: 14px;
+}
+.quick-row { margin: 6px 0 14px 0; }
+.quick-label {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  font-size: 13px;
+  color: var(--text2);
+  margin-bottom: 6px;
+}
+.quick-value {
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--accent);
+  font-variant-numeric: tabular-nums;
+}
+.quick-slider {
+  width: 100%;
+  accent-color: var(--accent);
+  margin: 0;
+}
+.quick-scale {
+  display: flex;
+  justify-content: space-between;
+  font-size: 10px;
+  color: var(--text3);
+  margin-top: 2px;
+  font-variant-numeric: tabular-nums;
+}
+.quick-hint {
+  font-size: 11px;
+  color: var(--text3);
+  margin-top: 6px;
+  line-height: 1.5;
+}
+
+.quick-presets {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 6px;
+  margin-bottom: 14px;
+}
+.quick-preset {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 6px 4px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  color: var(--text2);
+  border-radius: 5px;
+  cursor: pointer;
+  font-size: 12px;
+  transition: all 0.15s;
+}
+.quick-preset:hover {
+  background: var(--bg3);
+  color: var(--text);
+}
+.quick-preset.active {
+  background: rgba(14, 122, 254, 0.15);
+  border-color: var(--accent);
+  color: var(--text);
+  font-weight: 600;
+}
+.quick-preset-sec {
+  font-size: 10px;
+  color: var(--text3);
+  margin-top: 2px;
+  font-variant-numeric: tabular-nums;
+}
+.quick-preset.active .quick-preset-sec { color: var(--accent); }
+
+.quick-advanced { margin-top: 6px; }
+.quick-adv-toggle {
+  background: transparent;
+  border: none;
+  color: var(--text3);
+  font-size: 11px;
+  padding: 0;
+  cursor: pointer;
+  text-align: left;
+}
+.quick-adv-toggle:hover { color: var(--text2); background: transparent; }
+
