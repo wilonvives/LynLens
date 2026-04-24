@@ -64,6 +64,16 @@ export {
   parseCopywriterResponse,
   type SocialCopy,
 } from './copywriter-parser';
+export {
+  applySpeakersToTranscript,
+  clearTranscriptSpeakers,
+  listSpeakers,
+  MockDiarizationEngine,
+  runMockDiarization,
+  type DiarizationEngine,
+  type DiarizationResult,
+  type DiarizationSegment,
+} from './diarization';
 // Ripple helpers: re-exported via `import *` + const bindings so tsc emits
 // direct `exports.foo = ripple.foo` assignments instead of Object.define-
 // Property getters. Getter-based re-exports are invisible to both esbuild's

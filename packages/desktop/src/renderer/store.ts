@@ -26,6 +26,10 @@ interface State {
   transcribeProgress: number; // 0..1
   transcript: Transcript | null;
   waveform: { peak: Float32Array; rms: Float32Array } | null;
+  /** Display names for diarization speaker IDs. */
+  speakerNames: Record<string, string>;
+  /** Which engine produced the current speaker labels. */
+  diarizationEngine: 'mock' | 'sherpa-onnx' | null;
 
   previewMode: boolean;
   export: ExportState;
@@ -37,6 +41,8 @@ interface State {
   setUserOrientation(o: 'landscape' | 'portrait' | null): void;
   setTranscript(t: Transcript | null): void;
   setWaveform(wf: { peak: Float32Array; rms: Float32Array } | null): void;
+  setSpeakerNames(names: Record<string, string>): void;
+  setDiarizationEngine(engine: 'mock' | 'sherpa-onnx' | null): void;
   setPreviewMode(v: boolean): void;
   applyEvent(e: LynLensEvent): void;
 }
@@ -53,6 +59,8 @@ export const useStore = create<State>((set, get) => ({
   transcribeProgress: 0,
   transcript: null,
   waveform: null,
+  speakerNames: {},
+  diarizationEngine: null,
   previewMode: false,
   export: { active: false, percent: 0, stage: '' },
 
@@ -65,6 +73,8 @@ export const useStore = create<State>((set, get) => ({
       segments: [],
       waveform: null,
       transcript: null,
+      speakerNames: {},
+      diarizationEngine: null,
       transcribeProgress: 0,
     });
   },
@@ -77,6 +87,8 @@ export const useStore = create<State>((set, get) => ({
       segments: [],
       waveform: null,
       transcript: null,
+      speakerNames: {},
+      diarizationEngine: null,
       transcribeProgress: 0,
     });
   },
@@ -94,6 +106,12 @@ export const useStore = create<State>((set, get) => ({
   },
   setWaveform(wf) {
     set({ waveform: wf });
+  },
+  setSpeakerNames(names) {
+    set({ speakerNames: { ...names } });
+  },
+  setDiarizationEngine(engine) {
+    set({ diarizationEngine: engine });
   },
   setPreviewMode(v) {
     set({ previewMode: v });

@@ -65,6 +65,14 @@ export interface TranscriptSegment {
     text: string;
     reason?: string;
   } | null;
+  /**
+   * Speaker label assigned by diarization — e.g. 'S1', 'S2'. Optional so
+   * pre-diarization transcripts, and projects that never run diarization,
+   * continue to work untouched. UI resolves the display name via
+   * QcpProject.speakerNames[speaker] before rendering; falls back to the
+   * raw ID when no custom name is set.
+   */
+  speaker?: string;
 }
 
 export interface Transcript {
@@ -118,6 +126,27 @@ export interface QcpProject {
    * reference.
    */
   socialStylePresets?: SocialStylePresetData[];
+  /**
+   * User-editable display names for speaker IDs produced by diarization.
+   * E.g. { "S1": "主持人", "S2": "嘉宾A" }. Untouched keys are shown as
+   * the raw ID. All three diarization fields (this + speaker per segment
+   * + diarizationEngine) are optional — never-diarized projects don't
+   * even serialize them.
+   */
+  speakerNames?: Record<string, string>;
+  /**
+   * Which engine produced the current speaker labels. 'mock' means
+   * placeholder data (used until the real sherpa-onnx binary is bundled);
+   * the UI shows a banner so the user knows labels aren't real voiceprint
+   * output yet.
+   */
+  diarizationEngine?: 'mock' | 'sherpa-onnx';
+  /**
+   * Future: persisted voiceprint embeddings for cross-project speaker
+   * identification ("this is 张三"). Not implemented in the MVP — field
+   * left unreserved so when we add it no migration is needed.
+   *   voiceprintLibrary?: Array<{ name: string; embedding: number[] }>
+   */
   createdAt: string;
   modifiedAt: string;
 }
@@ -202,6 +231,9 @@ export type LynLensEvent =
       projectId: string;
       removedCutRange: Range;
       effectiveDuration: number;
-    };
+    }
+  | { type: 'diarization.completed'; projectId: string }
+  | { type: 'diarization.cleared'; projectId: string }
+  | { type: 'diarization.renamed'; projectId: string; speakerId: string };
 
 export type EventType = LynLensEvent['type'];

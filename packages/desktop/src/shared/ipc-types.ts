@@ -172,6 +172,21 @@ export interface IpcApi {
   ): Promise<boolean>;
   deleteSocialStylePreset(projectId: string, presetId: string): Promise<boolean>;
 
+  /**
+   * Run speaker diarization on the current transcript. Requires a
+   * transcript to exist. Backed by a mock engine today — the real
+   * sherpa-onnx engine will swap in at the main-process level without
+   * any renderer change. Never throws for "no speech"; throws only for
+   * missing transcript / unrecoverable engine failures.
+   */
+  diarize(
+    projectId: string
+  ): Promise<{ engine: 'mock' | 'sherpa-onnx'; speakers: string[]; segmentCount: number }>;
+  /** Rename (or clear) the display name for a speaker ID. */
+  renameSpeaker(projectId: string, speakerId: string, name: string | null): Promise<void>;
+  /** Drop all speaker labels from the transcript + clear engine marker. */
+  clearSpeakers(projectId: string): Promise<void>;
+
   transcribe(
     projectId: string,
     opts: { engine?: 'whisper-local' | 'openai-api'; language?: string }

@@ -4,6 +4,7 @@ import { createReadStream, statSync, watch as fsWatch, type FSWatcher } from 'no
 import { promises as fsp } from 'node:fs';
 import {
   LynLensEngine,
+  MockDiarizationEngine,
   WhisperLocalService,
   buildHighlightSystemPrompt,
   buildHighlightUserPrompt,
@@ -1064,6 +1065,55 @@ ipcMain.handle(
 
 ipcMain.handle('get-social-style-presets', async (_ev, projectId: string) => {
   return engine.projects.get(projectId).socialStylePresets;
+});
+
+// ============================================================================
+// Diarization (speaker labeling) — MVP
+// ============================================================================
+//
+// Today this is backed by MockDiarizationEngine (deterministic, no audio).
+// When we bundle sherpa-onnx, we swap the engine instance here — the IPC
+// contract doesn't change.
+//
+// Isolation: failures throw to the renderer; project state is NEVER modified
+// on failure. Missing transcript is a caller-side error (renderer disables
+// the button), not a silent no-op.
+
+ipcMain.handle('diarize', async (_ev, projectId: string) => {
+  const project = engine.projects.get(projectId);
+  if (!project.transcript || project.transcript.segments.length === 0) {
+    throw new Error('请先生成字幕后再区分说话人');
+  }
+  const diarEngine = new MockDiarizationEngine(() => project.transcript);
+  const result = await diarEngine.diarize(project.videoPath);
+  project.applyDiarization(result);
+  if (project.projectPath) {
+    await engine.projects.saveProject(projectId);
+  }
+  return {
+    engine: result.engine,
+    speakers: result.speakers,
+    segmentCount: result.segments.length,
+  };
+});
+
+ipcMain.handle(
+  'rename-speaker',
+  async (_ev, projectId: string, speakerId: string, name: string | null) => {
+    const project = engine.projects.get(projectId);
+    project.renameSpeaker(speakerId, name);
+    if (project.projectPath) {
+      await engine.projects.saveProject(projectId);
+    }
+  }
+);
+
+ipcMain.handle('clear-speakers', async (_ev, projectId: string) => {
+  const project = engine.projects.get(projectId);
+  project.clearSpeakers();
+  if (project.projectPath) {
+    await engine.projects.saveProject(projectId);
+  }
 });
 
 ipcMain.handle(

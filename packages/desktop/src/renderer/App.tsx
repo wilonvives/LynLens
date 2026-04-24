@@ -51,6 +51,7 @@ export function App() {
   const [showOrientDialog, setShowOrientDialog] = useState(false);
   const [showQuickMarkDialog, setShowQuickMarkDialog] = useState(false);
   const [workMode, setWorkMode] = useState<WorkMode>('precision');
+  const [diarizing, setDiarizing] = useState(false);
 
   // Persisted panel sizes so the user's preferred layout survives restarts.
   const [sidebarWidth, setSidebarWidth] = usePersistedSize('lynlens.sidebarWidth', 340);
@@ -196,6 +197,22 @@ export function App() {
         store.setTranscript(qcp.transcript);
         store.setAiMode(qcp.aiMode);
         store.setUserOrientation(qcp.userOrientation ?? null);
+        store.setSpeakerNames(qcp.speakerNames ?? {});
+        store.setDiarizationEngine(qcp.diarizationEngine ?? null);
+      }
+      // Diarization added/renamed/cleared speakers — pull fresh transcript
+      // + speaker names. Kept in its own branch so if diarization IPC isn't
+      // wired yet (older main), the rest of the event flow still works.
+      if (
+        (event.type === 'diarization.completed' ||
+          event.type === 'diarization.renamed' ||
+          event.type === 'diarization.cleared') &&
+        store.projectId
+      ) {
+        const qcp = await window.lynlens.getState(store.projectId);
+        store.setTranscript(qcp.transcript);
+        store.setSpeakerNames(qcp.speakerNames ?? {});
+        store.setDiarizationEngine(qcp.diarizationEngine ?? null);
       }
     });
     return () => off();
@@ -433,6 +450,8 @@ export function App() {
         store.setTranscript(qcp.transcript);
         store.setAiMode(qcp.aiMode);
         store.setUserOrientation(qcp.userOrientation ?? null);
+        store.setSpeakerNames(qcp.speakerNames ?? {});
+        store.setDiarizationEngine(qcp.diarizationEngine ?? null);
       }
 
       void window.lynlens.getWaveform(result.projectId, 0).then((env) => {
@@ -706,6 +725,8 @@ export function App() {
             store.setTranscript(qcp.transcript);
             store.setAiMode(qcp.aiMode);
             store.setUserOrientation(qcp.userOrientation ?? null);
+            store.setSpeakerNames(qcp.speakerNames ?? {});
+        store.setDiarizationEngine(qcp.diarizationEngine ?? null);
             void window.lynlens.getWaveform(result.projectId, 0).then((env) => {
               store.setWaveform({
                 peak: Float32Array.from(env.peak),
@@ -834,6 +855,40 @@ export function App() {
         </button>
         <button
           className="ai"
+          disabled={!store.projectId || !store.transcript || diarizing}
+          onClick={async () => {
+            if (!store.projectId) return;
+            setDiarizing(true);
+            try {
+              const r = await window.lynlens.diarize(store.projectId);
+              // Pull fresh transcript (speakers now embedded) from main.
+              const qcp = await window.lynlens.getState(store.projectId);
+              store.setTranscript(qcp.transcript);
+              if (r.engine === 'mock') {
+                alert(
+                  `区分完成(演示数据): 识别出 ${r.speakers.length} 位说话人,` +
+                    ` ${r.segmentCount} 段已贴标签。\n\n` +
+                    '注: 目前用的是 mock 引擎,等真实 sherpa-onnx 声纹引擎接入后才是真声纹分析。'
+                );
+              } else {
+                alert(`区分完成: ${r.speakers.length} 位说话人 · ${r.segmentCount} 段已贴标签。`);
+              }
+            } catch (err) {
+              alert(`区分失败: ${(err as Error).message}`);
+            } finally {
+              setDiarizing(false);
+            }
+          }}
+          title={
+            store.transcript
+              ? '按声纹把字幕分成不同说话人 S1/S2。不改字幕内容,不影响其他功能。'
+              : '请先生成字幕'
+          }
+        >
+          {diarizing ? '区分中...' : '区分说话人'}
+        </button>
+        <button
+          className="ai"
           disabled={!store.projectId}
           onClick={() => setShowQuickMarkDialog(true)}
           title="自动标出停顿 / 语气词 / 重复段 (自选阈值)"
@@ -950,6 +1005,7 @@ export function App() {
               transcript={store.transcript}
               userOrientation={store.userOrientation}
               currentTime={currentTime}
+              speakerNames={store.speakerNames}
               onJump={onJumpTo}
             />
           )}

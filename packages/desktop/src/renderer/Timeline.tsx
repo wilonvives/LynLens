@@ -8,6 +8,25 @@ import {
 } from './core-browser';
 import { formatTime } from './util';
 
+/**
+ * Stable per-speaker row tint for the timeline subtitle strip. Matches the
+ * palette used by SubtitlePanel's badges, just at low alpha so underlying
+ * text stays readable.
+ */
+const SPEAKER_ROW_PALETTE = [
+  'rgba(78, 109, 159, 0.28)',   // blue
+  'rgba(159, 78, 109, 0.28)',   // rose
+  'rgba(109, 159, 78, 0.28)',   // green
+  'rgba(159, 138, 78, 0.28)',   // amber
+  'rgba(109, 78, 159, 0.28)',   // purple
+  'rgba(78, 159, 138, 0.28)',   // teal
+];
+function speakerRowColor(id: string): string {
+  let hash = 0;
+  for (let i = 0; i < id.length; i++) hash = (hash * 31 + id.charCodeAt(i)) & 0xffffffff;
+  return SPEAKER_ROW_PALETTE[Math.abs(hash) % SPEAKER_ROW_PALETTE.length];
+}
+
 interface TimelineProps {
   /**
    * Effective duration of the compacted timeline (seconds). When cutRanges
@@ -348,7 +367,12 @@ export function Timeline(props: TimelineProps) {
           const clampedX2 = Math.min(w, x2);
           const width = clampedX2 - clampedX1;
           if (width < 2) continue;
-          ctx.fillStyle = inDelete ? 'rgba(80,80,80,0.25)' : 'rgba(80,130,180,0.2)';
+          // If speaker-tagged, tint the row by a stable per-speaker colour.
+          // Otherwise fall back to the original neutral blue.
+          let bg = 'rgba(80,130,180,0.2)';
+          if (inDelete) bg = 'rgba(80,80,80,0.25)';
+          else if (tseg.speaker) bg = speakerRowColor(tseg.speaker);
+          ctx.fillStyle = bg;
           ctx.fillRect(clampedX1, waveHeight + 2, width, subtitleHeight - 4);
           ctx.fillStyle = inDelete ? '#666' : '#d8d8d8';
           ctx.save();

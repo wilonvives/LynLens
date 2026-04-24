@@ -16,7 +16,27 @@ interface Props {
   /** User-chosen orientation from the project (overrides auto-detect). */
   userOrientation: 'landscape' | 'portrait' | null;
   currentTime: number;
+  /** Display names for diarization speaker IDs; empty = no diarization done. */
+  speakerNames: Record<string, string>;
   onJump: (t: number) => void;
+}
+
+/**
+ * Stable color palette for speaker badges. Hash speaker ID into one of
+ * these — same ID always gets the same color, across sessions.
+ */
+const SPEAKER_COLORS = [
+  '#4e6d9f', // blue
+  '#9f4e6d', // rose
+  '#6d9f4e', // green
+  '#9f8a4e', // amber
+  '#6d4e9f', // purple
+  '#4e9f8a', // teal
+];
+function speakerColor(id: string): string {
+  let hash = 0;
+  for (let i = 0; i < id.length; i++) hash = (hash * 31 + id.charCodeAt(i)) & 0xffffffff;
+  return SPEAKER_COLORS[Math.abs(hash) % SPEAKER_COLORS.length];
 }
 
 /**
@@ -30,11 +50,29 @@ export function SubtitlePanel({
   transcript,
   userOrientation,
   currentTime,
+  speakerNames,
   onJump,
 }: Props) {
   const [draft, setDraft] = useState<Record<string, string>>({});
   const [replaceFind, setReplaceFind] = useState('');
   const [replaceWith, setReplaceWith] = useState('');
+  // Click-to-rename: opens a small inline dialog (Electron blocks window.prompt).
+  const [renamingSpeaker, setRenamingSpeaker] = useState<string | null>(null);
+  const [renameDraft, setRenameDraft] = useState('');
+
+  function startRename(speakerId: string): void {
+    setRenamingSpeaker(speakerId);
+    setRenameDraft(speakerNames[speakerId] ?? '');
+  }
+  async function commitRename(): Promise<void> {
+    if (!projectId || !renamingSpeaker) return;
+    await window.lynlens.renameSpeaker(
+      projectId,
+      renamingSpeaker,
+      renameDraft.trim() || null
+    );
+    setRenamingSpeaker(null);
+  }
 
   const orientation = useMemo<'landscape' | 'portrait'>(() => {
     if (userOrientation) return userOrientation;
@@ -176,6 +214,16 @@ export function SubtitlePanel({
           <div key={seg.id} className={`sub-card${isActive ? ' active' : ''}${dirty ? ' dirty' : ''}`}>
             <div className="sub-head">
               <span className="sub-idx">#{i + 1}</span>
+              {seg.speaker && (
+                <button
+                  className="sub-speaker"
+                  style={{ background: speakerColor(seg.speaker) }}
+                  onClick={() => startRename(seg.speaker!)}
+                  title="点击改名"
+                >
+                  {speakerNames[seg.speaker] ?? seg.speaker}
+                </button>
+              )}
               <span className="sub-time" onClick={() => onJump(seg.start)}>
                 {formatTime(seg.start)} – {formatTime(seg.end)}
               </span>
@@ -236,6 +284,36 @@ export function SubtitlePanel({
           </div>
         );
       })}
+
+      {renamingSpeaker && (
+        <div
+          className="dialog-backdrop"
+          onClick={(e) => e.target === e.currentTarget && setRenamingSpeaker(null)}
+        >
+          <div className="dialog" style={{ minWidth: 320 }}>
+            <h3>给 {renamingSpeaker} 改名</h3>
+            <div className="dialog-row">
+              <label>显示名(留空恢复为 {renamingSpeaker}):</label>
+              <input
+                autoFocus
+                value={renameDraft}
+                onChange={(e) => setRenameDraft(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') void commitRename();
+                  else if (e.key === 'Escape') setRenamingSpeaker(null);
+                }}
+                placeholder="比如: 主持人 / 嘉宾 / 张三"
+              />
+            </div>
+            <div className="dialog-actions">
+              <button onClick={() => setRenamingSpeaker(null)}>取消</button>
+              <button className="primary" onClick={() => void commitRename()}>
+                保存
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

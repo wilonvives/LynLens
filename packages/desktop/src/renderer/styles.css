@@ -804,6 +804,18 @@ button.ai.active {
 }
 .sub-time:hover { text-decoration: underline; }
 .sub-dirty { color: #f39c12; }
+.sub-speaker {
+  font-size: 10px;
+  font-weight: 600;
+  padding: 2px 7px;
+  border-radius: 3px;
+  color: #fff;
+  border: none;
+  cursor: pointer;
+  letter-spacing: 0.02em;
+  transition: filter 0.15s;
+}
+.sub-speaker:hover { filter: brightness(1.2); }
 
 .sub-text {
   width: 100%;

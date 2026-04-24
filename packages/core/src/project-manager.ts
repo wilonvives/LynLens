@@ -3,6 +3,11 @@ import path from 'node:path';
 import { v4 as uuid } from 'uuid';
 import { EventBus } from './event-bus';
 import { SegmentManager } from './segment-manager';
+import {
+  applySpeakersToTranscript,
+  clearTranscriptSpeakers,
+  type DiarizationResult,
+} from './diarization';
 import { getEffectiveDuration } from './ripple';
 import type { HighlightVariant } from './highlight-parser';
 import type {
@@ -38,6 +43,10 @@ export class Project {
   socialStyleNote: string | null;
   /** Named style presets for quick swap in/out during the same project. */
   socialStylePresets: SocialStylePresetData[];
+  /** Display names for diarization speaker IDs (S1 → "主持人" etc). */
+  speakerNames: Record<string, string>;
+  /** Which engine produced the current speaker labels (or null if unset). */
+  diarizationEngine: 'mock' | 'sherpa-onnx' | null;
   createdAt: string;
   modifiedAt: string;
   projectPath: string | null;
@@ -70,6 +79,8 @@ export class Project {
     this.socialStylePresets = Array.isArray(handle.data.socialStylePresets)
       ? [...handle.data.socialStylePresets]
       : [];
+    this.speakerNames = { ...(handle.data.speakerNames ?? {}) };
+    this.diarizationEngine = handle.data.diarizationEngine ?? null;
     this.createdAt = handle.data.createdAt;
     this.modifiedAt = handle.data.modifiedAt;
     this.eventBus = eventBus;
@@ -127,6 +138,8 @@ export class Project {
     this.socialStylePresets = Array.isArray(data.socialStylePresets)
       ? [...data.socialStylePresets]
       : [];
+    this.speakerNames = { ...(data.speakerNames ?? {}) };
+    this.diarizationEngine = data.diarizationEngine ?? null;
     this.modifiedAt = data.modifiedAt;
     // Same legacy-cutRanges migration logic as the constructor — keep in sync.
     const initialSegments: Segment[] = [...data.deleteSegments];
@@ -285,6 +298,8 @@ export class Project {
       socialCopies: this.socialCopies,
       socialStyleNote: this.socialStyleNote,
       socialStylePresets: this.socialStylePresets,
+      speakerNames: this.speakerNames,
+      diarizationEngine: this.diarizationEngine ?? undefined,
       createdAt: this.createdAt,
       modifiedAt: new Date().toISOString(),
     };
@@ -461,6 +476,53 @@ export class Project {
     this.socialStylePresets = next;
     this.modifiedAt = new Date().toISOString();
     return true;
+  }
+
+  /**
+   * Apply a diarization result: labels every transcript segment with a
+   * speaker ID and records which engine produced the labels. Does NOT
+   * alter segment text or timings — purely additive annotation.
+   *
+   * Fails gracefully: if there's no transcript, this is a no-op and
+   * returns false. Callers should check before trying.
+   */
+  applyDiarization(result: DiarizationResult): boolean {
+    if (!this.transcript) return false;
+    this.transcript = applySpeakersToTranscript(this.transcript, result);
+    this.diarizationEngine = result.engine;
+    this.modifiedAt = new Date().toISOString();
+    this.eventBus.emit({ type: 'diarization.completed', projectId: this.id });
+    return true;
+  }
+
+  /**
+   * Drop every speaker label and the engine marker. Leaves the transcript
+   * text otherwise intact — the user can re-diarize from a clean slate.
+   */
+  clearSpeakers(): void {
+    if (this.transcript) {
+      this.transcript = clearTranscriptSpeakers(this.transcript);
+    }
+    this.speakerNames = {};
+    this.diarizationEngine = null;
+    this.modifiedAt = new Date().toISOString();
+    this.eventBus.emit({ type: 'diarization.cleared', projectId: this.id });
+  }
+
+  /** Rename (or clear) the display name for a speaker ID. */
+  renameSpeaker(speakerId: string, name: string | null): void {
+    if (!name || !name.trim()) {
+      const { [speakerId]: _drop, ...rest } = this.speakerNames;
+      this.speakerNames = rest;
+    } else {
+      this.speakerNames = { ...this.speakerNames, [speakerId]: name.trim() };
+    }
+    this.modifiedAt = new Date().toISOString();
+    this.eventBus.emit({
+      type: 'diarization.renamed',
+      projectId: this.id,
+      speakerId,
+    });
   }
 
   deleteSocialStylePreset(presetId: string): boolean {

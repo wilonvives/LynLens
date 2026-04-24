@@ -48,6 +48,10 @@ const api: IpcApi = {
     ipcRenderer.invoke('update-social-style-preset', pid, presetId, patch),
   deleteSocialStylePreset: (pid, presetId) =>
     ipcRenderer.invoke('delete-social-style-preset', pid, presetId),
+  diarize: (pid) => ipcRenderer.invoke('diarize', pid),
+  renameSpeaker: (pid, speakerId, name) =>
+    ipcRenderer.invoke('rename-speaker', pid, speakerId, name),
+  clearSpeakers: (pid) => ipcRenderer.invoke('clear-speakers', pid),
   transcribe: (pid, opts) => ipcRenderer.invoke('transcribe', pid, opts),
   updateTranscriptSegment: (pid, sid, text) =>
     ipcRenderer.invoke('update-transcript-segment', pid, sid, text),
