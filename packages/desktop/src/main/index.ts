@@ -22,12 +22,19 @@ import {
   type SocialPlatform,
 } from '@lynlens/core';
 import type { AddSegmentRequest, ExportRequest } from '../shared/ipc-types';
+import { type AgentEvent } from './agent';
 import {
-  runAgent,
-  runCopywriterForPlatform,
-  runHighlightGeneration,
-  type AgentEvent,
-} from './agent';
+  runAgentViaCurrentProvider,
+  runOneShotViaCurrentProvider,
+  runCopywriterViaCurrentProvider,
+  resetAgentSession,
+  setCodexContext,
+  setProvider,
+  getProvider,
+  loadSavedProvider,
+  type AgentProvider,
+} from './agent-dispatcher';
+import { startMcpHttpServer, type McpHttpServer } from './mcp-http-server';
 import { setupAutoUpdater } from './auto-updater';
 
 function toWebStream(nodeStream: NodeJS.ReadableStream): ReadableStream<Uint8Array> {
@@ -322,13 +329,64 @@ function createWindow() {
 
   // Broadcast engine events to renderer.
   const unsubscribe = engine.eventBus.onAny((event) => {
-    if (!mainWindow?.isDestroyed()) {
-      mainWindow?.webContents.send('engine-event', event);
-    }
+    broadcast('engine-event', event);
   });
   mainWindow.on('closed', () => {
     unsubscribe();
     mainWindow = null;
+  });
+}
+
+/**
+ * Agent popup window — created on demand, destroyed on close. We keep a
+ * module-level reference so a second "open agent" click focuses the
+ * existing window instead of spawning a duplicate.
+ */
+let agentWindow: BrowserWindow | null = null;
+/**
+ * Editor's currently-open project id (null = no project). The main
+ * window tells us via `agent-set-active-project-id`; we pass it on to
+ * the popup so the chat sticks to the same project.
+ */
+let activeProjectId: string | null = null;
+
+function broadcast(channel: string, payload: unknown): void {
+  for (const win of BrowserWindow.getAllWindows()) {
+    if (!win.isDestroyed()) win.webContents.send(channel, payload);
+  }
+}
+
+function createAgentWindow(): void {
+  if (agentWindow && !agentWindow.isDestroyed()) {
+    agentWindow.show();
+    agentWindow.focus();
+    return;
+  }
+  agentWindow = new BrowserWindow({
+    width: 480,
+    height: 720,
+    minWidth: 360,
+    minHeight: 480,
+    title: 'LynLens Agent',
+    // Don't auto-place behind the editor — the user clicked Agent to get a
+    // visible chat surface.
+    alwaysOnTop: false,
+    webPreferences: {
+      preload: path.join(__dirname, 'preload.js'),
+      contextIsolation: true,
+      nodeIntegration: false,
+    },
+  });
+  // Same bundle, routed to the ChatPanel via ?panel=chat.
+  if (isDev) {
+    agentWindow.loadURL('http://localhost:5173/?panel=chat');
+  } else {
+    agentWindow.loadFile(path.join(__dirname, '../../renderer/index.html'), {
+      search: 'panel=chat',
+    });
+  }
+  agentWindow.on('closed', () => {
+    agentWindow = null;
   });
 }
 
@@ -393,9 +451,45 @@ app.whenReady().then(() => {
 
   createWindow();
   setupAutoUpdater(mainWindow);
+  // Boot the HTTP MCP server that Codex connects to. Claude doesn't need
+  // it (in-process tools), but there's no harm leaving it running. Also
+  // restore the last-used provider from disk.
+  void (async () => {
+    try {
+      mcpHttpHandle = await startMcpHttpServer(engine);
+      setCodexContext({
+        url: mcpHttpHandle.url,
+        bearerToken: mcpHttpHandle.bearerToken,
+      });
+      // eslint-disable-next-line no-console
+      console.log('[lynlens] MCP HTTP server ready at', mcpHttpHandle.url);
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error('[lynlens] failed to start MCP HTTP server:', err);
+    }
+    await loadSavedProvider();
+  })();
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
   });
+});
+
+/** Handle to the HTTP MCP server — kept so before-quit can stop it cleanly. */
+let mcpHttpHandle: McpHttpServer | null = null;
+
+app.on('before-quit', async () => {
+  if (mcpHttpHandle) {
+    await mcpHttpHandle.stop().catch(() => {});
+    mcpHttpHandle = null;
+  }
+  // Clean the MCP entry we injected into ~/.codex/config.toml so the user's
+  // other Codex sessions don't try to connect to our now-dead localhost port.
+  try {
+    const { removeCodexMcpEntry } = await import('./agent-codex');
+    await removeCodexMcpEntry();
+  } catch {
+    // best-effort — fine if this fails on quit
+  }
 });
 
 app.on('window-all-closed', () => {
@@ -629,15 +723,15 @@ ipcMain.handle('agent-send', async (_ev, projectId: string, message: string) => 
   const ac = new AbortController();
   activeAgents.set(projectId, ac);
   try {
-    const result = await runAgent(engine, {
+    const result = await runAgentViaCurrentProvider(engine, {
       projectId,
       message,
       resumeSessionId: agentSessionByProject.get(projectId),
       signal: ac.signal,
       onEvent: (event: AgentEvent) => {
-        if (!mainWindow?.isDestroyed()) {
-          mainWindow?.webContents.send('agent-event', event);
-        }
+        // Both windows subscribe — editor shows the chip count, popup
+        // renders the actual transcript. Same event, fanned out.
+        broadcast('agent-event', event);
       },
     });
     if (result.sessionId) {
@@ -656,33 +750,108 @@ ipcMain.handle('agent-cancel', async (_ev, projectId: string) => {
 ipcMain.handle('agent-reset', async (_ev, projectId: string) => {
   // Drop the stored session so the next message starts a fresh chat.
   agentSessionByProject.delete(projectId);
+  // Also clear provider-specific caches (e.g. Codex resumable thread).
+  resetAgentSession(projectId);
+});
+
+ipcMain.handle('agent-get-provider', async () => {
+  return getProvider();
+});
+
+ipcMain.handle('agent-set-provider', async (_ev, provider: AgentProvider) => {
+  setProvider(provider);
+  // Also reset active sessions — switching mid-conversation would confuse
+  // both models since they don't share memory.
+  for (const sid of agentSessionByProject.keys()) {
+    agentSessionByProject.delete(sid);
+  }
+});
+
+ipcMain.handle('open-agent-window', async () => {
+  createAgentWindow();
+});
+
+ipcMain.handle('agent-get-active-project-id', async () => activeProjectId);
+
+ipcMain.handle('agent-set-active-project-id', async (_ev, pid: string | null) => {
+  if (activeProjectId === pid) return;
+  activeProjectId = pid;
+  // Broadcast so the popup (or any other window) re-targets its chat.
+  broadcast('active-project-changed', pid);
 });
 
 /**
- * Read the user's Claude Code OAuth identity (email / display name / plan)
- * from ~/.claude.json so the chat panel can show "Connected as ...".
+ * Read the current provider's login identity so the chat panel can show
+ * "Connected as ...". For Claude that's ~/.claude.json; for Codex it's
+ * ~/.codex/auth.json. Returns null if not signed in — renderer shows a
+ * "not logged in" warning in that case.
  */
 ipcMain.handle('agent-identity', async () => {
+  const provider = getProvider();
+  const os = await import('node:os');
   try {
-    const os = await import('node:os');
-    const configPath = path.join(os.homedir(), '.claude.json');
+    if (provider === 'claude') {
+      const configPath = path.join(os.homedir(), '.claude.json');
+      const raw = await fsp.readFile(configPath, 'utf-8');
+      const data = JSON.parse(raw) as {
+        oauthAccount?: {
+          emailAddress?: string;
+          displayName?: string;
+          organizationName?: string;
+          billingType?: string;
+        };
+      };
+      const acc = data.oauthAccount;
+      if (!acc?.emailAddress) return null;
+      return {
+        email: acc.emailAddress,
+        displayName: acc.displayName ?? null,
+        organization: acc.organizationName ?? null,
+        plan: acc.billingType ?? null,
+      };
+    }
+    // Codex: ~/.codex/auth.json has { tokens: { id_token: ... } } where the
+    // id_token is a JWT whose payload carries email / ChatGPT plan.
+    const configPath = path.join(os.homedir(), '.codex', 'auth.json');
     const raw = await fsp.readFile(configPath, 'utf-8');
     const data = JSON.parse(raw) as {
-      oauthAccount?: {
-        emailAddress?: string;
-        displayName?: string;
-        organizationName?: string;
-        billingType?: string;
+      tokens?: { id_token?: string };
+      OPENAI_API_KEY?: string | null;
+    };
+    const jwt = data.tokens?.id_token;
+    if (jwt) {
+      // Decode JWT payload (middle segment) — no verification needed since
+      // we're only reading a local file we trust.
+      try {
+        const parts = jwt.split('.');
+        if (parts.length >= 2) {
+          const payload = JSON.parse(
+            Buffer.from(parts[1].replace(/-/g, '+').replace(/_/g, '/'), 'base64').toString('utf8')
+          ) as {
+            email?: string;
+            name?: string;
+            ['https://api.openai.com/auth']?: { chatgpt_plan_type?: string };
+          };
+          return {
+            email: payload.email ?? 'codex-user',
+            displayName: payload.name ?? null,
+            organization: null,
+            plan: payload['https://api.openai.com/auth']?.chatgpt_plan_type ?? null,
+          };
+        }
+      } catch {
+        // fall through to api-key branch
+      }
+    }
+    if (data.OPENAI_API_KEY) {
+      return {
+        email: 'OpenAI API key',
+        displayName: null,
+        organization: null,
+        plan: 'api-key',
       };
-    };
-    const acc = data.oauthAccount;
-    if (!acc?.emailAddress) return null;
-    return {
-      email: acc.emailAddress,
-      displayName: acc.displayName ?? null,
-      organization: acc.organizationName ?? null,
-      plan: acc.billingType ?? null,
-    };
+    }
+    return null;
   } catch {
     return null;
   }
@@ -799,10 +968,18 @@ ipcMain.handle(
       count: Math.max(1, Math.min(5, Math.floor(opts.count || 1))),
       targetSeconds: Math.max(5, Math.floor(opts.targetSeconds || 30)),
     });
-    const { text, model } = await runHighlightGeneration({ systemPrompt, userPrompt });
-    const variants = parseHighlightResponse(text, project.cutRanges, model);
+    const { text, model } = await runOneShotViaCurrentProvider(systemPrompt, userPrompt);
+    // Force every variant's style to the user-selected one — matches the
+    // UX contract (one style in, N variants all in that style out).
+    const variants = parseHighlightResponse(text, project.cutRanges, model, opts.style);
+    // setHighlightVariants preserves pinned variants from the previous
+    // batch and stamps a sourceSnapshot onto each new variant. Auto-save
+    // so the .qcp on disk stays in sync (user may crash before manual save).
     project.setHighlightVariants(variants);
-    return variants;
+    if (project.projectPath) {
+      await engine.projects.saveProject(projectId).catch(() => {});
+    }
+    return project.highlightVariants;
   }
 );
 
@@ -814,7 +991,106 @@ ipcMain.handle('get-highlights', async (_ev, projectId: string) => {
 ipcMain.handle('clear-highlights', async (_ev, projectId: string) => {
   const project = engine.projects.get(projectId);
   project.clearHighlightVariants();
+  if (project.projectPath) {
+    await engine.projects.saveProject(projectId).catch(() => {});
+  }
 });
+
+ipcMain.handle(
+  'set-highlight-pinned',
+  async (_ev, projectId: string, variantId: string, pinned: boolean) => {
+    const project = engine.projects.get(projectId);
+    const ok = project.setHighlightVariantPinned(variantId, pinned);
+    if (ok && project.projectPath) {
+      await engine.projects.saveProject(projectId).catch(() => {});
+    }
+    return ok;
+  }
+);
+
+ipcMain.handle(
+  'delete-highlight-variant',
+  async (_ev, projectId: string, variantId: string) => {
+    const project = engine.projects.get(projectId);
+    const ok = project.deleteHighlightVariant(variantId);
+    if (ok && project.projectPath) {
+      await engine.projects.saveProject(projectId).catch(() => {});
+    }
+    return ok;
+  }
+);
+
+ipcMain.handle(
+  'update-highlight-variant-segment',
+  async (
+    _ev,
+    projectId: string,
+    variantId: string,
+    segmentIdx: number,
+    newStart: number,
+    newEnd: number,
+    newReason?: string
+  ) => {
+    const project = engine.projects.get(projectId);
+    const ok = project.updateHighlightVariantSegment(
+      variantId,
+      segmentIdx,
+      newStart,
+      newEnd,
+      newReason
+    );
+    if (ok && project.projectPath) {
+      await engine.projects.saveProject(projectId).catch(() => {});
+    }
+    return ok;
+  }
+);
+
+ipcMain.handle(
+  'reorder-highlight-variant-segment',
+  async (_ev, projectId: string, variantId: string, fromIdx: number, toIdx: number) => {
+    const project = engine.projects.get(projectId);
+    const ok = project.reorderHighlightVariantSegment(variantId, fromIdx, toIdx);
+    if (ok && project.projectPath) {
+      await engine.projects.saveProject(projectId).catch(() => {});
+    }
+    return ok;
+  }
+);
+
+ipcMain.handle(
+  'add-highlight-variant-segment',
+  async (_ev, projectId: string, variantId: string, hintSec: number | null) => {
+    const project = engine.projects.get(projectId);
+    const slot = project.findHighlightInsertSlot(
+      variantId,
+      hintSec ?? undefined
+    );
+    if (!slot) return null;
+    const ok = project.addHighlightVariantSegment(
+      variantId,
+      slot.start,
+      slot.end
+    );
+    if (!ok) return null;
+    if (project.projectPath) {
+      await engine.projects.saveProject(projectId).catch(() => {});
+    }
+    return slot;
+  }
+);
+
+ipcMain.handle(
+  'delete-highlight-variant-segment',
+  async (_ev, projectId: string, variantId: string, segmentIdx: number) => {
+    const project = engine.projects.get(projectId);
+    const ok = project.deleteHighlightVariantSegment(variantId, segmentIdx);
+    if (ok && project.projectPath) {
+      await engine.projects.saveProject(projectId).catch(() => {});
+    }
+    return ok;
+  }
+);
 
 ipcMain.handle(
   'export-highlight',
@@ -922,7 +1198,7 @@ ipcMain.handle(
     // successes — one platform hiccup shouldn't wipe out the others.
     const results = await Promise.allSettled(
       opts.platforms.map((platform) =>
-        runCopywriterForPlatform({
+        runCopywriterViaCurrentProvider({
           sourceTitle,
           sourceText,
           platform,

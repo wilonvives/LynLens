@@ -24,6 +24,10 @@ const TOOL_LABELS: Record<string, string> = {
   'mcp__lynlens__revert_ripple': '撤销剪切',
   'mcp__lynlens__generate_highlights': '生成高光变体',
   'mcp__lynlens__clear_highlights': '清空高光变体',
+  'mcp__lynlens__update_highlight_variant_segment': '调整高光段落',
+  'mcp__lynlens__add_highlight_variant_segment': '添加高光段落',
+  'mcp__lynlens__delete_highlight_variant_segment': '删除高光段落',
+  'mcp__lynlens__reorder_highlight_variant_segment': '重排高光段落',
   'mcp__lynlens__generate_social_copies': '生成社群文案',
   'mcp__lynlens__set_mode': '切换 AI 模式',
   'mcp__lynlens__update_transcript_segment': '修改字幕',
@@ -38,14 +42,67 @@ function prettyToolName(raw: string): string {
   return m ? m[1] : raw;
 }
 
+interface ToolCallGroup {
+  name: string;
+  count: number;
+  /** Result text from the LAST call in the run — earlier ones dropped. */
+  lastResult?: string;
+  /** True if ANY call in the run reported an error. */
+  anyFailed: boolean;
+}
+
+/**
+ * Collapse CONSECUTIVE tool-call chips with the same name into a single
+ * group — "提交字幕建议 ×16" instead of 16 near-identical cards. Keeps
+ * non-consecutive runs separate (AI: get_state → N× suggest → read_state
+ * stays readable as three groups). The last call's result is shown so
+ * failures surface; a tooltip on hover reveals that it's an aggregate.
+ */
+function collapseToolCalls(
+  calls: Array<{ name: string; result?: string; ok?: boolean }>
+): ToolCallGroup[] {
+  const groups: ToolCallGroup[] = [];
+  for (const t of calls) {
+    const last = groups[groups.length - 1];
+    if (last && last.name === t.name) {
+      last.count += 1;
+      if (t.result !== undefined) last.lastResult = t.result;
+      if (t.ok === false) last.anyFailed = true;
+    } else {
+      groups.push({
+        name: t.name,
+        count: 1,
+        lastResult: t.result,
+        anyFailed: t.ok === false,
+      });
+    }
+  }
+  return groups;
+}
+
 interface Props {
   open: boolean;
   onClose: () => void;
   width?: number;
+  /**
+   * When true the panel fills its parent (used inside the standalone
+   * Agent BrowserWindow). Skips the sidebar flex sizing and the close
+   * X button (OS window chrome handles closing).
+   */
+  detached?: boolean;
+  /**
+   * Override source of truth for the active project. The detached popup
+   * has its own zustand store that the editor window doesn't populate,
+   * so it provides this via IPC. In-window usage leaves it undefined and
+   * falls back to the shared zustand store.
+   */
+  projectIdOverride?: string | null;
 }
 
-export function ChatPanel({ open, onClose, width }: Props) {
-  const projectId = useStore((s) => s.projectId);
+export function ChatPanel({ open, onClose, width, detached, projectIdOverride }: Props) {
+  const storeProjectId = useStore((s) => s.projectId);
+  // Detached popup has its own store — hydrated via IPC by the caller.
+  const projectId = projectIdOverride !== undefined ? projectIdOverride : storeProjectId;
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState('');
   const [busy, setBusy] = useState(false);
@@ -56,12 +113,33 @@ export function ChatPanel({ open, onClose, width }: Props) {
     organization: string | null;
     plan: string | null;
   } | null>(null);
+  // Which AI backend this chat is talking to. Persisted in main; we sync
+  // on open so switching in one app window reflects in another next time.
+  const [provider, setProviderState] = useState<'claude' | 'codex'>('claude');
 
-  // Fetch who we're authenticated as so the header can show it
+  // Fetch who we're authenticated as so the header can show it — also
+  // refetch whenever the provider changes because each provider has its
+  // own login identity source (.claude.json vs .codex/auth.json).
   useEffect(() => {
     if (!open) return;
     void window.lynlens.agentIdentity().then(setIdentity);
+  }, [open, provider]);
+
+  // Load current provider from main on open.
+  useEffect(() => {
+    if (!open) return;
+    void window.lynlens.agentGetProvider().then(setProviderState);
   }, [open]);
+
+  async function switchProvider(next: 'claude' | 'codex'): Promise<void> {
+    if (next === provider) return;
+    await window.lynlens.agentSetProvider(next);
+    setProviderState(next);
+    // Clear the visible transcript: each provider has its own session
+    // memory, so mixing them would be confusing. The user can still scroll
+    // back in their head — that's the cost of switching.
+    setMessages([]);
+  }
 
   // Subscribe to streaming agent events
   useEffect(() => {
@@ -164,12 +242,22 @@ export function ChatPanel({ open, onClose, width }: Props) {
 
   return (
     <div
-      className="chat-panel"
-      style={width ? { flex: `0 0 ${width}px`, width } : undefined}
+      className={`chat-panel${detached ? ' detached' : ''}`}
+      style={detached ? undefined : width ? { flex: `0 0 ${width}px`, width } : undefined}
     >
       <div className="chat-header">
         <div className="chat-header-left">
-          <div className="chat-header-title">Anthropic Claude Code</div>
+          <div className="chat-header-title">
+            <select
+              className="chat-provider-select"
+              value={provider}
+              onChange={(e) => void switchProvider(e.target.value as 'claude' | 'codex')}
+              title="切换 AI 后端(切换后会清空当前聊天记录)"
+            >
+              <option value="claude">Claude Code</option>
+              <option value="codex">OpenAI Codex</option>
+            </select>
+          </div>
           {identity ? (
             <div className="chat-header-identity" title={`subscription: ${identity.plan ?? '—'}`}>
               <span className="dot" /> Connected as {identity.displayName || identity.email}
@@ -177,7 +265,10 @@ export function ChatPanel({ open, onClose, width }: Props) {
             </div>
           ) : (
             <div className="chat-header-identity warn">
-              <span className="dot warn" /> 未检测到 Claude Code 登录状态
+              <span className="dot warn" />{' '}
+              {provider === 'claude'
+                ? '未检测到 Claude Code 登录状态'
+                : '未检测到 Codex 登录状态,终端执行 codex login'}
             </div>
           )}
         </div>
@@ -193,9 +284,11 @@ export function ChatPanel({ open, onClose, width }: Props) {
         >
           重置
         </button>
-        <button className="chat-close" onClick={onClose} title="关闭">
-          ✕
-        </button>
+        {!detached && (
+          <button className="chat-close" onClick={onClose} title="关闭">
+            ✕
+          </button>
+        )}
       </div>
       <div className="chat-list" ref={listRef}>
         {messages.length === 0 && (
@@ -212,13 +305,20 @@ export function ChatPanel({ open, onClose, width }: Props) {
               <div className="chat-bubble user">{m.text}</div>
             ) : (
               <div className="chat-bubble assistant">
-                {m.toolCalls.map((t, i) => (
-                  <div key={i} className={`chat-tool ${t.ok === false ? 'err' : ''}`}>
-                    <span className="chat-tool-name">{prettyToolName(t.name)}</span>
-                    {t.result && (
+                {collapseToolCalls(m.toolCalls).map((g, i) => (
+                  <div
+                    key={i}
+                    className={`chat-tool ${g.anyFailed ? 'err' : ''}`}
+                    title={g.count > 1 ? `${g.count} 次调用 — 最后一次: ${g.lastResult ?? ''}` : undefined}
+                  >
+                    <span className="chat-tool-name">
+                      {prettyToolName(g.name)}
+                      {g.count > 1 && <span className="chat-tool-count"> ×{g.count}</span>}
+                    </span>
+                    {g.lastResult && (
                       <span className="chat-tool-result">
-                        {t.ok === false ? '❌ ' : '✓ '}
-                        {t.result.slice(0, 120)}
+                        {g.anyFailed ? '失败: ' : '完成: '}
+                        {g.lastResult.slice(0, 120)}
                       </span>
                     )}
                   </div>

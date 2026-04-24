@@ -1,6 +1,6 @@
 {
   "name": "@lynlens/desktop",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "LynLens desktop app (Electron) - UI for talking-video quick-cut editing",
   "main": "./dist/main/main/index.js",
   "scripts": {
@@ -18,6 +18,8 @@
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.2.116",
     "@lynlens/core": "workspace:*",
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "@openai/codex-sdk": "^0.124.0",
     "electron-updater": "^6.8.3",
     "zod": "^3.23.8"
   },

@@ -1,6 +1,8 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
-import type { HighlightStyle, HighlightVariant } from '@lynlens/core';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import type { HighlightStyle, HighlightVariant, Range, VariantStatus } from '@lynlens/core';
+import { getVariantStatus } from './core-browser';
 import { GenerateHighlightDialog } from './GenerateHighlightDialog';
+import { HighlightMiniTimeline } from './HighlightMiniTimeline';
 import { VariantCard } from './VariantCard';
 import { Resizer } from './Resizer';
 import { useStore } from './store';
@@ -73,6 +75,17 @@ export function HighlightPanel({
   const projectId = useStore((s) => s.projectId);
   const videoUrl = useStore((s) => s.videoUrl);
   const transcript = useStore((s) => s.transcript);
+  const segments = useStore((s) => s.segments);
+  // Derive cut ranges the same way App.tsx does (status='cut' segments).
+  // Pass into VariantCard's status check so stale / broken variants flag up.
+  const cutRanges = useMemo<Range[]>(
+    () =>
+      segments
+        .filter((s) => s.status === 'cut')
+        .map((s) => ({ start: s.start, end: s.end }))
+        .sort((a, b) => a.start - b.start),
+    [segments]
+  );
 
   const [variants, setVariants] = useState<HighlightVariant[]>([]);
   const [showDialog, setShowDialog] = useState(false);
@@ -371,6 +384,27 @@ export function HighlightPanel({
             </div>
           )}
 
+          {/* Mini-timeline: always visible when a variant is selected.
+              Drag segment edges to tune start/end. Delete / add via the
+              inline buttons. Same data the card editor mutates — two
+              views of one state. */}
+          {selectedVariant && projectId && (
+            <HighlightMiniTimeline
+              projectId={projectId}
+              variant={selectedVariant}
+              getPlayheadSourceSec={() => {
+                const v = videoRef.current;
+                if (!v) return null;
+                const t = v.currentTime;
+                return Number.isFinite(t) ? t : null;
+              }}
+              onVariantChanged={async () => {
+                const latest = await window.lynlens.getHighlights(projectId);
+                setVariants(latest);
+              }}
+            />
+          )}
+
           <div className="highlight-player-controls">
             <button onClick={togglePlay} disabled={!selectedVariant}>
               {isPlaying ? '暂停' : '播放'}
@@ -423,19 +457,57 @@ export function HighlightPanel({
               visible without scrolling the card column. */}
 
           <div className="variant-list">
-            {variants.map((v, i) => (
-              <VariantCard
-                key={v.id}
-                variant={v}
-                index={i + 1}
-                active={v.id === selectedVariantId}
-                playingSegIdx={v.id === selectedVariantId ? playingSegIdx : null}
-                transcript={transcript}
-                onSelect={selectVariant}
-                onSelectSegment={selectSegment}
-                onExport={handleExport}
-              />
-            ))}
+            {variants.map((v, i) => {
+              const status: VariantStatus = getVariantStatus(v, cutRanges, transcript);
+              return (
+                <VariantCard
+                  key={v.id}
+                  variant={v}
+                  index={i + 1}
+                  active={v.id === selectedVariantId}
+                  playingSegIdx={v.id === selectedVariantId ? playingSegIdx : null}
+                  status={status}
+                  transcript={transcript}
+                  projectId={projectId}
+                  onVariantChanged={async () => {
+                    if (!projectId) return;
+                    const latest = await window.lynlens.getHighlights(projectId);
+                    setVariants(latest);
+                  }}
+                  onSelect={selectVariant}
+                  onSelectSegment={selectSegment}
+                  onExport={handleExport}
+                  onTogglePin={async (vv) => {
+                    if (!projectId) return;
+                    const nextPinned = !vv.pinned;
+                    try {
+                      const ok = await window.lynlens.setHighlightPinned(
+                        projectId,
+                        vv.id,
+                        nextPinned
+                      );
+                      if (!ok) throw new Error('主进程返回 false');
+                      setVariants((prev) =>
+                        prev.map((x) => (x.id === vv.id ? { ...x, pinned: nextPinned } : x))
+                      );
+                    } catch (err) {
+                      alert(`收藏失败: ${(err as Error).message}`);
+                    }
+                  }}
+                  onDelete={async (vv) => {
+                    if (!projectId) return;
+                    try {
+                      const ok = await window.lynlens.deleteHighlightVariant(projectId, vv.id);
+                      if (!ok) throw new Error('主进程返回 false');
+                      setVariants((prev) => prev.filter((x) => x.id !== vv.id));
+                      if (selectedVariantId === vv.id) setSelectedVariantId(null);
+                    } catch (err) {
+                      alert(`删除失败: ${(err as Error).message}`);
+                    }
+                  }}
+                />
+              );
+            })}
           </div>
         </div>
       </div>

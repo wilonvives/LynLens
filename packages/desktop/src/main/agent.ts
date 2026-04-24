@@ -474,7 +474,7 @@ async function buildLynLensSdkServer(engine: LynLensEngine) {
             systemPrompt: sys,
             userPrompt: user,
           });
-          const variants = parseHighlightResponse(text, project.cutRanges, model);
+          const variants = parseHighlightResponse(text, project.cutRanges, model, style);
           project.setHighlightVariants(variants);
           return {
             content: [
@@ -498,6 +498,123 @@ async function buildLynLensSdkServer(engine: LynLensEngine) {
           project.clearHighlightVariants();
           return {
             content: [{ type: 'text' as const, text: `清空了 ${n} 个高光变体。` }],
+          };
+        }
+      ),
+
+      tool(
+        'update_highlight_variant_segment',
+        '修改某一段高光的起止时间(source 时间,单位秒)和/或描述文字。用户说"第 3 段前移 2 秒"/"第 1 段缩短到 5 秒"/"改描述为…"时调用。先用 get_project_state 查当前 variants 和 segments 对应的 idx。不能和同变体的其他段重叠;时长 < 0.2s 或出视频范围会被拒。',
+        {
+          projectId: z.string(),
+          variantId: z.string(),
+          segmentIdx: z.number().int().min(0),
+          newStart: z.number().nonnegative(),
+          newEnd: z.number().positive(),
+          newReason: z.string().optional(),
+        },
+        async ({ projectId, variantId, segmentIdx, newStart, newEnd, newReason }) => {
+          const project = engine.projects.get(projectId);
+          const ok = project.updateHighlightVariantSegment(
+            variantId,
+            segmentIdx,
+            newStart,
+            newEnd,
+            newReason
+          );
+          return {
+            content: [
+              {
+                type: 'text' as const,
+                text: ok
+                  ? `已更新变体 ${variantId.slice(0, 8)} 的第 ${segmentIdx + 1} 段`
+                  : `更新失败 —— 可能和其他段重叠、越界、或段长 < 0.2s。用 get_project_state 复核一下当前状态。`,
+              },
+            ],
+            isError: !ok,
+          };
+        }
+      ),
+
+      tool(
+        'add_highlight_variant_segment',
+        '给某个高光变体加一段(source 时间)。用户说"在第 3 段后加一段 1:20 到 1:25"/"漏了开头那句,补上"时调用。新段追加到变体末尾(用 reorder 改顺序)。必须和现有段不重叠。',
+        {
+          projectId: z.string(),
+          variantId: z.string(),
+          startSec: z.number().nonnegative(),
+          endSec: z.number().positive(),
+          reason: z.string().default('AI 手动添加'),
+        },
+        async ({ projectId, variantId, startSec, endSec, reason }) => {
+          const project = engine.projects.get(projectId);
+          const ok = project.addHighlightVariantSegment(
+            variantId,
+            startSec,
+            endSec,
+            reason
+          );
+          return {
+            content: [
+              {
+                type: 'text' as const,
+                text: ok
+                  ? `已添加新段到变体 ${variantId.slice(0, 8)}: ${startSec.toFixed(2)} - ${endSec.toFixed(2)}`
+                  : `添加失败 —— 和现有段重叠、越界或长度 < 0.2s。`,
+              },
+            ],
+            isError: !ok,
+          };
+        }
+      ),
+
+      tool(
+        'delete_highlight_variant_segment',
+        '从某个高光变体里删掉一段。用户说"第 2 段不要"时调用。变体必须剩至少一段(否则整个变体就空了,拒绝)。',
+        {
+          projectId: z.string(),
+          variantId: z.string(),
+          segmentIdx: z.number().int().min(0),
+        },
+        async ({ projectId, variantId, segmentIdx }) => {
+          const project = engine.projects.get(projectId);
+          const ok = project.deleteHighlightVariantSegment(variantId, segmentIdx);
+          return {
+            content: [
+              {
+                type: 'text' as const,
+                text: ok
+                  ? `已删除变体 ${variantId.slice(0, 8)} 的第 ${segmentIdx + 1} 段`
+                  : `删除失败 —— 可能是最后一段(保留至少 1 段)或编号越界。`,
+              },
+            ],
+            isError: !ok,
+          };
+        }
+      ),
+
+      tool(
+        'reorder_highlight_variant_segment',
+        '调整变体里段落的播放顺序。用户说"把第 3 段挪到第 1 段之前"/"最后一段先播"时调用。时间不变,只改数组顺序。',
+        {
+          projectId: z.string(),
+          variantId: z.string(),
+          fromIdx: z.number().int().min(0),
+          toIdx: z.number().int().min(0),
+        },
+        async ({ projectId, variantId, fromIdx, toIdx }) => {
+          const project = engine.projects.get(projectId);
+          const ok = project.reorderHighlightVariantSegment(variantId, fromIdx, toIdx);
+          return {
+            content: [
+              {
+                type: 'text' as const,
+                text: ok
+                  ? `已把变体 ${variantId.slice(0, 8)} 的第 ${fromIdx + 1} 段移到第 ${toIdx + 1} 位`
+                  : `重排失败 —— 编号越界。`,
+              },
+            ],
+            isError: !ok,
           };
         }
       ),
@@ -689,6 +806,16 @@ const SYSTEM_PROMPT = `
 - replace_in_transcript 只在用户明确说"全局替换 X 为 Y"时用 — 直接生效,不需要审核。
 - update_transcript_segment 直接改 — 只用于**机械错误**(如字面打错),不要主动用。
 - 做完后,简短汇报你标了几段建议、理由是什么,让用户去 UI 审核。
+
+高光变体微调(用户说"第 3 段前移 2 秒"/"去掉第 1 段"/"把最后一段挪前面"/"改一下那段描述"这类话时):
+- 先 get_project_state 看 highlightVariants 里每个 variant 的 id 和 segments 数组(segments[idx].start/end/reason)。
+- 调用对应工具:
+  * update_highlight_variant_segment — 改某段的起止或描述
+  * add_highlight_variant_segment — 加新段(source 时间)
+  * delete_highlight_variant_segment — 删段
+  * reorder_highlight_variant_segment — 换顺序
+- 所有时间都是 **source 秒**(从视频头算)。用户可能用 "2:30" 这种人读格式,自己换算成秒。
+- 每步改完都**简短汇报做了什么**,别一口气改 10 处还不说。改错了用户会立刻说"撤销"。
 `.trim();
 
 /**
@@ -722,6 +849,10 @@ export async function runAgent(
     'mcp__lynlens__replace_in_transcript',
     'mcp__lynlens__generate_highlights',
     'mcp__lynlens__clear_highlights',
+    'mcp__lynlens__update_highlight_variant_segment',
+    'mcp__lynlens__add_highlight_variant_segment',
+    'mcp__lynlens__delete_highlight_variant_segment',
+    'mcp__lynlens__reorder_highlight_variant_segment',
     'mcp__lynlens__generate_social_copies',
   ];
 

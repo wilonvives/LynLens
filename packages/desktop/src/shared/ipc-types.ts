@@ -128,6 +128,65 @@ export interface IpcApi {
   getHighlights(projectId: string): Promise<HighlightVariant[]>;
   /** Drop all highlight variants — called when user switches back to 粗剪. */
   clearHighlights(projectId: string): Promise<void>;
+  /**
+   * Toggle the pinned flag on a highlight variant. Pinned variants survive
+   * "generate new batch" and persist to .qcp so re-opening the project
+   * restores them. Returns false if the variant id is unknown.
+   */
+  setHighlightPinned(projectId: string, variantId: string, pinned: boolean): Promise<boolean>;
+  /**
+   * Permanently remove one variant (pinned or not). The UI exposes this
+   * via an explicit 🗑 button — unpinning just undoes the pin but keeps
+   * the variant in the working set.
+   */
+  deleteHighlightVariant(projectId: string, variantId: string): Promise<boolean>;
+  /**
+   * Fine-tune the (start, end) of a segment inside a variant. Source
+   * time. Returns false on validation failure (overlap / too short /
+   * out of bounds). The variant's sourceSnapshot is cleared on success
+   * so the user-edited version isn't later flagged as stale.
+   */
+  updateHighlightVariantSegment(
+    projectId: string,
+    variantId: string,
+    segmentIdx: number,
+    newStart: number,
+    newEnd: number,
+    /** Optional: also overwrite the segment's reason text. */
+    newReason?: string
+  ): Promise<boolean>;
+  /**
+   * Move a segment to a new position in the variant's play order.
+   * Times unchanged — this only shuffles the array. Returns false on
+   * bad indices.
+   */
+  reorderHighlightVariantSegment(
+    projectId: string,
+    variantId: string,
+    fromIdx: number,
+    toIdx: number
+  ): Promise<boolean>;
+  /**
+   * Append a fresh segment to a variant. Validates overlap / bounds /
+   * MIN_DUR just like update. Hint = optional "try this source time first"
+   * — typically the player's current position. If null or occupied, main
+   * searches for an unused slot (see findHighlightInsertSlot). Returns
+   * the newly-inserted (start, end) on success, or null if no room.
+   */
+  addHighlightVariantSegment(
+    projectId: string,
+    variantId: string,
+    hintSec: number | null
+  ): Promise<{ start: number; end: number } | null>;
+  /**
+   * Remove one segment from a variant. Refuses to delete the last remaining
+   * segment (variant would be empty). Returns false on refusal / failure.
+   */
+  deleteHighlightVariantSegment(
+    projectId: string,
+    variantId: string,
+    segmentIdx: number
+  ): Promise<boolean>;
   /** Export one variant to a file; same stream-copy pipeline as regular export. */
   exportHighlight(
     projectId: string,
@@ -248,6 +307,30 @@ export interface IpcApi {
     organization: string | null;
     plan: string | null;
   } | null>;
+  /** Which AI backend is currently active. Persists across app restarts. */
+  agentGetProvider(): Promise<'claude' | 'codex'>;
+  /** Switch AI backend. Clears in-memory chat session so the next message starts fresh. */
+  agentSetProvider(provider: 'claude' | 'codex'): Promise<void>;
+  /**
+   * Open (or focus if already open) the detached Agent chat window. Main
+   * creates a second BrowserWindow loading the same bundle with
+   * `?panel=chat`. Returns once the window has been created / focused.
+   */
+  openAgentWindow(): Promise<void>;
+  /**
+   * The detached window asks for the currently-active project — main
+   * tracks it via `agentSetActiveProjectId` below. Returns null if no
+   * project is open in the editor window.
+   */
+  agentGetActiveProjectId(): Promise<string | null>;
+  /**
+   * Editor window tells main which project it has active. Main then
+   * broadcasts `active-project-changed` to every other window so the
+   * Agent popup can re-target automatically.
+   */
+  agentSetActiveProjectId(projectId: string | null): Promise<void>;
+  /** Detached window subscription to active-project changes. */
+  onActiveProjectChanged(callback: (projectId: string | null) => void): () => void;
   onAgentEvent(callback: (event: AgentEvent) => void): () => void;
 }
 

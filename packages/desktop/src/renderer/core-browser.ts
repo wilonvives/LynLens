@@ -38,3 +38,12 @@ export type {
 // HighlightVariant lives in highlight-parser but it imports only types,
 // safe to re-export from browser layer.
 export type { HighlightVariant } from '../../../core/src/highlight-parser';
+
+// Variant-status classification — pure functions, no Node deps. Imported
+// into HighlightPanel so the UI can grey out broken variants.
+export {
+  getVariantStatus,
+  isVariantPlayable,
+  variantStatusLabel,
+} from '../../../core/src/variant-status';
+export type { VariantStatus } from '../../../core/src/variant-status';

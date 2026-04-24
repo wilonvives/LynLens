@@ -631,13 +631,13 @@ export function SubtitlePanel({
               )}
               {showWarning && (
                 <span className="sub-cut-warning" title="这一段横跨一个剪切,可能被截半">
-                  <span className="sub-cut-warning-icon">⚠</span>
+                  <span className="sub-cut-warning-text">横跨剪切</span>
                   <button
                     className="sub-cut-dismiss"
                     onClick={() => void dismissWarning(seg.id, fingerprintNow)}
                     title="已确认,隐藏此提醒(如果剪切再变,会自动回来)"
                   >
-                    ✅
+                    忽略
                   </button>
                 </span>
               )}

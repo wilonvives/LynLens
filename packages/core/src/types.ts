@@ -124,6 +124,13 @@ export interface QcpProject {
    * for. Kept independent of highlights/interviews so editing those
    * upstream sources doesn't invalidate previously-generated copy.
    */
+  /**
+   * Persisted highlight variants (method C: default save-all, with an
+   * optional `pinned` flag so "生成新一批" can leave pinned ones alone).
+   * Shape mirrors the runtime HighlightVariant, but we re-declare it here
+   * so types.ts stays a leaf (no highlight-parser import / circular dep).
+   */
+  highlightVariants?: HighlightVariantData[];
   socialCopies?: SocialCopySetData[];
   /** Free-form note the user keeps around to flavour all copy generations. */
   socialStyleNote?: string | null;
@@ -188,6 +195,28 @@ export interface SocialStylePresetData {
   name: string;
   content: string;
   createdAt: string;
+}
+
+/**
+ * Persisted shape for a highlight variant. Mirrors HighlightVariant in
+ * highlight-parser.ts — kept here to avoid a circular import loop in
+ * types.ts. sourceSnapshot is optional because variants created before
+ * persistence existed (or pre-upgrade .qcp files) won't have it; the
+ * status classifier treats missing snapshots as 'unknown'.
+ */
+export interface HighlightVariantData {
+  id: string;
+  title: string;
+  style: 'default' | 'hero' | 'ai-choice';
+  segments: Array<{ start: number; end: number; reason: string }>;
+  durationSeconds: number;
+  createdAt: string;
+  model?: string;
+  pinned?: boolean;
+  sourceSnapshot?: {
+    cutRangesHash: string;
+    transcriptFingerprint: string;
+  };
 }
 
 export interface SocialCopySetData {

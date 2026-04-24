@@ -24,6 +24,21 @@ export interface HighlightVariant {
   createdAt: string;
   /** Which model produced this variant, for debugging / future memory. */
   model?: string;
+  /**
+   * User-pinned. When true, "生成新一批" won't overwrite this variant.
+   * Unpinned variants are treated as disposable work-in-progress.
+   */
+  pinned?: boolean;
+  /**
+   * Snapshot of the inputs that were used at generation time. Lets us
+   * detect after-the-fact whether the variant is still valid (cuts
+   * unchanged, transcript unchanged) or stale / broken. See
+   * variant-status.ts for the comparison logic.
+   */
+  sourceSnapshot?: {
+    cutRangesHash: string;
+    transcriptFingerprint: string;
+  };
 }
 
 interface RawVariant {
@@ -126,7 +141,13 @@ function coerceStyle(v: unknown): HighlightStyle {
 export function parseHighlightResponse(
   raw: string,
   cutRanges: readonly Range[],
-  model?: string
+  model?: string,
+  /**
+   * If provided, force every variant's `style` to this value — overriding
+   * whatever the model returned. Matches the current UX: the user picks
+   * ONE style in the dialog and expects N variants all in that style.
+   */
+  forceStyle?: HighlightStyle
 ): HighlightVariant[] {
   const payload = extractJsonObject(raw) as { variants?: unknown };
   if (!Array.isArray(payload.variants)) {
@@ -169,7 +190,7 @@ export function parseHighlightResponse(
     out.push({
       id: uuid(),
       title,
-      style: coerceStyle(rawV.style),
+      style: forceStyle ?? coerceStyle(rawV.style),
       segments: segs,
       durationSeconds: duration,
       createdAt: now,

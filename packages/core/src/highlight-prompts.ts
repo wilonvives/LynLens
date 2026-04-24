@@ -58,13 +58,15 @@ function fmtTime(sec: number): string {
  * the actual transcript.
  */
 export function buildHighlightSystemPrompt(): string {
-  return `你是一位视频剪辑师,专门从长视频中挑出高光时刻组成短视频。你会看到一份已经去掉了停顿和废话的视频字幕(时间已经是压缩后的)。任务是挑出几个**不同风格**的"变体",每个变体是一组段落,拼起来就是一个独立的短视频。
+  return `你是一位视频剪辑师,专门从长视频中挑出高光时刻组成短视频。你会看到一份已经去掉了停顿和废话的视频字幕(时间已经是压缩后的)。
+
+用户会在 user prompt 里指定一个**固定风格**和**变体数量 N**。你的任务:生成 N 个**同一个风格**的变体,变体之间**必须角度不同**(选段不同、节奏不同、叙事侧重不同),但**风格必须一致**。
 
 内容要求:
 1. 时间戳必须来自字幕中真实出现的时间范围,不要编造
 2. 每个变体段落数量 2-8 段为宜,太碎或太整块都不好
 3. 每段必须给一句 \`reason\` 说明选它的理由
-4. variant 之间必须有差异(段落选择、节奏、角度不同)
+4. N 个 variant 之间**选段差异明显**,不要只换顺序、不要大段重复
 
 JSON 格式硬性要求(违反会导致解析失败):
 A. 只输出 JSON 对象,前后不要任何文字,不要 \`\`\`json 代码块围栏
@@ -75,12 +77,12 @@ E. 不要尾逗号: 最后一个数组元素 / 对象属性后面不加逗号
 F. 不要 JSON 注释 (// 或 /* */)
 G. reason 字段里**尽量不要用任何引号**(单双都不要),用括号或顿号代替
 
-输出格式 (严格照搬,只改内容):
+输出格式 (严格照搬,只改内容。style 字段**必须**等于 user prompt 里指定的风格,所有变体都是同一个值):
 {
   "variants": [
     {
       "title": "短而有力的中文标题",
-      "style": "default | hero | ai-choice",
+      "style": "<照搬 user 里的 style>",
       "segments": [
         { "start": 12.3, "end": 34.5, "reason": "开场 hook 一句话点题" },
         { "start": 45.0, "end": 58.2, "reason": "关键论点 数据支撑" }
@@ -105,12 +107,14 @@ export function buildHighlightUserPrompt(opts: {
   const transcriptText = formatTranscriptEffective(opts.transcript, opts.cutRanges);
   const styleDesc = STYLE_DESC[opts.style];
   return `视频总时长(压缩后): ${opts.effectiveDuration.toFixed(1)} 秒
-目标变体数量: ${opts.count}
+变体数量: ${opts.count}(${opts.count} 个变体,全部同一个风格,不要换风格)
 每个变体目标时长: ≈ ${opts.targetSeconds} 秒(±20%)
-风格要求: ${styleDesc}
+风格(所有变体都用这个):
+  style 字段值: "${opts.style}"
+  含义: ${styleDesc}
 
 字幕(时间是压缩后的):
 ${transcriptText}
 
-请生成 ${opts.count} 个变体,输出纯 JSON。`;
+请生成 ${opts.count} 个变体,**每个变体的 style 字段都等于 "${opts.style}"**,变体之间选段差异要明显。输出纯 JSON。`;
 }

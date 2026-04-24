@@ -10,6 +10,7 @@ import {
 } from './diarization';
 import { getEffectiveDuration } from './ripple';
 import type { HighlightVariant } from './highlight-parser';
+import { fingerprintTranscript, hashCutRanges } from './variant-status';
 import type {
   AiMode,
   ProjectHandle,
@@ -51,15 +52,17 @@ export class Project {
   modifiedAt: string;
   projectPath: string | null;
   /**
-   * Highlight variants produced by Claude in the current session. Intentionally
-   * ephemeral: never written to the .qcp file. The highlight tab shows them;
-   * switching back to the precision (粗剪) tab clears them. Re-opening a
-   * project does NOT restore previous variants — the user re-generates.
+   * Highlight variants. Persisted to .qcp (method C):
+   *   - Default save-all. Re-opening a project restores them.
+   *   - `pinned: true` protects a variant from "generate new batch" overwrites.
+   *   - Each variant carries a `sourceSnapshot` (cut hash + transcript
+   *     fingerprint) so the UI can mark stale / invalidated ones at render
+   *     time without mutating the stored record. See variant-status.ts.
    *
-   * Rationale: variants reference source-time ranges, and source times are
-   * only meaningful relative to the CURRENT cutRanges. If the user edits the
-   * ripple after generating variants, those variants become misaligned. Making
-   * them ephemeral sidesteps that class of bug entirely.
+   * When the user goes back to 粗剪 and changes cuts / regenerates the
+   * transcript, variants are NOT deleted — they surface with a warning
+   * banner, and if a segment falls fully inside a new cut, playback is
+   * disabled for that specific variant.
    */
   highlightVariants: HighlightVariant[] = [];
 
@@ -81,6 +84,23 @@ export class Project {
       : [];
     this.speakerNames = { ...(handle.data.speakerNames ?? {}) };
     this.diarizationEngine = handle.data.diarizationEngine ?? null;
+    // Restore persisted highlight variants, if any. Legacy .qcp files don't
+    // have this field — treat as empty. sourceSnapshot may be absent on
+    // variants generated before the persistence feature landed; the status
+    // classifier treats them as 'unknown' (still playable, no warning).
+    this.highlightVariants = Array.isArray(handle.data.highlightVariants)
+      ? handle.data.highlightVariants.map((v) => ({
+          id: v.id,
+          title: v.title,
+          style: v.style,
+          segments: [...v.segments],
+          durationSeconds: v.durationSeconds,
+          createdAt: v.createdAt,
+          model: v.model,
+          pinned: v.pinned,
+          sourceSnapshot: v.sourceSnapshot,
+        }))
+      : [];
     this.createdAt = handle.data.createdAt;
     this.modifiedAt = handle.data.modifiedAt;
     this.eventBus = eventBus;
@@ -461,6 +481,28 @@ export class Project {
       socialStylePresets: this.socialStylePresets,
       speakerNames: this.speakerNames,
       diarizationEngine: this.diarizationEngine ?? undefined,
+      // Persist highlight variants. Serialized shape (HighlightVariantData)
+      // is a direct mirror of the runtime HighlightVariant, so a shallow
+      // copy is enough. If the list is empty we omit the key so old .qcp
+      // files don't sprout a noisy `"highlightVariants": []` on re-save.
+      highlightVariants:
+        this.highlightVariants.length > 0
+          ? this.highlightVariants.map((v) => ({
+              id: v.id,
+              title: v.title,
+              style: v.style,
+              segments: v.segments.map((s) => ({
+                start: s.start,
+                end: s.end,
+                reason: s.reason,
+              })),
+              durationSeconds: v.durationSeconds,
+              createdAt: v.createdAt,
+              model: v.model,
+              pinned: v.pinned,
+              sourceSnapshot: v.sourceSnapshot,
+            }))
+          : undefined,
       createdAt: this.createdAt,
       modifiedAt: new Date().toISOString(),
     };
@@ -532,14 +574,290 @@ export class Project {
     return getEffectiveDuration(this.videoMeta.duration, this.cutRanges);
   }
 
-  /** Replace the in-memory highlight variants with a fresh batch. */
+  /**
+   * Replace the working-set of highlight variants with a fresh batch.
+   *
+   * Preserves pinned variants: any existing variant with `pinned: true`
+   * stays in the list regardless of this call. The new (unpinned) batch
+   * is appended afterwards — so the UI shows "📌 your kept ones" first,
+   * then the latest generation below.
+   *
+   * Also stamps each new variant with a sourceSnapshot if one isn't
+   * already provided by the caller, so post-save staleness detection has
+   * something to compare against.
+   */
   setHighlightVariants(variants: HighlightVariant[]): void {
-    this.highlightVariants = [...variants];
+    const pinned = this.highlightVariants.filter((v) => v.pinned);
+    const cutHash = hashCutRanges(this.cutRanges);
+    const transcriptFp = fingerprintTranscript(this.transcript);
+    const freshlyStamped = variants.map((v) => ({
+      ...v,
+      sourceSnapshot: v.sourceSnapshot ?? {
+        cutRangesHash: cutHash,
+        transcriptFingerprint: transcriptFp,
+      },
+    }));
+    this.highlightVariants = [...pinned, ...freshlyStamped];
+    this.modifiedAt = new Date().toISOString();
   }
 
-  /** Drop all highlight variants — called when the user switches back to 粗剪. */
+  /**
+   * Drop all variants EXCEPT pinned ones. Called when the user switches
+   * back to 粗剪 tab — we don't want the stale batch lingering in memory,
+   * but anything they explicitly saved with 📌 should survive.
+   */
   clearHighlightVariants(): void {
-    this.highlightVariants = [];
+    this.highlightVariants = this.highlightVariants.filter((v) => v.pinned);
+    this.modifiedAt = new Date().toISOString();
+  }
+
+  /** Flip a variant's pinned state. Returns false if the id wasn't found. */
+  setHighlightVariantPinned(variantId: string, pinned: boolean): boolean {
+    const idx = this.highlightVariants.findIndex((v) => v.id === variantId);
+    if (idx < 0) return false;
+    const next = [...this.highlightVariants];
+    next[idx] = { ...next[idx], pinned };
+    this.highlightVariants = next;
+    this.modifiedAt = new Date().toISOString();
+    return true;
+  }
+
+  /**
+   * Adjust the (start, end) of a single segment inside a variant. Source
+   * time. Validates:
+   *   - newEnd > newStart + MIN_DUR (0.2s) — prevents collapsed blips
+   *   - stays inside [0, videoDuration]
+   *   - doesn't overlap adjacent segments in the same variant
+   *
+   * Returns false if validation fails or the ids are unknown; caller
+   * should surface the error. Clears `sourceSnapshot` on success — once
+   * the user hand-tunes a variant, the AI-snapshot-based staleness
+   * check no longer applies (user takes ownership).
+   */
+  updateHighlightVariantSegment(
+    variantId: string,
+    segmentIdx: number,
+    newStart: number,
+    newEnd: number,
+    /**
+     * Optional: also update the segment's reason text. When undefined,
+     * the existing reason is preserved. Empty string is allowed (clears).
+     */
+    newReason?: string
+  ): boolean {
+    const MIN_DUR = 0.2;
+    if (!Number.isFinite(newStart) || !Number.isFinite(newEnd)) return false;
+    if (newEnd - newStart < MIN_DUR) return false;
+    if (newStart < 0 || newEnd > this.videoMeta.duration) return false;
+
+    const vIdx = this.highlightVariants.findIndex((v) => v.id === variantId);
+    if (vIdx < 0) return false;
+    const variant = this.highlightVariants[vIdx];
+    if (segmentIdx < 0 || segmentIdx >= variant.segments.length) return false;
+
+    // Overlap check against siblings — but only the ones that currently
+    // touch the same region. We don't enforce chronological ordering
+    // (users may re-order intentionally); we just refuse to let two
+    // segments overlap in source time, which would confuse playback.
+    for (let i = 0; i < variant.segments.length; i++) {
+      if (i === segmentIdx) continue;
+      const other = variant.segments[i];
+      const overlaps = newStart < other.end && newEnd > other.start;
+      if (overlaps) return false;
+    }
+
+    const nextSegs = variant.segments.map((s, i) =>
+      i === segmentIdx
+        ? {
+            ...s,
+            start: newStart,
+            end: newEnd,
+            reason: newReason !== undefined ? newReason : s.reason,
+          }
+        : s
+    );
+    const nextVariant = {
+      ...variant,
+      segments: nextSegs,
+      durationSeconds: nextSegs.reduce((sum, s) => sum + (s.end - s.start), 0),
+      // Clearing the snapshot means getVariantStatus returns 'unknown'
+      // (no banner) — user edits aren't retroactively flagged as stale.
+      sourceSnapshot: undefined,
+    };
+    const nextVariants = [...this.highlightVariants];
+    nextVariants[vIdx] = nextVariant;
+    this.highlightVariants = nextVariants;
+    this.modifiedAt = new Date().toISOString();
+    return true;
+  }
+
+  /**
+   * Append a new segment to a variant. Source time. Same validation as
+   * updateHighlightVariantSegment (MIN_DUR, in-bounds, no overlap). Does
+   * NOT sort — the segment lands at the end of the array, matching the
+   * call-order user intent. Returns false on validation failure.
+   *
+   * Caller supplies (start, end). If you want "just give me a reasonable
+   * new segment", use findInsertSlot() below and pass its result.
+   */
+  addHighlightVariantSegment(
+    variantId: string,
+    newStart: number,
+    newEnd: number,
+    reason: string = '手动添加'
+  ): boolean {
+    const MIN_DUR = 0.2;
+    if (!Number.isFinite(newStart) || !Number.isFinite(newEnd)) return false;
+    if (newEnd - newStart < MIN_DUR) return false;
+    if (newStart < 0 || newEnd > this.videoMeta.duration) return false;
+
+    const vIdx = this.highlightVariants.findIndex((v) => v.id === variantId);
+    if (vIdx < 0) return false;
+    const variant = this.highlightVariants[vIdx];
+
+    for (const other of variant.segments) {
+      if (newStart < other.end && newEnd > other.start) return false;
+    }
+
+    const nextSegs = [...variant.segments, { start: newStart, end: newEnd, reason }];
+    const nextVariant = {
+      ...variant,
+      segments: nextSegs,
+      durationSeconds: nextSegs.reduce((sum, s) => sum + (s.end - s.start), 0),
+      sourceSnapshot: undefined,
+    };
+    const nextVariants = [...this.highlightVariants];
+    nextVariants[vIdx] = nextVariant;
+    this.highlightVariants = nextVariants;
+    this.modifiedAt = new Date().toISOString();
+    return true;
+  }
+
+  /**
+   * Remove one segment from a variant. Returns false if the indices are
+   * out of range OR if the variant would be left empty (we keep at least
+   * one segment so there's always something to play — if the user really
+   * wants the variant gone, they can delete the whole variant).
+   */
+  deleteHighlightVariantSegment(variantId: string, segmentIdx: number): boolean {
+    const vIdx = this.highlightVariants.findIndex((v) => v.id === variantId);
+    if (vIdx < 0) return false;
+    const variant = this.highlightVariants[vIdx];
+    if (segmentIdx < 0 || segmentIdx >= variant.segments.length) return false;
+    if (variant.segments.length <= 1) return false;
+
+    const nextSegs = variant.segments.filter((_, i) => i !== segmentIdx);
+    const nextVariant = {
+      ...variant,
+      segments: nextSegs,
+      durationSeconds: nextSegs.reduce((sum, s) => sum + (s.end - s.start), 0),
+      sourceSnapshot: undefined,
+    };
+    const nextVariants = [...this.highlightVariants];
+    nextVariants[vIdx] = nextVariant;
+    this.highlightVariants = nextVariants;
+    this.modifiedAt = new Date().toISOString();
+    return true;
+  }
+
+  /**
+   * Move a segment to a new position within the variant's ordered list.
+   * Playback follows this order, so moving #3 to index 0 makes it play
+   * first. Times (start, end) unchanged — this only affects the array
+   * sequence. Returns false on bad indices.
+   */
+  reorderHighlightVariantSegment(
+    variantId: string,
+    fromIdx: number,
+    toIdx: number
+  ): boolean {
+    const vIdx = this.highlightVariants.findIndex((v) => v.id === variantId);
+    if (vIdx < 0) return false;
+    const variant = this.highlightVariants[vIdx];
+    const n = variant.segments.length;
+    if (fromIdx < 0 || fromIdx >= n || toIdx < 0 || toIdx >= n) return false;
+    if (fromIdx === toIdx) return true;
+
+    const nextSegs = [...variant.segments];
+    const [moved] = nextSegs.splice(fromIdx, 1);
+    nextSegs.splice(toIdx, 0, moved);
+    const nextVariants = [...this.highlightVariants];
+    nextVariants[vIdx] = { ...variant, segments: nextSegs, sourceSnapshot: undefined };
+    this.highlightVariants = nextVariants;
+    this.modifiedAt = new Date().toISOString();
+    return true;
+  }
+
+  /**
+   * Compute a reasonable (start, end) slot to use for "add new segment"
+   * when the caller doesn't have an explicit time in mind. Strategy:
+   *   1. Hint: if provided, try placing a 3-second window starting at
+   *      the hint (e.g. current video cursor). Accept if it doesn't
+   *      overlap.
+   *   2. Otherwise, try right after the last segment's end + 0.5s gap.
+   *   3. Otherwise, try just before the first segment's start - 3.5s.
+   *   4. Otherwise, scan the spaces between existing segments for any
+   *      hole ≥ 3s.
+   *   5. Give up — return null; UI should tell the user there's no room.
+   */
+  findHighlightInsertSlot(
+    variantId: string,
+    hintSec?: number
+  ): { start: number; end: number } | null {
+    const variant = this.highlightVariants.find((v) => v.id === variantId);
+    if (!variant) return null;
+    const DEFAULT_LEN = 3.0;
+    const GAP = 0.5;
+    const maxT = this.videoMeta.duration;
+
+    const sorted = [...variant.segments].sort((a, b) => a.start - b.start);
+    const overlaps = (s: number, e: number): boolean =>
+      sorted.some((o) => s < o.end && e > o.start);
+    const inBounds = (s: number, e: number): boolean =>
+      s >= 0 && e <= maxT && e - s >= DEFAULT_LEN;
+
+    // 1. Hint
+    if (hintSec !== undefined && Number.isFinite(hintSec)) {
+      const s = hintSec;
+      const e = hintSec + DEFAULT_LEN;
+      if (inBounds(s, e) && !overlaps(s, e)) return { start: s, end: e };
+    }
+    // 2. After last
+    if (sorted.length > 0) {
+      const last = sorted[sorted.length - 1];
+      const s = last.end + GAP;
+      const e = s + DEFAULT_LEN;
+      if (inBounds(s, e)) return { start: s, end: e };
+    }
+    // 3. Before first
+    if (sorted.length > 0) {
+      const first = sorted[0];
+      const e = first.start - GAP;
+      const s = e - DEFAULT_LEN;
+      if (inBounds(s, e)) return { start: s, end: e };
+    }
+    // 4. Gaps in between
+    for (let i = 0; i < sorted.length - 1; i++) {
+      const s = sorted[i].end + GAP;
+      const e = sorted[i + 1].start - GAP;
+      if (inBounds(s, s + DEFAULT_LEN) && e - s >= DEFAULT_LEN) {
+        return { start: s, end: s + DEFAULT_LEN };
+      }
+    }
+    // 5. Last resort: empty variant + enough room at origin
+    if (sorted.length === 0 && maxT >= DEFAULT_LEN) {
+      return { start: 0, end: DEFAULT_LEN };
+    }
+    return null;
+  }
+
+  /** Permanently remove a single variant (bypasses pinned protection). */
+  deleteHighlightVariant(variantId: string): boolean {
+    const before = this.highlightVariants.length;
+    this.highlightVariants = this.highlightVariants.filter((v) => v.id !== variantId);
+    const changed = this.highlightVariants.length !== before;
+    if (changed) this.modifiedAt = new Date().toISOString();
+    return changed;
   }
 
   findHighlightVariant(id: string): HighlightVariant | undefined {

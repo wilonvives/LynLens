@@ -442,6 +442,22 @@ button.ai.active {
 }
 .chat-header-left { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 .chat-header-title { font-size: 13px; font-weight: 600; }
+.chat-provider-select {
+  background: #1a1a22;
+  color: var(--text1);
+  border: 1px solid #3a3a3a;
+  border-radius: 4px;
+  font-size: 13px;
+  font-weight: 600;
+  padding: 3px 22px 3px 8px;
+  cursor: pointer;
+  appearance: none;
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'><path fill='%23aaa' d='M0 0l5 6 5-6z'/></svg>");
+  background-repeat: no-repeat;
+  background-position: right 6px center;
+}
+.chat-provider-select:hover { border-color: var(--accent); }
+.chat-provider-select:focus { outline: none; border-color: var(--accent); }
 .chat-header-identity {
   font-size: 11px;
   color: var(--text3);
@@ -527,6 +543,13 @@ button.ai.active {
   border-color: #a33;
 }
 .chat-tool-name { color: #9b5bff; }
+.chat-tool-count {
+  color: var(--text3);
+  font-size: 11px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  margin-left: 2px;
+}
 .chat-tool-result { color: var(--text2); font-size: 11px; }
 .chat-text { margin-top: 2px; }
 .chat-dots {
@@ -889,7 +912,7 @@ button.ai.active {
   border: 1px solid rgba(243, 156, 18, 0.35);
   color: #f39c12;
 }
-.sub-cut-warning-icon { font-size: 12px; }
+.sub-cut-warning-text { font-size: 10px; font-weight: 600; letter-spacing: 0.04em; }
 .sub-cut-dismiss {
   background: transparent;
   border: none;
@@ -1284,6 +1307,163 @@ button.ai.active {
   color: #555;
   cursor: not-allowed;
 }
+/* Pushes the AGENT button to the right edge of the tab bar. */
+.work-mode-spacer { flex: 1 1 0; }
+/* Boxed AGENT button — visually distinct from the plain tab buttons so
+   the user sees it as a separate action (opens a popup) rather than
+   another page switcher. */
+.work-mode-agent {
+  margin: 4px 0 4px auto;
+  padding: 4px 16px;
+  background: transparent;
+  color: var(--text1);
+  border: 1px solid #3a3a3a;
+  border-radius: 5px;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s;
+}
+.work-mode-agent:hover:not(:disabled) {
+  border-color: var(--accent);
+  background: rgba(78, 109, 159, 0.08);
+}
+.work-mode-agent:disabled {
+  color: #555;
+  border-color: #2a2a2a;
+  cursor: not-allowed;
+}
+
+/* Popup agent window: ChatPanel fills the entire viewport (no sidebar
+   flex-basis, no fixed width). Styled simply so the chrome comes from
+   the OS window frame. */
+.agent-window-shell {
+  width: 100vw;
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background: #1a1a1a;
+}
+.chat-panel.detached {
+  flex: 1 1 auto;
+  width: 100%;
+  max-width: 100%;
+}
+
+/* ---------- Highlight mini-timeline (segment edit mode) ---------- */
+.hl-mini-timeline-wrap {
+  margin-top: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.hl-mini-err {
+  padding: 6px 10px;
+  background: rgba(192, 57, 43, 0.13);
+  border: 1px solid rgba(192, 57, 43, 0.35);
+  color: #ea8a82;
+  font-size: 11px;
+  border-radius: 4px;
+}
+.hl-mini-timeline {
+  display: flex;
+  width: 100%;
+  height: 52px;
+  background: #111;
+  border: 1px solid #2e2e2e;
+  border-radius: 4px;
+  overflow: hidden;
+  font-variant-numeric: tabular-nums;
+  user-select: none;
+}
+.hl-mini-seg {
+  position: relative;
+  display: flex;
+  align-items: stretch;
+  min-width: 30px;
+  background: rgba(78, 109, 159, 0.22);
+  border-right: 1px solid #1a1a1a;
+}
+.hl-mini-seg:last-child { border-right: none; }
+.hl-mini-seg.dragging { background: rgba(14, 122, 254, 0.32); }
+.hl-mini-seg:hover { background: rgba(78, 109, 159, 0.32); }
+.hl-mini-handle {
+  width: 6px;
+  background: rgba(14, 122, 254, 0.6);
+  cursor: ew-resize;
+  flex-shrink: 0;
+}
+.hl-mini-handle:hover { background: rgba(14, 122, 254, 1); }
+.hl-mini-body {
+  flex: 1 1 0;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  padding: 0 4px;
+  font-size: 10px;
+  color: var(--text2);
+  min-width: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+.hl-mini-idx { font-weight: 600; color: var(--text1); font-size: 11px; }
+.hl-mini-time { color: var(--text3); font-size: 9px; white-space: nowrap; }
+.hl-mini-del {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  background: rgba(192, 57, 43, 0.65);
+  color: #fff;
+  border: none;
+  border-radius: 3px;
+  cursor: pointer;
+  font-size: 12px;
+  line-height: 1;
+  opacity: 0;
+  transition: opacity 0.1s, background 0.1s;
+  pointer-events: auto;
+}
+.hl-mini-seg:hover .hl-mini-del { opacity: 1; }
+.hl-mini-del:hover { background: rgba(231, 76, 60, 1); }
+.hl-mini-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 2px;
+}
+.hl-mini-toolbar-hint {
+  font-size: 10px;
+  color: var(--text3);
+  flex: 1 1 auto;
+}
+.hl-mini-add {
+  padding: 4px 12px;
+  background: rgba(78, 109, 159, 0.18);
+  color: var(--accent);
+  border: 1px solid rgba(78, 109, 159, 0.6);
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
+}
+.hl-mini-add:hover {
+  background: rgba(78, 109, 159, 0.32);
+  color: var(--text1);
+  border-color: var(--accent);
+}
+.highlight-player-controls .edit-on {
+  background: rgba(14, 122, 254, 0.2);
+  border-color: var(--accent);
+  color: var(--text1);
+}
 
 /* ---------- Highlight panel (高光 tab) ---------- */
 .highlight-panel {
@@ -1356,6 +1536,48 @@ button.ai.active {
 .variant-card:hover {
   border-color: #3e3e3e;
 }
+.variant-card.broken {
+  opacity: 0.72;
+  border-color: #6a2a24;
+}
+.variant-card.broken:hover { border-color: #8a3a34; }
+.variant-card.stale { border-left: 3px solid #8a6d28; }
+.variant-card.pinned { border-left: 3px solid #d69a2c; }
+.variant-card-pin-badge {
+  font-size: 11px;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 3px;
+  background: rgba(214, 154, 44, 0.2);
+  border: 1px solid rgba(214, 154, 44, 0.6);
+  color: #e8b85a;
+  letter-spacing: 0.04em;
+}
+.variant-card-banner {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 8px 10px;
+  border-radius: 4px;
+  font-size: 11px;
+  line-height: 1.45;
+}
+.variant-card-banner.broken {
+  background: rgba(192, 57, 43, 0.13);
+  border: 1px solid rgba(192, 57, 43, 0.35);
+  color: #ea8a82;
+}
+.variant-card-banner.stale {
+  background: rgba(243, 156, 18, 0.1);
+  border: 1px solid rgba(243, 156, 18, 0.3);
+  color: #d6a84a;
+}
+.variant-card-actions .pin-on {
+  background: rgba(214, 154, 44, 0.18);
+  border-color: rgba(214, 154, 44, 0.5);
+  color: #e8b85a;
+}
+.variant-card-actions .pin-off { opacity: 0.85; }
 .variant-card-head {
   display: flex;
   align-items: center;
@@ -1550,6 +1772,149 @@ button.ai.active {
 }
 .variant-seg-row.playing .variant-seg-time {
   color: #f39c12;
+}
+/* ---------- Editable segment rows (highlight card expanded view) ---------- */
+.variant-seg-row.editable {
+  cursor: default;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 6px 6px;
+  border-radius: 4px;
+  border: 1px solid transparent;
+}
+.variant-seg-row.editable:hover {
+  background: rgba(255, 255, 255, 0.03);
+  border-color: #2a2a2a;
+}
+.variant-seg-row-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-variant-numeric: tabular-nums;
+  font-size: 11px;
+}
+.variant-seg-row-spacer { flex: 1 1 auto; }
+.variant-seg-sep { color: var(--text3); }
+.variant-seg-time {
+  cursor: pointer;
+  color: var(--accent);
+  padding: 1px 4px;
+  border-radius: 3px;
+  outline: 1px solid transparent;
+}
+.variant-seg-time:hover {
+  background: rgba(78, 109, 159, 0.15);
+  outline-color: #3a3a3a;
+}
+.variant-seg-time-edit {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: #1a1a22;
+  border: 1px solid var(--accent);
+  border-radius: 3px;
+  padding: 1px 4px;
+}
+.variant-seg-time-input {
+  background: transparent;
+  border: none;
+  outline: none;
+  color: var(--text1);
+  font: inherit;
+  width: 84px;
+  font-variant-numeric: tabular-nums;
+}
+.variant-seg-nudge { display: inline-flex; gap: 2px; }
+.variant-seg-nudge button {
+  font-size: 10px;
+  padding: 0 4px;
+  border: 1px solid #3a3a3a;
+  background: #22222a;
+  color: var(--text2);
+  border-radius: 2px;
+  cursor: pointer;
+  font-variant-numeric: tabular-nums;
+  line-height: 16px;
+}
+.variant-seg-nudge button:hover {
+  background: #2d2d38;
+  border-color: var(--accent);
+  color: var(--text1);
+}
+.variant-seg-del {
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  font-size: 12px;
+  line-height: 1;
+  background: transparent;
+  border: 1px solid #3a3a3a;
+  border-radius: 3px;
+  color: var(--text2);
+  cursor: pointer;
+}
+.variant-seg-del:hover:not(:disabled) {
+  background: rgba(192, 57, 43, 0.2);
+  border-color: rgba(231, 76, 60, 0.8);
+  color: #e74c3c;
+}
+.variant-seg-del:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+/* Drag-handle + drag states for row reorder. The whole row is draggable;
+   the grip is a visual cue. cursor:grab on the row hints that the row
+   itself is the drag target. */
+.variant-seg-row.editable { cursor: grab; }
+.variant-seg-row.editable:active { cursor: grabbing; }
+.variant-seg-row.drag-src { opacity: 0.45; }
+.variant-seg-row.drag-hover {
+  background: rgba(14, 122, 254, 0.12);
+  border-color: var(--accent);
+}
+.variant-seg-grip {
+  font-family: ui-monospace, monospace;
+  color: var(--text3);
+  font-size: 13px;
+  padding: 0 4px;
+  letter-spacing: -1px;
+  user-select: none;
+  line-height: 1;
+  transform: scaleY(1.3);
+}
+.variant-seg-row.editable:hover .variant-seg-grip { color: var(--text1); }
+.variant-seg-reason {
+  font-size: 11px;
+  color: var(--text2);
+  padding: 3px 6px;
+  border-radius: 3px;
+  cursor: text;
+  min-height: 20px;
+  line-height: 1.4;
+}
+.variant-seg-reason:hover { background: rgba(255, 255, 255, 0.03); }
+.variant-seg-reason.empty { color: var(--text3); font-style: italic; }
+.variant-seg-reason-input {
+  width: 100%;
+  min-height: 44px;
+  padding: 4px 6px;
+  background: #1a1a22;
+  color: var(--text1);
+  border: 1px solid var(--accent);
+  border-radius: 3px;
+  font: inherit;
+  font-size: 11px;
+  resize: vertical;
+}
+.variant-seg-err {
+  padding: 6px 8px;
+  margin-bottom: 6px;
+  background: rgba(192, 57, 43, 0.13);
+  border: 1px solid rgba(192, 57, 43, 0.35);
+  color: #ea8a82;
+  font-size: 11px;
+  border-radius: 3px;
 }
 
 /* ---------- Highlight progress bar ---------- */

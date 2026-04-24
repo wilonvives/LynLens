@@ -51,6 +51,14 @@ export {
   type HighlightVariant,
 } from './highlight-parser';
 export {
+  fingerprintTranscript,
+  getVariantStatus,
+  hashCutRanges,
+  isVariantPlayable,
+  variantStatusLabel,
+  type VariantStatus,
+} from './variant-status';
+export {
   PLATFORM_LABELS,
   PLATFORM_RULES,
   type SocialPlatform,

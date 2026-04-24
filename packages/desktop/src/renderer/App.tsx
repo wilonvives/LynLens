@@ -8,7 +8,6 @@ import {
 } from './core-browser';
 import { Timeline } from './Timeline';
 import { ExportDialog } from './ExportDialog';
-import { ChatPanel } from './ChatPanel';
 import { SubtitlePanel } from './SubtitlePanel';
 import { OrientationDialog } from './OrientationDialog';
 import { QuickMarkDialog } from './QuickMarkDialog';
@@ -46,7 +45,6 @@ export function App() {
   const [isPlaying, setIsPlaying] = useState(false);
   const [showExport, setShowExport] = useState(false);
   const [segFilter, setSegFilter] = useState<SegmentFilter>('all');
-  const [chatOpen, setChatOpen] = useState(false);
   const [sidebarTab, setSidebarTab] = useState<'segments' | 'subtitles'>('segments');
   const [showOrientDialog, setShowOrientDialog] = useState(false);
   const [showQuickMarkDialog, setShowQuickMarkDialog] = useState(false);
@@ -68,7 +66,6 @@ export function App() {
 
   // Persisted panel sizes so the user's preferred layout survives restarts.
   const [sidebarWidth, setSidebarWidth] = usePersistedSize('lynlens.sidebarWidth', 340);
-  const [chatWidth, setChatWidth] = usePersistedSize('lynlens.chatWidth', 380);
   const [timelineHeight, setTimelineHeight] = usePersistedSize('lynlens.timelineHeight', 210);
 
   // Track a "brush paint" state: while holding D, paint marks as playhead moves.
@@ -107,28 +104,18 @@ export function App() {
    *
    * Going highlight → precision: variants reference source-time ranges
    * that are only meaningful relative to the current cutRanges. If the
-   * user ripples again, those variants desync. Rather than trying to
-   * migrate them, we clear them on switch-back and warn the user so they
-   * can export first if they want to keep any.
+   * user ripples again, variant source-times don't line up with the new
+   * effective timeline. With variant persistence (method C), we no longer
+   * clear on switch — broken variants surface via the per-card status
+   * banner, unaffected ones stay usable, and pinned ones are safe. So
+   * this is just a no-op tab flip now; no prompt, no clear.
    */
   const switchMode = useCallback(
     async (next: WorkMode) => {
       if (next === workMode) return;
-      if (next === 'precision' && store.projectId) {
-        const pid = store.projectId;
-        const currentVariants = await window.lynlens.getHighlights(pid);
-        if (currentVariants.length > 0) {
-          const ok = confirm(
-            `返回粗剪会清空当前 ${currentVariants.length} 个高光变体。` +
-              '建议先导出你想保留的变体。继续?'
-          );
-          if (!ok) return;
-          await window.lynlens.clearHighlights(pid);
-        }
-      }
       setWorkMode(next);
     },
-    [workMode, store.projectId]
+    [workMode]
   );
 
   const rotatePreview = useCallback(() => {
@@ -853,6 +840,15 @@ export function App() {
         >
           文案
         </button>
+        <div className="work-mode-spacer" />
+        <button
+          className="work-mode-agent"
+          disabled={!store.projectId}
+          onClick={() => void window.lynlens.openAgentWindow()}
+          title="打开 AI 助手(独立窗口,可拖到别的屏幕)"
+        >
+          AGENT
+        </button>
       </div>
 
       {workMode === 'highlight' ? (
@@ -896,14 +892,6 @@ export function App() {
           </button>
         </div>
         <div style={{ flex: 1 }} />
-        <button
-          className={`ai ${chatOpen ? 'active' : ''}`}
-          disabled={!store.projectId}
-          onClick={() => setChatOpen((v) => !v)}
-          title="打开/关闭内置 Claude 助手(用你已登录的 Claude Code 订阅)"
-        >
-          Claude
-        </button>
         <button
           className="ai"
           disabled={!store.projectId || store.aiStatus === 'transcribing' || diarizing}
@@ -1051,17 +1039,8 @@ export function App() {
           )}
         </div>
 
-        {chatOpen && (
-          <Resizer
-            direction="horizontal"
-            value={chatWidth}
-            onChange={setChatWidth}
-            min={280}
-            max={720}
-            invert
-          />
-        )}
-        <ChatPanel open={chatOpen} onClose={() => setChatOpen(false)} width={chatWidth} />
+        {/* Chat now lives in a standalone BrowserWindow — opened by the
+            AGENT button in the tab bar. See AgentWindowShell.tsx. */}
       </div>
 
       <div className="toolbar">

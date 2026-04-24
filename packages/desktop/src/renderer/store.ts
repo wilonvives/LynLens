@@ -77,8 +77,12 @@ export const useStore = create<State>((set, get) => ({
       diarizationEngine: null,
       transcribeProgress: 0,
     });
+    // Let main know which project is active so the Agent popup (if open)
+    // can re-target its chat. Fire-and-forget; failure is non-fatal.
+    void window.lynlens.agentSetActiveProjectId?.(p.projectId);
   },
   clearProject() {
+    void window.lynlens.agentSetActiveProjectId?.(null);
     set({
       projectId: null,
       videoPath: null,

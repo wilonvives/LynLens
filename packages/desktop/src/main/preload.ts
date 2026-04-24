@@ -31,6 +31,18 @@ const api: IpcApi = {
   generateHighlights: (pid, opts) => ipcRenderer.invoke('generate-highlights', pid, opts),
   getHighlights: (pid) => ipcRenderer.invoke('get-highlights', pid),
   clearHighlights: (pid) => ipcRenderer.invoke('clear-highlights', pid),
+  setHighlightPinned: (pid, vid, pinned) =>
+    ipcRenderer.invoke('set-highlight-pinned', pid, vid, pinned),
+  deleteHighlightVariant: (pid, vid) =>
+    ipcRenderer.invoke('delete-highlight-variant', pid, vid),
+  updateHighlightVariantSegment: (pid, vid, idx, s, e, reason) =>
+    ipcRenderer.invoke('update-highlight-variant-segment', pid, vid, idx, s, e, reason),
+  reorderHighlightVariantSegment: (pid, vid, from, to) =>
+    ipcRenderer.invoke('reorder-highlight-variant-segment', pid, vid, from, to),
+  addHighlightVariantSegment: (pid, vid, hint) =>
+    ipcRenderer.invoke('add-highlight-variant-segment', pid, vid, hint),
+  deleteHighlightVariantSegment: (pid, vid, idx) =>
+    ipcRenderer.invoke('delete-highlight-variant-segment', pid, vid, idx),
   exportHighlight: (pid, vid, outputPath) =>
     ipcRenderer.invoke('export-highlight', pid, vid, outputPath),
   generateSocialCopies: (pid, opts) => ipcRenderer.invoke('generate-social-copies', pid, opts),
@@ -81,6 +93,16 @@ const api: IpcApi = {
   agentCancel: (pid) => ipcRenderer.invoke('agent-cancel', pid),
   agentReset: (pid) => ipcRenderer.invoke('agent-reset', pid),
   agentIdentity: () => ipcRenderer.invoke('agent-identity'),
+  agentGetProvider: () => ipcRenderer.invoke('agent-get-provider'),
+  agentSetProvider: (provider) => ipcRenderer.invoke('agent-set-provider', provider),
+  openAgentWindow: () => ipcRenderer.invoke('open-agent-window'),
+  agentGetActiveProjectId: () => ipcRenderer.invoke('agent-get-active-project-id'),
+  agentSetActiveProjectId: (pid) => ipcRenderer.invoke('agent-set-active-project-id', pid),
+  onActiveProjectChanged: (cb) => {
+    const listener = (_ev: Electron.IpcRendererEvent, pid: string | null) => cb(pid);
+    ipcRenderer.on('active-project-changed', listener);
+    return () => ipcRenderer.removeListener('active-project-changed', listener);
+  },
   onAgentEvent: (cb) => {
     const listener = (_ev: Electron.IpcRendererEvent, event: unknown) => cb(event as never);
     ipcRenderer.on('agent-event', listener);
