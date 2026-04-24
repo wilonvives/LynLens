@@ -27,7 +27,7 @@ export class EventBus {
         try {
           h(event);
         } catch (err) {
-          // eslint-disable-next-line no-console
+           
           console.error(`[EventBus] handler for "${event.type}" threw:`, err);
         }
       }
@@ -36,7 +36,7 @@ export class EventBus {
       try {
         h(event);
       } catch (err) {
-        // eslint-disable-next-line no-console
+         
         console.error('[EventBus] wildcard handler threw:', err);
       }
     }

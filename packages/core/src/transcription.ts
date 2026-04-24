@@ -322,7 +322,7 @@ export function detectFillers(
   for (const seg of transcript.segments) {
     const cleaned = seg.text
       .toLowerCase()
-      .replace(/[\s，,。.!?！？:：、"'\-]/g, '');
+      .replace(/[\s，,。.!?！？:：、"'-]/g, '');
     if (cleaned.length === 0) continue;
     // Full-segment exact-match check first
     if (fillers.has(cleaned)) {
@@ -383,7 +383,7 @@ export function detectRetakes(
 }
 
 function normalizeText(s: string): string {
-  return s.toLowerCase().replace(/[\s，,。.!?！？:：、"'\-]/g, '');
+  return s.toLowerCase().replace(/[\s，,。.!?！？:：、"'-]/g, '');
 }
 
 function jaccardSimilarity(a: string, b: string): number {

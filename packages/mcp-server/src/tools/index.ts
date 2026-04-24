@@ -22,7 +22,7 @@ async function autosave(engine: LynLensEngine, projectId: string): Promise<void>
     if (!project.projectPath) return;
     await engine.projects.saveProject(projectId, project.projectPath);
   } catch (err) {
-    // eslint-disable-next-line no-console
+     
     console.error('[lynlens-mcp] autosave failed:', err);
   }
 }

@@ -1,0 +1,7 @@
+node_modules
+dist
+build
+release
+packages/desktop/resources
+pnpm-lock.yaml
+*.md

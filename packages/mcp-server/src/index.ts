@@ -59,10 +59,10 @@ async function main() {
         ffmpegPaths: engine.ffmpegPaths,
       })
     );
-    // eslint-disable-next-line no-console
+     
     console.error('[lynlens-mcp] whisper.cpp ready at', whisper.binaryPath);
   } else {
-    // eslint-disable-next-line no-console
+     
     console.error('[lynlens-mcp] whisper not found; transcribe tool will be a no-op');
   }
 
@@ -75,12 +75,12 @@ async function main() {
 
   const transport = new StdioServerTransport();
   await server.connect(transport);
-  // eslint-disable-next-line no-console
+   
   console.error('[lynlens-mcp] ready on stdio');
 }
 
 main().catch((err) => {
-  // eslint-disable-next-line no-console
+   
   console.error('[lynlens-mcp] fatal:', err);
   process.exit(1);
 });

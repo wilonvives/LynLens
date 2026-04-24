@@ -933,7 +933,7 @@ export function App() {
                 src={store.videoUrl}
                 onPlay={() => setIsPlaying(true)}
                 onPause={() => setIsPlaying(false)}
-                // eslint-disable-next-line no-console
+                 
                 onError={(e) => console.error('[video] error', (e.target as HTMLVideoElement).error)}
                 controls={false}
                 style={(() => {

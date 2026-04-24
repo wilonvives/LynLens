@@ -115,6 +115,7 @@ function resolveBundledFfmpegPaths(): FfmpegPaths | undefined {
   const ffmpegBin = path.join(dir, `ffmpeg${exe}`);
   const ffprobeBin = path.join(dir, `ffprobe${exe}`);
   try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
     const fs = require('node:fs') as typeof import('node:fs');
     if (fs.existsSync(ffmpegBin)) {
       return { ffmpeg: ffmpegBin, ffprobe: fs.existsSync(ffprobeBin) ? ffprobeBin : 'ffprobe' };
@@ -137,6 +138,7 @@ function resolveBundledWhisperPaths(): { binaryPath: string; modelPath: string }
   const dir = app.isPackaged
     ? path.join(process.resourcesPath, 'whisper')
     : path.join(__dirname, '..', '..', '..', 'resources', 'whisper', platformDir);
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
   const fs = require('node:fs') as typeof import('node:fs');
   const binaryPath = path.join(dir, `whisper-cli${exe}`);
   const modelPath = path.join(dir, 'ggml-base.bin');
@@ -175,10 +177,10 @@ const engine = new LynLensEngine({ ffmpegPaths: resolveBundledFfmpegPaths() });
         ffmpegPaths: engine.ffmpegPaths,
       })
     );
-    // eslint-disable-next-line no-console
+     
     console.log('[lynlens] whisper.cpp local transcription ready:', whisper.binaryPath);
   } else {
-    // eslint-disable-next-line no-console
+     
     console.log('[lynlens] whisper binaries not found; transcription disabled');
   }
 }
@@ -212,7 +214,7 @@ function scheduleAutosave(projectId: string): void {
       saveDebouncers.delete(projectId);
       markInternalSave(projectId);
       void engine.projects.saveProject(projectId, state.qcpPath).catch((err) => {
-        // eslint-disable-next-line no-console
+         
         console.error('[lynlens] autosave failed:', err);
       });
     }, 300)
@@ -260,7 +262,7 @@ async function attachProjectWatcher(projectId: string, explicitQcpPath?: string)
             // Core emits 'project.reloaded' via eventBus, which we forward
             // to renderer through the existing onAny subscription.
           } catch (err) {
-            // eslint-disable-next-line no-console
+             
             console.error('[lynlens] reloadFromDisk failed:', err);
           }
         })();
@@ -443,7 +445,7 @@ app.whenReady().then(() => {
         },
       });
     } catch (err) {
-      // eslint-disable-next-line no-console
+       
       console.error('[lynlens-media] error:', err, request.url);
       return new Response(String(err), { status: 500 });
     }
@@ -461,10 +463,10 @@ app.whenReady().then(() => {
         url: mcpHttpHandle.url,
         bearerToken: mcpHttpHandle.bearerToken,
       });
-      // eslint-disable-next-line no-console
+       
       console.log('[lynlens] MCP HTTP server ready at', mcpHttpHandle.url);
     } catch (err) {
-      // eslint-disable-next-line no-console
+       
       console.error('[lynlens] failed to start MCP HTTP server:', err);
     }
     await loadSavedProvider();

@@ -22,12 +22,12 @@ export function setupAutoUpdater(mainWindow: BrowserWindow | null): void {
   autoUpdater.autoInstallOnAppQuit = true;
 
   autoUpdater.on('error', (err) => {
-    // eslint-disable-next-line no-console
+     
     console.error('[auto-updater]', err);
   });
 
   autoUpdater.on('update-available', (info) => {
-    // eslint-disable-next-line no-console
+     
     console.log('[auto-updater] update available:', info.version);
   });
 

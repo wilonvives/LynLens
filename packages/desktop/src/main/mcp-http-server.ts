@@ -43,7 +43,7 @@ let streamableHttpSdkPromise: Promise<StreamableHttpSdk> | null = null;
 
 function loadMcpSdk(): Promise<McpSdk> {
   if (!mcpSdkPromise) {
-    // eslint-disable-next-line @typescript-eslint/no-implied-eval
+     
     mcpSdkPromise = (new Function('m', 'return import(m)') as (m: string) => Promise<McpSdk>)(
       '@modelcontextprotocol/sdk/server/mcp.js'
     );
@@ -52,7 +52,7 @@ function loadMcpSdk(): Promise<McpSdk> {
 }
 function loadStreamableHttpSdk(): Promise<StreamableHttpSdk> {
   if (!streamableHttpSdkPromise) {
-    // eslint-disable-next-line @typescript-eslint/no-implied-eval
+     
     streamableHttpSdkPromise = (new Function('m', 'return import(m)') as (
       m: string
     ) => Promise<StreamableHttpSdk>)(
@@ -119,7 +119,7 @@ export async function startMcpHttpServer(engine: LynLensEngine): Promise<McpHttp
       }
       const auth = req.headers['authorization'];
       if (typeof auth !== 'string' || auth !== `Bearer ${bearerToken}`) {
-        // eslint-disable-next-line no-console
+         
         console.warn('[mcp-http] unauthorized request from', req.socket.remoteAddress);
         res.writeHead(401).end('unauthorized');
         return;
@@ -150,7 +150,7 @@ export async function startMcpHttpServer(engine: LynLensEngine): Promise<McpHttp
       await perSessionServer.connect(transport);
       await transport.handleRequest(req, res, body);
     } catch (err) {
-      // eslint-disable-next-line no-console
+       
       console.error('[mcp-http-server] request failed:', err);
       if (!res.headersSent) {
         res.writeHead(500).end(String(err));

@@ -56,7 +56,7 @@ function extractJsonObject(raw: string): unknown {
       return JSON.parse(transform(candidate));
     } catch (err) {
       lastErr = err as Error;
-      // eslint-disable-next-line no-console
+       
       console.warn(`[copywriter-parser] JSON parse (${label}) failed:`, err);
     }
   }

@@ -27,7 +27,7 @@ type AgentSdk = typeof import('@anthropic-ai/claude-agent-sdk');
 let sdkPromise: Promise<AgentSdk> | null = null;
 function loadSdk(): Promise<AgentSdk> {
   if (!sdkPromise) {
-    // eslint-disable-next-line @typescript-eslint/no-implied-eval
+     
     sdkPromise = (new Function('m', 'return import(m)') as (m: string) => Promise<AgentSdk>)(
       '@anthropic-ai/claude-agent-sdk'
     );
@@ -162,7 +162,7 @@ export async function runAgent(
     },
     abortController: signal ? asAbortController(signal) : undefined,
     stderr: (data: string) => {
-      // eslint-disable-next-line no-console
+       
       console.error('[claude-code-stderr]', data);
     },
   };
@@ -303,7 +303,7 @@ export async function runHighlightGeneration(
     settingSources: [] as never[],
     abortController: opts.signal ? asAbortController(opts.signal) : undefined,
     stderr: (data: string) => {
-      // eslint-disable-next-line no-console
+       
       console.error('[highlight-gen-stderr]', data);
     },
   };

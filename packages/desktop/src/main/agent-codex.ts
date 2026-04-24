@@ -23,7 +23,7 @@ type ThreadEvent = import('@openai/codex-sdk').ThreadEvent;
 let codexSdkPromise: Promise<CodexSdk> | null = null;
 function loadCodexSdk(): Promise<CodexSdk> {
   if (!codexSdkPromise) {
-    // eslint-disable-next-line @typescript-eslint/no-implied-eval
+     
     codexSdkPromise = (new Function('m', 'return import(m)') as (m: string) => Promise<CodexSdk>)(
       '@openai/codex-sdk'
     );
