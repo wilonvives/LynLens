@@ -1,6 +1,6 @@
 {
   "name": "lynlens",
-  "version": "0.4.4",
+  "version": "0.4.5",
   "private": true,
   "license": "MIT",
   "description": "LynLens - AI-First talking-video quick-cut editor (Core Engine + MCP + UI + CLI)",

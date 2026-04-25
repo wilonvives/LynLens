@@ -18,8 +18,8 @@ files:
 # Tag like v0.1.1 → release page gets the .dmg / .exe automatically.
 publish:
   provider: github
-  owner: ""        # filled at release time (CI sets owner/repo from $GITHUB_REPOSITORY)
-  repo: ""
+  owner: wilonvives
+  repo: LynLens
 
 win:
   target:
@@ -43,9 +43,13 @@ nsis:
   createStartMenuShortcut: true
 
 mac:
+  # arm64-only for now. Apple Silicon shipped 2020; cross-compiling x64
+  # support would require x64 whisper / sherpa binaries we don't yet
+  # produce. Re-enable x64 (and add the matching bootstrap step in
+  # release.yml) when there's actual demand from Intel Mac users.
   target:
     - target: dmg
-      arch: [x64, arm64]
+      arch: [arm64]
   category: public.app-category.video
   hardenedRuntime: true
   gatekeeperAssess: false
@@ -56,7 +60,11 @@ mac:
   # If the env vars are missing, builds are unsigned (dev/local case).
   entitlements: build/entitlements.mac.plist
   entitlementsInherit: build/entitlements.mac.plist
-  notarize: true
+  # notarize is intentionally NOT set: electron-builder defaults to false
+  # when Apple credentials are missing. Setting `notarize: true` without
+  # creds makes it error early with cryptic "not a file" failures
+  # because it tries to invoke notarytool with empty args. Once we
+  # add Apple Developer creds to GH Secrets, change to `notarize: true`.
   extraResources:
     - from: resources/ffmpeg/mac-${arch}
       to: ffmpeg
