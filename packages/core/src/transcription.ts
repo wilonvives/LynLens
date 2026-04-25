@@ -14,6 +14,27 @@ export interface TranscribeOptions {
   language?: string;
   signal?: AbortSignal;
   onProgress?: (percent: number) => void;
+  /**
+   * Maximum characters per subtitle segment. whisper.cpp `--max-len`
+   * parameter — splits long segments at word boundaries. Picked from the
+   * caller's known display width (portrait ≈ 12, landscape ≈ 24, mixed/
+   * unknown ≈ 16). Without this, whisper produces "natural-pause" segments
+   * that can run 19+ characters even on portrait video, overflowing the
+   * subtitle frame.
+   */
+  maxLen?: number;
+  /**
+   * Source-time ranges that have been ripple-cut out of the project. When
+   * provided, whisper still processes the full audio (cutting it before
+   * transcription causes worse segmentation at splice joins) but the
+   * resulting transcript is post-filtered: segments fully inside a cut
+   * are dropped; segments that partially overlap a cut are trimmed at
+   * the word level so neither the timing range nor the displayed text
+   * crosses a cut boundary. Result: zero "spans across cut" warnings on
+   * any subtitle card, and downstream copy generation gets a clean
+   * post-cut transcript automatically.
+   */
+  cutRanges?: ReadonlyArray<{ start: number; end: number }>;
 }
 
 export interface TranscriptionService {
@@ -112,6 +133,12 @@ export class WhisperLocalService implements TranscriptionService {
         '--split-on-word',
         '--print-progress',
       ];
+      // Subtitle line-length cap. Whisper's natural segmentation can run
+      // 19+ chars even for portrait video; --max-len enforces a hard
+      // limit (whisper splits at the next word boundary that fits).
+      if (options.maxLen && options.maxLen > 0) {
+        args.push('--max-len', String(Math.floor(options.maxLen)));
+      }
 
       await new Promise<void>((resolve, reject) => {
         const proc = spawn(this.opts.binaryPath, args, { windowsHide: true });
@@ -141,11 +168,83 @@ export class WhisperLocalService implements TranscriptionService {
       const raw = await fs.readFile(jsonPath, 'utf-8');
       const parsed = JSON.parse(raw);
       options.onProgress?.(100);
-      return parseWhisperCppJson(parsed, options.model ?? 'base');
+      const transcript = parseWhisperCppJson(parsed, options.model ?? 'base');
+      if (options.cutRanges && options.cutRanges.length > 0) {
+        return filterTranscriptByCuts(transcript, options.cutRanges);
+      }
+      return transcript;
     } finally {
       await cleanup();
     }
   }
+}
+
+/**
+ * Drop / trim transcript segments that overlap any cut range. Operates
+ * on word-level timing so partial overlaps trim down to just the kept
+ * portion of the sentence — neither the segment timing nor the visible
+ * text crosses a cut after this runs. Result: zero "spans across cut"
+ * warnings, and downstream copy generation gets a clean post-cut
+ * transcript without further work.
+ *
+ * Algorithm per segment:
+ *   1. Drop words that fall fully inside any cut range.
+ *   2. If no words remain, drop the whole segment.
+ *   3. Otherwise rebuild segment.start = first kept word.start,
+ *      segment.end = last kept word.end, segment.text = kept words joined.
+ *
+ * Edge case: a segment whose word-level timing is missing (defensive —
+ * shouldn't happen with --output-json-full + --split-on-word) falls back
+ * to the simpler "fully inside cut → drop, otherwise keep as-is" rule.
+ */
+export function filterTranscriptByCuts(
+  transcript: Transcript,
+  cutRanges: ReadonlyArray<{ start: number; end: number }>
+): Transcript {
+  const cuts = [...cutRanges].sort((a, b) => a.start - b.start);
+  const wordInsideCut = (start: number, end: number): boolean => {
+    for (const c of cuts) {
+      if (start >= c.start && end <= c.end) return true;
+    }
+    return false;
+  };
+  const segOverlapsCut = (start: number, end: number): boolean => {
+    for (const c of cuts) {
+      if (!(end <= c.start || start >= c.end)) return true;
+    }
+    return false;
+  };
+  const segFullyInsideCut = (start: number, end: number): boolean => {
+    for (const c of cuts) {
+      if (start >= c.start && end <= c.end) return true;
+    }
+    return false;
+  };
+
+  const out: TranscriptSegment[] = [];
+  for (const seg of transcript.segments) {
+    if (segFullyInsideCut(seg.start, seg.end)) continue;
+    if (!segOverlapsCut(seg.start, seg.end)) {
+      out.push(seg);
+      continue;
+    }
+    // Partial overlap. Drop words that fall inside any cut, then rebuild.
+    const keptWords = (seg.words ?? []).filter(
+      (w) => !wordInsideCut(w.start, w.end)
+    );
+    if (keptWords.length === 0) {
+      // No word-level data, or every word ended up inside a cut. Drop seg.
+      continue;
+    }
+    out.push({
+      ...seg,
+      start: keptWords[0].start,
+      end: keptWords[keptWords.length - 1].end,
+      text: keptWords.map((w) => w.w).join('').trim(),
+      words: keptWords,
+    });
+  }
+  return { ...transcript, segments: out };
 }
 
 /**

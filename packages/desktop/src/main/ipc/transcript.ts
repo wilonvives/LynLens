@@ -1,16 +1,44 @@
 /**
  * Transcript lifecycle: transcribe / edit text / edit time / suggestions /
- * warning fingerprints / find-replace.
+ * warning fingerprints / find-replace + SRT save.
  *
  * Speaker-related handlers live in `speakers.ts`, not here, because they
  * mutate `project.speakers` rather than `project.transcript`.
  */
 
-import { ipcMain } from 'electron';
+import { ipcMain, dialog } from 'electron';
+import path from 'node:path';
+import { promises as fsp } from 'node:fs';
 import type { IpcContext } from './_context';
 
 export function registerTranscriptIpc(ctx: IpcContext): void {
-  const { engine } = ctx;
+  const { engine, getMainWindow } = ctx;
+
+  /**
+   * Save SRT content to disk. Default destination is the source video's
+   * folder with the video's basename + .srt — that's where the user
+   * looks for "the subtitles that go with this video". The dialog still
+   * lets them rename or pick a different folder.
+   */
+  ipcMain.handle(
+    'save-srt',
+    async (_ev, projectId: string, content: string) => {
+      const project = engine.projects.get(projectId);
+      const dir = path.dirname(project.videoPath);
+      const base = path.basename(project.videoPath, path.extname(project.videoPath));
+      const defaultPath = path.join(dir, `${base}.srt`);
+      const result = await dialog.showSaveDialog(getMainWindow()!, {
+        defaultPath,
+        filters: [{ name: 'SubRip Subtitle', extensions: ['srt'] }],
+      });
+      if (result.canceled || !result.filePath) return null;
+      // UTF-8 BOM keeps Windows tools (Notepad, some Chinese players)
+      // from misinterpreting the encoding. Byte-identical to what the
+      // browser-side blob download wrote before.
+      await fsp.writeFile(result.filePath, '\uFEFF' + content, 'utf-8');
+      return result.filePath;
+    }
+  );
 
   ipcMain.handle(
     'update-transcript-segment',
@@ -80,6 +108,20 @@ export function registerTranscriptIpc(ctx: IpcContext): void {
       opts: { engine?: 'whisper-local' | 'openai-api'; language?: string }
     ) => {
       const project = engine.projects.get(projectId);
+      // Cap subtitle length per orientation. Without this whisper produces
+      // "natural-pause" segments that can run 19+ chars even for portrait,
+      // overflowing the on-screen subtitle frame.
+      const maxLen =
+        project.userOrientation === 'portrait'
+          ? 12
+          : project.userOrientation === 'landscape'
+            ? 24
+            : 16;
+      // Forward cut ranges so the post-process step drops/trims any
+      // transcript segment that overlaps a ripple cut. Without this every
+      // cut produces a "spans across cut" warning on the subtitle card and
+      // downstream copy generation includes already-cut text.
+      const cutRanges = project.cutRanges;
       engine.eventBus.emit({
         type: 'transcription.started',
         projectId,
@@ -89,6 +131,8 @@ export function registerTranscriptIpc(ctx: IpcContext): void {
         const transcript = await engine.transcription.transcribe(project.videoPath, {
           engine: opts.engine,
           language: opts.language,
+          maxLen,
+          cutRanges,
           onProgress: (percent) =>
             engine.eventBus.emit({ type: 'transcription.progress', projectId, percent }),
         });

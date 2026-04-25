@@ -380,22 +380,21 @@ export function SubtitlePanel({
    * correctly — without it these players guess GBK and show mojibake.
    * macOS / Linux players strip or ignore the BOM, so it's safe everywhere.
    */
-  function downloadSrt(): void {
-    if (!transcript) return;
+  async function downloadSrt(): Promise<void> {
+    if (!transcript || !projectId) return;
     const body = buildSrt();
     if (!body) {
       alert('没有可导出的字幕段');
       return;
     }
-    const blob = new Blob(['\uFEFF', body], { type: 'text/plain;charset=utf-8' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `subtitles-${Date.now()}.srt`;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    setTimeout(() => URL.revokeObjectURL(url), 1000);
+    // Save through the main process so the default destination is the
+    // source video's folder (the user's expected location), not the
+    // browser's generic "Downloads". The main side adds the UTF-8 BOM.
+    try {
+      await window.lynlens.saveSrt(projectId, body);
+    } catch (err) {
+      alert(`保存失败: ${(err as Error).message}`);
+    }
   }
 
   /**
@@ -804,8 +803,11 @@ export function SubtitlePanel({
                 if (draft[seg.id] !== undefined) void commit(seg.id, draft[seg.id]);
               }}
               onKeyDown={(e) => {
-                if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
-                  if (draft[seg.id] !== undefined) void commit(seg.id, draft[seg.id]);
+                // Enter 确认（提交编辑），Shift+Enter 换行。匹配大多数
+                // 聊天/编辑器的直觉，比之前 Cmd+Enter 才能确认更自然。
+                if (e.key === 'Enter' && !e.shiftKey) {
+                  e.preventDefault();
+                  (e.target as HTMLTextAreaElement).blur();
                 }
               }}
               rows={Math.max(1, Math.ceil(currentText.length / limits.zh))}

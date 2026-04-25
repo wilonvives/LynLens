@@ -82,6 +82,7 @@ const api: IpcApi = {
     ipcRenderer.invoke('accept-transcript-suggestion', pid, sid),
   clearTranscriptSuggestion: (pid, sid) =>
     ipcRenderer.invoke('clear-transcript-suggestion', pid, sid),
+  saveSrt: (pid, content) => ipcRenderer.invoke('save-srt', pid, content),
   setUserOrientation: (pid, o) => ipcRenderer.invoke('set-user-orientation', pid, o),
   setPreviewRotation: (pid, rotation) => ipcRenderer.invoke('set-preview-rotation', pid, rotation),
   onEngineEvent: (cb) => {

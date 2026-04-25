@@ -31,6 +31,7 @@ export {
   detectSilences,
   detectFillers,
   detectRetakes,
+  filterTranscriptByCuts,
   toWav16kMono,
   DEFAULT_FILLERS,
   type TranscriptionService,

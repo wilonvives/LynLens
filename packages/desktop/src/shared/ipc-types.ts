@@ -292,6 +292,12 @@ export interface IpcApi {
   replaceInTranscript(projectId: string, find: string, replace: string): Promise<number>;
   acceptTranscriptSuggestion(projectId: string, segmentId: string): Promise<boolean>;
   clearTranscriptSuggestion(projectId: string, segmentId: string): Promise<boolean>;
+  /**
+   * Save SRT content to disk via the native save-dialog. Defaults the
+   * destination to the source video's folder + basename + .srt. Returns
+   * the chosen absolute path on success, null when the user cancels.
+   */
+  saveSrt(projectId: string, content: string): Promise<string | null>;
   setUserOrientation(projectId: string, o: 'landscape' | 'portrait' | null): Promise<void>;
   /** Persist the preview rotation in the .qcp so it survives restart. */
   setPreviewRotation(projectId: string, rotation: 0 | 90 | 180 | 270): Promise<void>;
