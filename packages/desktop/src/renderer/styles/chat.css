@@ -167,8 +167,39 @@
   0%, 100% { opacity: 0.3; }
   50% { opacity: 1; }
 }
-.chat-input-wrap {
+/* Quick-reply preset chips above the input. Click fills the textarea but
+   does not auto-send, so the user can amend the question before sending. */
+.chat-presets {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 8px 10px 0;
+  background: #252526;
   border-top: 1px solid var(--border);
+}
+.chat-preset {
+  background: #1f1f22;
+  color: var(--text2);
+  border: 1px solid #3a3a3d;
+  border-radius: 999px;
+  padding: 4px 10px;
+  font-size: 11.5px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.12s, color 0.12s, border-color 0.12s;
+}
+.chat-preset:hover:not(:disabled) {
+  background: #2a2a2d;
+  color: var(--text);
+  border-color: #555;
+}
+.chat-preset:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+.chat-input-wrap {
+  /* Top border lives on .chat-presets above; if the presets row is ever
+     hidden, restore the border here. */
   padding: 10px;
   display: flex;
   gap: 8px;

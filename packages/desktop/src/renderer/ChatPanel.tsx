@@ -10,6 +10,26 @@ interface ChatMessage {
   streaming?: boolean;
 }
 
+/**
+ * Quick-reply preset chips above the input. Click fills the textarea (does
+ * NOT auto-send) — user can edit / amend before pressing Enter. Keep this
+ * list short; > 4 chips wraps awkwardly on the standard chat-panel width.
+ *
+ * Add new presets only when there's evidence of a recurring user intent
+ * that's awkward to type. Random "agent could do this" ideas don't earn
+ * a slot.
+ */
+const CHAT_PRESETS: ReadonlyArray<{ label: string; text: string }> = [
+  {
+    label: '看看能剪几个主题',
+    text: '这段素材能剪几个主题方向？每条多少素材、建议多长。',
+  },
+  {
+    label: '检查字幕错别字',
+    text: '查字幕稿里的错别字、同音字、人名识别错，列出来等我确认再改。',
+  },
+];
+
 // Map raw MCP tool names to human-readable Chinese labels for the chat UI.
 // Keeps the transcript readable without `mcp__lynlens__` noise.
 const TOOL_LABELS: Record<string, string> = {
@@ -410,6 +430,19 @@ export function ChatPanel({ open, onClose, width, detached, projectIdOverride }:
               </div>
             )}
           </div>
+        ))}
+      </div>
+      <div className="chat-presets">
+        {CHAT_PRESETS.map((p) => (
+          <button
+            key={p.label}
+            className="chat-preset"
+            onClick={() => setInput(p.text)}
+            disabled={!projectId}
+            title={p.text}
+          >
+            {p.label}
+          </button>
         ))}
       </div>
       <div className="chat-input-wrap">
