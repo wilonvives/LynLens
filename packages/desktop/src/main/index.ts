@@ -1,41 +1,23 @@
-import { app, BrowserWindow, dialog, ipcMain, protocol } from 'electron';
+import { app, BrowserWindow, protocol } from 'electron';
 import path from 'node:path';
 import { createReadStream, statSync, watch as fsWatch, type FSWatcher } from 'node:fs';
 import { promises as fsp } from 'node:fs';
 import {
   LynLensEngine,
-  MockDiarizationEngine,
-  SherpaOnnxDiarizationEngine,
   WhisperLocalService,
-  buildHighlightSystemPrompt,
-  buildHighlightUserPrompt,
-  detectFillers,
-  detectRetakes,
-  detectSilences,
-  extractWaveform,
-  parseHighlightResponse,
-  resolveSherpaPaths,
-  type DiarizationEngine,
   type FfmpegPaths,
-  type HighlightStyle,
-  type SherpaPaths,
-  type SocialPlatform,
 } from '@lynlens/core';
-import type { AddSegmentRequest, ExportRequest } from '../shared/ipc-types';
-import { type AgentEvent } from './agent';
 import {
-  runAgentViaCurrentProvider,
-  runOneShotViaCurrentProvider,
-  runCopywriterViaCurrentProvider,
-  resetAgentSession,
   setCodexContext,
-  setProvider,
-  getProvider,
   loadSavedProvider,
-  type AgentProvider,
 } from './agent-dispatcher';
 import { startMcpHttpServer, type McpHttpServer } from './mcp-http-server';
 import { setupAutoUpdater } from './auto-updater';
+import { registerAllIpc, type IpcContext } from './ipc';
+
+// ============================================================================
+// Custom protocol + dev/prod boot decision
+// ============================================================================
 
 function toWebStream(nodeStream: NodeJS.ReadableStream): ReadableStream<Uint8Array> {
   return new ReadableStream<Uint8Array>({
@@ -95,6 +77,10 @@ if (isDev) {
   const devUserData = path.join(app.getPath('temp'), 'LynLens-dev');
   app.setPath('userData', devUserData);
 }
+
+// ============================================================================
+// Bundled binary lookup (ffmpeg / whisper / sherpa-onnx)
+// ============================================================================
 
 function resolveBundledFfmpegPaths(): FfmpegPaths | undefined {
   const exe = process.platform === 'win32' ? '.exe' : '';
@@ -165,6 +151,10 @@ function resolveBundledDiarizationBase(): string | null {
     : path.join(__dirname, '..', '..', '..', 'resources', 'diarization', platformDir);
 }
 
+// ============================================================================
+// Engine instance + bundled service wiring
+// ============================================================================
+
 const engine = new LynLensEngine({ ffmpegPaths: resolveBundledFfmpegPaths() });
 // Swap in the bundled WhisperLocalService when binaries are available.
 {
@@ -177,14 +167,24 @@ const engine = new LynLensEngine({ ffmpegPaths: resolveBundledFfmpegPaths() });
         ffmpegPaths: engine.ffmpegPaths,
       })
     );
-     
     console.log('[lynlens] whisper.cpp local transcription ready:', whisper.binaryPath);
   } else {
-     
     console.log('[lynlens] whisper binaries not found; transcription disabled');
   }
 }
+
+// ============================================================================
+// Long-running operation registries (drained on quit)
+// ============================================================================
+
 const activeExports = new Map<string, AbortController>();
+const activeAgents = new Map<string, AbortController>();
+/** Persist session_id per project so chat turns share context ("memory"). */
+const agentSessionByProject = new Map<string, string>();
+
+// ============================================================================
+// Project file watching + autosave
+// ============================================================================
 
 /**
  * File watcher state, keyed by projectId. We watch the .qcp file so that when
@@ -214,7 +214,6 @@ function scheduleAutosave(projectId: string): void {
       saveDebouncers.delete(projectId);
       markInternalSave(projectId);
       void engine.projects.saveProject(projectId, state.qcpPath).catch((err) => {
-         
         console.error('[lynlens] autosave failed:', err);
       });
     }, 300)
@@ -262,7 +261,6 @@ async function attachProjectWatcher(projectId: string, explicitQcpPath?: string)
             // Core emits 'project.reloaded' via eventBus, which we forward
             // to renderer through the existing onAny subscription.
           } catch (err) {
-             
             console.error('[lynlens] reloadFromDisk failed:', err);
           }
         })();
@@ -303,7 +301,29 @@ engine.eventBus.onAny((ev) => {
   }
 });
 
+// ============================================================================
+// Window lifecycle
+// ============================================================================
+
 let mainWindow: BrowserWindow | null = null;
+/**
+ * Agent popup window — created on demand, destroyed on close. We keep a
+ * module-level reference so a second "open agent" click focuses the
+ * existing window instead of spawning a duplicate.
+ */
+let agentWindow: BrowserWindow | null = null;
+/**
+ * Editor's currently-open project id (null = no project). The main
+ * window tells us via `agent-set-active-project-id`; we pass it on to
+ * the popup so the chat sticks to the same project.
+ */
+let activeProjectId: string | null = null;
+
+function broadcast(channel: string, payload: unknown): void {
+  for (const win of BrowserWindow.getAllWindows()) {
+    if (!win.isDestroyed()) win.webContents.send(channel, payload);
+  }
+}
 
 function createWindow() {
   mainWindow = new BrowserWindow({
@@ -339,25 +359,6 @@ function createWindow() {
   });
 }
 
-/**
- * Agent popup window — created on demand, destroyed on close. We keep a
- * module-level reference so a second "open agent" click focuses the
- * existing window instead of spawning a duplicate.
- */
-let agentWindow: BrowserWindow | null = null;
-/**
- * Editor's currently-open project id (null = no project). The main
- * window tells us via `agent-set-active-project-id`; we pass it on to
- * the popup so the chat sticks to the same project.
- */
-let activeProjectId: string | null = null;
-
-function broadcast(channel: string, payload: unknown): void {
-  for (const win of BrowserWindow.getAllWindows()) {
-    if (!win.isDestroyed()) win.webContents.send(channel, payload);
-  }
-}
-
 function createAgentWindow(): void {
   if (agentWindow && !agentWindow.isDestroyed()) {
     agentWindow.show();
@@ -391,6 +392,10 @@ function createAgentWindow(): void {
     agentWindow = null;
   });
 }
+
+// ============================================================================
+// Custom protocol handler (lynlens-media:///f/<encoded-abs-path>)
+// ============================================================================
 
 app.whenReady().then(() => {
   // Use the modern protocol.handle API (Electron 25+). registerFileProtocol is
@@ -445,7 +450,6 @@ app.whenReady().then(() => {
         },
       });
     } catch (err) {
-       
       console.error('[lynlens-media] error:', err, request.url);
       return new Response(String(err), { status: 500 });
     }
@@ -463,10 +467,8 @@ app.whenReady().then(() => {
         url: mcpHttpHandle.url,
         bearerToken: mcpHttpHandle.bearerToken,
       });
-       
       console.log('[lynlens] MCP HTTP server ready at', mcpHttpHandle.url);
     } catch (err) {
-       
       console.error('[lynlens] failed to start MCP HTTP server:', err);
     }
     await loadSavedProvider();
@@ -498,1126 +500,25 @@ app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit();
 });
 
-// ---------- IPC handlers ----------
-
-function toMediaUrl(absPath: string): string {
-  // Fully percent-encode the path (including : / \) so Chromium treats the
-  // whole thing as opaque path and doesn't try to parse "C:" as host:port.
-  return `lynlens-media:///f/${encodeURIComponent(absPath)}`;
-}
-
-ipcMain.handle('open-video-dialog', async () => {
-  const result = await dialog.showOpenDialog(mainWindow!, {
-    properties: ['openFile'],
-    filters: [
-      { name: 'Video', extensions: ['mp4', 'mov', 'mkv', 'webm', 'avi', 'flv'] },
-      { name: 'All Files', extensions: ['*'] },
-    ],
-  });
-  if (result.canceled || result.filePaths.length === 0) return null;
-  const videoPath = result.filePaths[0];
-  // Detect existing <video>.qcp sidecar and load it if present
-  const qcpPath = qcpPathForVideo(videoPath);
-  let existingQcp: string | undefined;
-  try {
-    await fsp.access(qcpPath);
-    existingQcp = qcpPath;
-  } catch { /* no existing sidecar */ }
-  const project = await engine.openFromVideo({ videoPath, projectPath: existingQcp });
-  await attachProjectWatcher(project.id, qcpPath);
-  return {
-    projectId: project.id,
-    videoMeta: project.videoMeta,
-    videoPath,
-    videoUrl: toMediaUrl(videoPath),
-  };
-});
-
-ipcMain.handle('open-video-by-path', async (_ev, videoPath: string) => {
-  const qcpPath = qcpPathForVideo(videoPath);
-  let existingQcp: string | undefined;
-  try {
-    await fsp.access(qcpPath);
-    existingQcp = qcpPath;
-  } catch { /* no existing sidecar */ }
-  const project = await engine.openFromVideo({ videoPath, projectPath: existingQcp });
-  await attachProjectWatcher(project.id, qcpPath);
-  return {
-    projectId: project.id,
-    videoMeta: project.videoMeta,
-    videoPath,
-    videoUrl: toMediaUrl(videoPath),
-  };
-});
-
-async function openProjectFromQcpPath(qcpPath: string) {
-  const raw = await fsp.readFile(qcpPath, 'utf-8');
-  const parsed = JSON.parse(raw) as { videoPath: string };
-  const project = await engine.openFromVideo({
-    videoPath: parsed.videoPath,
-    projectPath: qcpPath,
-  });
-  await attachProjectWatcher(project.id, qcpPath);
-  return {
-    projectId: project.id,
-    videoMeta: project.videoMeta,
-    videoPath: parsed.videoPath,
-    videoUrl: toMediaUrl(parsed.videoPath),
-  };
-}
-
-ipcMain.handle('open-project-dialog', async () => {
-  const result = await dialog.showOpenDialog(mainWindow!, {
-    properties: ['openFile'],
-    filters: [{ name: 'LynLens Project', extensions: ['qcp'] }],
-  });
-  if (result.canceled || result.filePaths.length === 0) return null;
-  return openProjectFromQcpPath(result.filePaths[0]);
-});
-
-ipcMain.handle('open-project-by-path', async (_ev, qcpPath: string) => {
-  // Used by drag-and-drop: user dropped a .qcp file onto the app. Same code
-  // path as the menu dialog, just skips the native file picker.
-  return openProjectFromQcpPath(qcpPath);
-});
-
-ipcMain.handle('save-dialog', async (_ev, defaultName: string) => {
-  const result = await dialog.showSaveDialog(mainWindow!, {
-    defaultPath: defaultName,
-    filters: [{ name: 'Video', extensions: ['mp4', 'mov'] }],
-  });
-  if (result.canceled || !result.filePath) return null;
-  return result.filePath;
-});
-
-ipcMain.handle('add-segment', async (_ev, req: AddSegmentRequest) => {
-  const project = engine.projects.get(req.projectId);
-  return project.segments.add({
-    start: req.start,
-    end: req.end,
-    source: req.source,
-    reason: req.reason ?? null,
-    confidence: req.confidence,
-    aiModel: req.aiModel,
-  });
-});
-
-ipcMain.handle('remove-segment', async (_ev, projectId: string, segmentId: string) => {
-  const project = engine.projects.get(projectId);
-  project.segments.remove(segmentId);
-});
-
-ipcMain.handle('erase-range', async (_ev, projectId: string, start: number, end: number) => {
-  const project = engine.projects.get(projectId);
-  project.segments.eraseRange(start, end);
-});
-
-ipcMain.handle('resize-segment', async (_ev, projectId: string, segmentId: string, start: number, end: number) => {
-  const project = engine.projects.get(projectId);
-  return project.segments.resize(segmentId, start, end);
-});
-
-ipcMain.handle('approve-segment', async (_ev, projectId: string, segmentId: string) => {
-  engine.projects.get(projectId).segments.approve(segmentId);
-});
-
-ipcMain.handle('reject-segment', async (_ev, projectId: string, segmentId: string) => {
-  engine.projects.get(projectId).segments.reject(segmentId);
-});
-
-ipcMain.handle('undo', async (_ev, projectId: string) => {
-  return engine.projects.get(projectId).segments.undo();
-});
-ipcMain.handle('redo', async (_ev, projectId: string) => {
-  return engine.projects.get(projectId).segments.redo();
-});
-
-ipcMain.handle('get-state', async (_ev, projectId: string) => {
-  return engine.projects.get(projectId).toQcp();
-});
-
-ipcMain.handle('save-project', async (_ev, projectId: string, outputPath?: string) => {
-  let target = outputPath;
-  if (!target) {
-    const project = engine.projects.get(projectId);
-    const defaultName =
-      path.basename(project.videoPath, path.extname(project.videoPath)) + '.qcp';
-    const result = await dialog.showSaveDialog(mainWindow!, {
-      defaultPath: defaultName,
-      filters: [{ name: 'LynLens Project', extensions: ['qcp'] }],
-    });
-    if (result.canceled || !result.filePath) throw new Error('Save canceled');
-    target = result.filePath;
-  }
-  markInternalSave(projectId);
-  return engine.projects.saveProject(projectId, target);
-});
-
-/**
- * Forwards the conventional .qcp path for the current project so the UI can
- * build a "copy-paste to Claude Code" command referencing it.
- */
-ipcMain.handle('get-qcp-path', async (_ev, projectId: string) => {
-  const project = engine.projects.get(projectId);
-  return project.projectPath ?? qcpPathForVideo(project.videoPath);
-});
-
-/**
- * Ensure the current project is persisted to its .qcp sidecar (so Claude /
- * MCP can read it). Used by the UI's "交给 Claude" button.
- */
-ipcMain.handle('flush-project', async (_ev, projectId: string) => {
-  const project = engine.projects.get(projectId);
-  const target = project.projectPath ?? qcpPathForVideo(project.videoPath);
-  markInternalSave(projectId);
-  await engine.projects.saveProject(projectId, target);
-  return target;
-});
-
-ipcMain.handle('get-waveform', async (_ev, projectId: string, _buckets: number) => {
-  const project = engine.projects.get(projectId);
-  // Adaptive bucket count: ~500 buckets/sec (2ms precision) for sharp zoom detail.
-  // Capped so very long videos stay under ~4 MB of Float32 data.
-  const duration = project.videoMeta.duration || 60;
-  const buckets = Math.min(1_000_000, Math.max(8000, Math.round(duration * 500)));
-  const env = await extractWaveform(project.videoPath, buckets, engine.ffmpegPaths);
-  return { peak: Array.from(env.peak), rms: Array.from(env.rms) };
-});
-
-ipcMain.handle('export', async (_ev, req: ExportRequest) => {
-  const project = engine.projects.get(req.projectId);
-  const existing = activeExports.get(req.projectId);
-  if (existing) existing.abort();
-  const ac = new AbortController();
-  activeExports.set(req.projectId, ac);
-  try {
-    const result = await engine.exports.export(project, {
-      outputPath: req.outputPath,
-      mode: req.mode,
-      quality: req.quality,
-      signal: ac.signal,
-      // CRITICAL: forward the bundled ffmpeg binary. Without this, export
-      // tries literal 'ffmpeg' from PATH and ENOENTs on machines without
-      // system ffmpeg installed. Probe works even without this because
-      // probeVideo already threads engine.ffmpegPaths through its own IPC.
-      ffmpegPaths: engine.ffmpegPaths,
-    });
-    return result;
-  } finally {
-    activeExports.delete(req.projectId);
-  }
-});
-
-ipcMain.handle('cancel-export', async (_ev, projectId: string) => {
-  const ac = activeExports.get(projectId);
-  if (ac) ac.abort();
-});
-
-// ---- Embedded Claude agent ----
-const activeAgents = new Map<string, AbortController>();
-/** Persist session_id per project so chat turns share context ("memory"). */
-const agentSessionByProject = new Map<string, string>();
-
-ipcMain.handle('agent-send', async (_ev, projectId: string, message: string) => {
-  // Cancel previous agent run if any
-  const prev = activeAgents.get(projectId);
-  if (prev) prev.abort();
-  const ac = new AbortController();
-  activeAgents.set(projectId, ac);
-  try {
-    const result = await runAgentViaCurrentProvider(engine, {
-      projectId,
-      message,
-      resumeSessionId: agentSessionByProject.get(projectId),
-      signal: ac.signal,
-      onEvent: (event: AgentEvent) => {
-        // Both windows subscribe — editor shows the chip count, popup
-        // renders the actual transcript. Same event, fanned out.
-        broadcast('agent-event', event);
-      },
-    });
-    if (result.sessionId) {
-      agentSessionByProject.set(projectId, result.sessionId);
-    }
-  } finally {
-    activeAgents.delete(projectId);
-  }
-});
-
-ipcMain.handle('agent-cancel', async (_ev, projectId: string) => {
-  const ac = activeAgents.get(projectId);
-  if (ac) ac.abort();
-});
-
-ipcMain.handle('agent-reset', async (_ev, projectId: string) => {
-  // Drop the stored session so the next message starts a fresh chat.
-  agentSessionByProject.delete(projectId);
-  // Also clear provider-specific caches (e.g. Codex resumable thread).
-  resetAgentSession(projectId);
-});
-
-ipcMain.handle('agent-get-provider', async () => {
-  return getProvider();
-});
-
-ipcMain.handle('agent-set-provider', async (_ev, provider: AgentProvider) => {
-  setProvider(provider);
-  // Also reset active sessions — switching mid-conversation would confuse
-  // both models since they don't share memory.
-  for (const sid of agentSessionByProject.keys()) {
-    agentSessionByProject.delete(sid);
-  }
-});
-
-ipcMain.handle('open-agent-window', async () => {
-  createAgentWindow();
-});
-
-ipcMain.handle('agent-get-active-project-id', async () => activeProjectId);
-
-ipcMain.handle('agent-set-active-project-id', async (_ev, pid: string | null) => {
-  if (activeProjectId === pid) return;
-  activeProjectId = pid;
-  // Broadcast so the popup (or any other window) re-targets its chat.
-  broadcast('active-project-changed', pid);
-});
-
-ipcMain.handle('agent-window-set-pinned', async (_ev, pinned: boolean) => {
-  if (!agentWindow || agentWindow.isDestroyed()) return;
-  // `screen-saver` level keeps the window above most apps including
-  // fullscreen ones; plain `true` defaults to `floating` which some
-  // macOS full-screen apps can still cover. For a chat popup that
-  // should stay visible while the user browses other tools, the extra
-  // aggressive level matches the stated intent of "置顶".
-  agentWindow.setAlwaysOnTop(pinned, 'screen-saver');
-});
-
-ipcMain.handle('agent-window-get-pinned', async () => {
-  if (!agentWindow || agentWindow.isDestroyed()) return false;
-  return agentWindow.isAlwaysOnTop();
-});
-
-/**
- * Read the current provider's login identity so the chat panel can show
- * "Connected as ...". For Claude that's ~/.claude.json; for Codex it's
- * ~/.codex/auth.json. Returns null if not signed in — renderer shows a
- * "not logged in" warning in that case.
- */
-ipcMain.handle('agent-identity', async () => {
-  const provider = getProvider();
-  const os = await import('node:os');
-  try {
-    if (provider === 'claude') {
-      const configPath = path.join(os.homedir(), '.claude.json');
-      const raw = await fsp.readFile(configPath, 'utf-8');
-      const data = JSON.parse(raw) as {
-        oauthAccount?: {
-          emailAddress?: string;
-          displayName?: string;
-          organizationName?: string;
-          billingType?: string;
-        };
-      };
-      const acc = data.oauthAccount;
-      if (!acc?.emailAddress) return null;
-      return {
-        email: acc.emailAddress,
-        displayName: acc.displayName ?? null,
-        organization: acc.organizationName ?? null,
-        plan: acc.billingType ?? null,
-      };
-    }
-    // Codex: ~/.codex/auth.json has { tokens: { id_token: ... } } where the
-    // id_token is a JWT whose payload carries email / ChatGPT plan.
-    const configPath = path.join(os.homedir(), '.codex', 'auth.json');
-    const raw = await fsp.readFile(configPath, 'utf-8');
-    const data = JSON.parse(raw) as {
-      tokens?: { id_token?: string };
-      OPENAI_API_KEY?: string | null;
-    };
-    const jwt = data.tokens?.id_token;
-    if (jwt) {
-      // Decode JWT payload (middle segment) — no verification needed since
-      // we're only reading a local file we trust.
-      try {
-        const parts = jwt.split('.');
-        if (parts.length >= 2) {
-          const payload = JSON.parse(
-            Buffer.from(parts[1].replace(/-/g, '+').replace(/_/g, '/'), 'base64').toString('utf8')
-          ) as {
-            email?: string;
-            name?: string;
-            ['https://api.openai.com/auth']?: { chatgpt_plan_type?: string };
-          };
-          return {
-            email: payload.email ?? 'codex-user',
-            displayName: payload.name ?? null,
-            organization: null,
-            plan: payload['https://api.openai.com/auth']?.chatgpt_plan_type ?? null,
-          };
-        }
-      } catch {
-        // fall through to api-key branch
-      }
-    }
-    if (data.OPENAI_API_KEY) {
-      return {
-        email: 'OpenAI API key',
-        displayName: null,
-        organization: null,
-        plan: 'api-key',
-      };
-    }
-    return null;
-  } catch {
-    return null;
-  }
-});
-
-ipcMain.handle(
-  'ai-mark-silence',
-  async (_ev, projectId: string, opts: { minPauseSec: number; silenceThreshold: number }) => {
-    const project = engine.projects.get(projectId);
-    const env = await extractWaveform(project.videoPath, 4000, engine.ffmpegPaths);
-    const silences = detectSilences(env.peak, project.videoMeta.duration, opts);
-    const ids: string[] = [];
-
-    for (const s of silences) {
-      const seg = project.segments.add({
-        start: s.start,
-        end: s.end,
-        source: 'ai',
-        reason: s.reason,
-        confidence: 0.75,
-        aiModel: 'builtin-silence-detector',
-      });
-      ids.push(seg.id);
-    }
-
-    // If the project has a transcript, also flag filler/hesitation words and
-    // near-duplicate retakes. These complement the pure silence heuristic.
-    let fillerCount = 0;
-    let retakeCount = 0;
-    if (project.transcript) {
-      for (const f of detectFillers(project.transcript)) {
-        const seg = project.segments.add({
-          start: f.start,
-          end: f.end,
-          source: 'ai',
-          reason: f.reason,
-          confidence: f.confidence,
-          aiModel: 'builtin-filler-detector',
-        });
-        ids.push(seg.id);
-        fillerCount += 1;
-      }
-      for (const r of detectRetakes(project.transcript)) {
-        const seg = project.segments.add({
-          start: r.start,
-          end: r.end,
-          source: 'ai',
-          reason: r.reason,
-          confidence: r.confidence,
-          aiModel: 'builtin-retake-detector',
-        });
-        ids.push(seg.id);
-        retakeCount += 1;
-      }
-    }
-
-    return {
-      added: ids.length,
-      segmentIds: ids,
-      breakdown: {
-        silences: silences.length,
-        fillers: fillerCount,
-        retakes: retakeCount,
-      },
-    };
-  }
-);
-
-ipcMain.handle('approve-all-pending', async (_ev, projectId: string) => {
-  const project = engine.projects.get(projectId);
-  const pending = project.segments.list().filter((s) => s.status === 'pending');
-  for (const s of pending) project.segments.approve(s.id, 'human');
-  return pending.length;
-});
-
-ipcMain.handle('reject-all-pending', async (_ev, projectId: string) => {
-  const project = engine.projects.get(projectId);
-  const pending = project.segments.list().filter((s) => s.status === 'pending');
-  for (const s of pending) project.segments.reject(s.id, 'human');
-  return pending.length;
-});
-
-ipcMain.handle('commit-ripple', async (_ev, projectId: string) => {
-  const project = engine.projects.get(projectId);
-  return project.commitRipple();
-});
-
-ipcMain.handle(
-  'revert-ripple',
-  async (_ev, projectId: string, segmentId: string) => {
-    const project = engine.projects.get(projectId);
-    return project.revertRipple(segmentId);
-  }
-);
-
-ipcMain.handle(
-  'generate-highlights',
-  async (
-    _ev,
-    projectId: string,
-    opts: { style: HighlightStyle; count: number; targetSeconds: number }
-  ) => {
-    const project = engine.projects.get(projectId);
-    if (!project.transcript || project.transcript.segments.length === 0) {
-      throw new Error('请先生成字幕后再生成高光变体');
-    }
-    const effectiveDuration = project.getEffectiveDuration();
-    const systemPrompt = buildHighlightSystemPrompt();
-    const userPrompt = buildHighlightUserPrompt({
-      transcript: project.transcript,
-      cutRanges: project.cutRanges,
-      effectiveDuration,
-      style: opts.style,
-      count: Math.max(1, Math.min(5, Math.floor(opts.count || 1))),
-      targetSeconds: Math.max(5, Math.floor(opts.targetSeconds || 30)),
-    });
-    const { text, model } = await runOneShotViaCurrentProvider(systemPrompt, userPrompt);
-    // Force every variant's style to the user-selected one — matches the
-    // UX contract (one style in, N variants all in that style out).
-    const variants = parseHighlightResponse(text, project.cutRanges, model, opts.style);
-    // setHighlightVariants preserves pinned variants from the previous
-    // batch and stamps a sourceSnapshot onto each new variant. Auto-save
-    // so the .qcp on disk stays in sync (user may crash before manual save).
-    project.setHighlightVariants(variants);
-    if (project.projectPath) {
-      await engine.projects.saveProject(projectId).catch(() => {});
-    }
-    return project.highlightVariants;
-  }
-);
-
-ipcMain.handle('get-highlights', async (_ev, projectId: string) => {
-  const project = engine.projects.get(projectId);
-  return project.highlightVariants;
-});
-
-ipcMain.handle('clear-highlights', async (_ev, projectId: string) => {
-  const project = engine.projects.get(projectId);
-  project.clearHighlightVariants();
-  if (project.projectPath) {
-    await engine.projects.saveProject(projectId).catch(() => {});
-  }
-});
-
-ipcMain.handle(
-  'set-highlight-pinned',
-  async (_ev, projectId: string, variantId: string, pinned: boolean) => {
-    const project = engine.projects.get(projectId);
-    const ok = project.setHighlightVariantPinned(variantId, pinned);
-    if (ok && project.projectPath) {
-      await engine.projects.saveProject(projectId).catch(() => {});
-    }
-    return ok;
-  }
-);
-
-ipcMain.handle(
-  'delete-highlight-variant',
-  async (_ev, projectId: string, variantId: string) => {
-    const project = engine.projects.get(projectId);
-    const ok = project.deleteHighlightVariant(variantId);
-    if (ok && project.projectPath) {
-      await engine.projects.saveProject(projectId).catch(() => {});
-    }
-    return ok;
-  }
-);
-
-ipcMain.handle(
-  'update-highlight-variant-segment',
-  async (
-    _ev,
-    projectId: string,
-    variantId: string,
-    segmentIdx: number,
-    newStart: number,
-    newEnd: number,
-    newReason?: string
-  ) => {
-    const project = engine.projects.get(projectId);
-    const ok = project.updateHighlightVariantSegment(
-      variantId,
-      segmentIdx,
-      newStart,
-      newEnd,
-      newReason
-    );
-    if (ok && project.projectPath) {
-      await engine.projects.saveProject(projectId).catch(() => {});
-    }
-    return ok;
-  }
-);
-
-ipcMain.handle(
-  'reorder-highlight-variant-segment',
-  async (_ev, projectId: string, variantId: string, fromIdx: number, toIdx: number) => {
-    const project = engine.projects.get(projectId);
-    const ok = project.reorderHighlightVariantSegment(variantId, fromIdx, toIdx);
-    if (ok && project.projectPath) {
-      await engine.projects.saveProject(projectId).catch(() => {});
-    }
-    return ok;
-  }
-);
-
-ipcMain.handle(
-  'add-highlight-variant-segment',
-  async (_ev, projectId: string, variantId: string, hintSec: number | null) => {
-    const project = engine.projects.get(projectId);
-    const slot = project.findHighlightInsertSlot(
-      variantId,
-      hintSec ?? undefined
-    );
-    if (!slot) return null;
-    const ok = project.addHighlightVariantSegment(
-      variantId,
-      slot.start,
-      slot.end
-    );
-    if (!ok) return null;
-    if (project.projectPath) {
-      await engine.projects.saveProject(projectId).catch(() => {});
-    }
-    return slot;
-  }
-);
-
-ipcMain.handle(
-  'delete-highlight-variant-segment',
-  async (_ev, projectId: string, variantId: string, segmentIdx: number) => {
-    const project = engine.projects.get(projectId);
-    const ok = project.deleteHighlightVariantSegment(variantId, segmentIdx);
-    if (ok && project.projectPath) {
-      await engine.projects.saveProject(projectId).catch(() => {});
-    }
-    return ok;
-  }
-);
-
-ipcMain.handle(
-  'export-highlight',
-  async (_ev, projectId: string, variantId: string, outputPath: string) => {
-    const project = engine.projects.get(projectId);
-    const variant = project.findHighlightVariant(variantId);
-    if (!variant) throw new Error(`Highlight variant not found: ${variantId}`);
-    const keepOverride = variant.segments.map((s) => ({ start: s.start, end: s.end }));
-    const existing = activeExports.get(projectId);
-    if (existing) existing.abort();
-    const ac = new AbortController();
-    activeExports.set(projectId, ac);
-    try {
-      return await engine.exports.export(project, {
-        outputPath,
-        mode: 'fast',          // stream copy, identical bytes
-        quality: 'original',    // irrelevant for fast mode
-        signal: ac.signal,
-        ffmpegPaths: engine.ffmpegPaths,
-        keepOverride,
-      });
-    } finally {
-      activeExports.delete(projectId);
-    }
-  }
-);
-
 // ============================================================================
-// Social copy (文案 tab) — generate / read / edit / delete
+// IPC registration — every handler lives in main/ipc/<domain>.ts
 // ============================================================================
 
-/**
- * Assemble transcript text for a given source. We keep the two
- * helpers private to this handler so core stays pure and the
- * file-system-free shape of the engine isn't disturbed.
- */
-function assembleRippledSourceText(
-  transcriptSegs: ReadonlyArray<{ start: number; end: number; text: string }>,
-  cutRanges: ReadonlyArray<{ start: number; end: number }>
-): string {
-  const lines: string[] = [];
-  for (const t of transcriptSegs) {
-    const fullyInCut = cutRanges.some((c) => t.start >= c.start && t.end <= c.end);
-    if (fullyInCut) continue;
-    const txt = t.text.trim();
-    if (txt) lines.push(txt);
-  }
-  return lines.join('\n');
-}
-
-function assembleVariantSourceText(
-  transcriptSegs: ReadonlyArray<{ start: number; end: number; text: string }>,
-  variantSegs: ReadonlyArray<{ start: number; end: number }>
-): string {
-  const lines: string[] = [];
-  for (const v of variantSegs) {
-    for (const t of transcriptSegs) {
-      if (t.end <= v.start || t.start >= v.end) continue;
-      const txt = t.text.trim();
-      if (txt) lines.push(txt);
-    }
-  }
-  return lines.join('\n');
-}
-
-ipcMain.handle(
-  'generate-social-copies',
-  async (
-    _ev,
-    projectId: string,
-    opts: {
-      sourceType: 'rippled' | 'variant';
-      sourceVariantId?: string;
-      platforms: SocialPlatform[];
-      userStyleNote?: string;
-    }
-  ) => {
-    const project = engine.projects.get(projectId);
-    if (!project.transcript || project.transcript.segments.length === 0) {
-      throw new Error('请先生成字幕后再生成文案');
-    }
-
-    let sourceTitle: string;
-    let sourceText: string;
-    if (opts.sourceType === 'variant') {
-      if (!opts.sourceVariantId) {
-        throw new Error('sourceType=variant 时必须提供 sourceVariantId');
-      }
-      const variant = project.findHighlightVariant(opts.sourceVariantId);
-      if (!variant) {
-        throw new Error(`找不到变体 ${opts.sourceVariantId}`);
-      }
-      sourceTitle = `高光变体：${variant.title}`;
-      sourceText = assembleVariantSourceText(project.transcript.segments, variant.segments);
-    } else {
-      sourceTitle = '粗剪完整版';
-      sourceText = assembleRippledSourceText(project.transcript.segments, project.cutRanges);
-    }
-
-    if (!sourceText.trim()) {
-      throw new Error('拼装出来的源文本为空,请先完成字幕和剪辑');
-    }
-
-    // Per-platform calls in parallel. allSettled lets us surface partial
-    // successes — one platform hiccup shouldn't wipe out the others.
-    const results = await Promise.allSettled(
-      opts.platforms.map((platform) =>
-        runCopywriterViaCurrentProvider({
-          sourceTitle,
-          sourceText,
-          platform,
-          userStyleNote: opts.userStyleNote ?? project.socialStyleNote ?? undefined,
-        })
-      )
-    );
-
-    const copies: Array<{
-      id: string;
-      platform: string;
-      title: string;
-      body: string;
-      hashtags: string[];
-    }> = [];
-    const failures: Array<{ platform: SocialPlatform; error: string }> = [];
-    let model: string | undefined;
-
-    for (let i = 0; i < results.length; i++) {
-      const r = results[i];
-      if (r.status === 'fulfilled') {
-        if (r.value.model) model = r.value.model;
-        copies.push({
-          id: r.value.copy.id,
-          platform: r.value.copy.platform,
-          title: r.value.copy.title,
-          body: r.value.copy.body,
-          hashtags: r.value.copy.hashtags,
-        });
-      } else {
-        failures.push({
-          platform: opts.platforms[i],
-          error: (r.reason as Error).message,
-        });
-      }
-    }
-
-    if (copies.length === 0) {
-      throw new Error(
-        '全部平台都生成失败:\n' +
-          failures.map((f) => `${f.platform}: ${f.error}`).join('\n')
-      );
-    }
-
-    const setId = `sc_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
-    const createdAt = new Date().toISOString();
-    project.addSocialCopySet({
-      id: setId,
-      sourceType: opts.sourceType,
-      sourceVariantId: opts.sourceVariantId,
-      sourceTitle,
-      sourceText,
-      userStyleNote: opts.userStyleNote ?? null,
-      copies,
-      createdAt,
-      model,
-    });
-
-    // Persist immediately so a crash before Ctrl+S doesn't lose the copy.
-    if (project.projectPath) {
-      await engine.projects.saveProject(projectId);
-    }
-
-    return {
-      setId,
-      copies,
-      failures,
-    };
-  }
-);
-
-ipcMain.handle('get-social-copies', async (_ev, projectId: string) => {
-  return engine.projects.get(projectId).socialCopies;
-});
-
-ipcMain.handle(
-  'update-social-copy',
-  async (
-    _ev,
-    projectId: string,
-    setId: string,
-    copyId: string,
-    patch: { title?: string; body?: string; hashtags?: string[] }
-  ) => {
-    const project = engine.projects.get(projectId);
-    const ok = project.updateSocialCopy(setId, copyId, patch);
-    if (ok && project.projectPath) {
-      await engine.projects.saveProject(projectId);
-    }
-    return ok;
-  }
-);
-
-ipcMain.handle(
-  'delete-social-copy',
-  async (_ev, projectId: string, setId: string, copyId: string) => {
-    const project = engine.projects.get(projectId);
-    const ok = project.deleteSocialCopy(setId, copyId);
-    if (ok && project.projectPath) {
-      await engine.projects.saveProject(projectId);
-    }
-    return ok;
-  }
-);
-
-ipcMain.handle(
-  'delete-social-copy-set',
-  async (_ev, projectId: string, setId: string) => {
-    const project = engine.projects.get(projectId);
-    const ok = project.deleteSocialCopySet(setId);
-    if (ok && project.projectPath) {
-      await engine.projects.saveProject(projectId);
-    }
-    return ok;
-  }
-);
-
-ipcMain.handle(
-  'set-social-style-note',
-  async (_ev, projectId: string, note: string | null) => {
-    const project = engine.projects.get(projectId);
-    project.setSocialStyleNote(note);
-    if (project.projectPath) {
-      await engine.projects.saveProject(projectId);
-    }
-  }
-);
-
-ipcMain.handle(
-  'add-social-style-preset',
-  async (_ev, projectId: string, name: string, content: string) => {
-    const project = engine.projects.get(projectId);
-    const preset = project.addSocialStylePreset(name, content);
-    if (project.projectPath) await engine.projects.saveProject(projectId);
-    return preset;
-  }
-);
-
-ipcMain.handle(
-  'update-social-style-preset',
-  async (
-    _ev,
-    projectId: string,
-    presetId: string,
-    patch: { name?: string; content?: string }
-  ) => {
-    const project = engine.projects.get(projectId);
-    const ok = project.updateSocialStylePreset(presetId, patch);
-    if (ok && project.projectPath) await engine.projects.saveProject(projectId);
-    return ok;
-  }
-);
-
-ipcMain.handle(
-  'delete-social-style-preset',
-  async (_ev, projectId: string, presetId: string) => {
-    const project = engine.projects.get(projectId);
-    const ok = project.deleteSocialStylePreset(presetId);
-    if (ok && project.projectPath) await engine.projects.saveProject(projectId);
-    return ok;
-  }
-);
-
-ipcMain.handle('get-social-style-presets', async (_ev, projectId: string) => {
-  return engine.projects.get(projectId).socialStylePresets;
-});
-
-// ============================================================================
-// Diarization (speaker labeling) — MVP
-// ============================================================================
-//
-// Today this is backed by MockDiarizationEngine (deterministic, no audio).
-// When we bundle sherpa-onnx, we swap the engine instance here — the IPC
-// contract doesn't change.
-//
-// Isolation: failures throw to the renderer; project state is NEVER modified
-// on failure. Missing transcript is a caller-side error (renderer disables
-// the button), not a silent no-op.
-
-ipcMain.handle(
-  'diarize',
-  async (_ev, projectId: string, opts?: { speakerCount?: number }) => {
-    const project = engine.projects.get(projectId);
-    if (!project.transcript || project.transcript.segments.length === 0) {
-      throw new Error('请先生成字幕后再区分说话人');
-    }
-
-    const diarBase = resolveBundledDiarizationBase();
-    let diarEngine: DiarizationEngine;
-    if (diarBase) {
-      const paths = await resolveSherpaPaths(diarBase);
-      if (paths) {
-        // When the caller knows the speaker count, forward it — vastly
-        // more reliable than threshold-based auto-clustering for
-        // short / low-speaker-count content.
-        const count =
-          opts?.speakerCount && opts.speakerCount > 0
-            ? Math.floor(opts.speakerCount)
-            : undefined;
-        diarEngine = new SherpaOnnxDiarizationEngine(paths, engine.ffmpegPaths, {
-          clusterThreshold: 0.9,
-          numClusters: count,
-        });
-      } else {
-        diarEngine = new MockDiarizationEngine(() => project.transcript);
-      }
-    } else {
-      diarEngine = new MockDiarizationEngine(() => project.transcript);
-    }
-
-    const result = await diarEngine.diarize(project.videoPath);
-    project.applyDiarization(result);
-    if (project.projectPath) {
-      await engine.projects.saveProject(projectId);
-    }
-    return {
-      engine: result.engine,
-      speakers: result.speakers,
-      segmentCount: result.segments.length,
-    };
-  }
-);
-
-ipcMain.handle(
-  'merge-speakers',
-  async (_ev, projectId: string, from: string, to: string) => {
-    const project = engine.projects.get(projectId);
-    const n = project.mergeSpeakers(from, to);
-    if (n > 0 && project.projectPath) {
-      await engine.projects.saveProject(projectId);
-    }
-    return n;
-  }
-);
-
-ipcMain.handle(
-  'set-segment-speaker',
-  async (
-    _ev,
-    projectId: string,
-    transcriptSegmentId: string,
-    speaker: string | null
-  ) => {
-    const project = engine.projects.get(projectId);
-    const ok = project.setSegmentSpeaker(transcriptSegmentId, speaker);
-    if (ok && project.projectPath) {
-      await engine.projects.saveProject(projectId);
-    }
-    return ok;
-  }
-);
-
-ipcMain.handle(
-  'auto-assign-unlabeled-speakers',
-  async (_ev, projectId: string) => {
-    const project = engine.projects.get(projectId);
-    const n = project.autoAssignUnlabeledSpeakers();
-    if (n > 0 && project.projectPath) {
-      await engine.projects.saveProject(projectId);
-    }
-    return n;
-  }
-);
-
-ipcMain.handle(
-  'rename-speaker',
-  async (_ev, projectId: string, speakerId: string, name: string | null) => {
-    const project = engine.projects.get(projectId);
-    project.renameSpeaker(speakerId, name);
-    if (project.projectPath) {
-      await engine.projects.saveProject(projectId);
-    }
-  }
-);
-
-ipcMain.handle('clear-speakers', async (_ev, projectId: string) => {
-  const project = engine.projects.get(projectId);
-  project.clearSpeakers();
-  if (project.projectPath) {
-    await engine.projects.saveProject(projectId);
-  }
-});
-
-ipcMain.handle(
-  'update-transcript-segment',
-  async (_ev, projectId: string, segmentId: string, newText: string) => {
-    const project = engine.projects.get(projectId);
-    return project.updateTranscriptSegment(segmentId, newText);
-  }
-);
-
-ipcMain.handle(
-  'update-transcript-segment-time',
-  async (
-    _ev,
-    projectId: string,
-    segmentId: string,
-    newStart: number,
-    newEnd: number
-  ) => {
-    const project = engine.projects.get(projectId);
-    const ok = project.updateTranscriptSegmentTime(segmentId, newStart, newEnd);
-    if (ok && project.projectPath) {
-      await engine.projects.saveProject(projectId);
-    }
-    return ok;
-  }
-);
-
-ipcMain.handle(
-  'set-transcript-warning-fingerprint',
-  async (_ev, projectId: string, segmentId: string, fingerprint: string | null) => {
-    const project = engine.projects.get(projectId);
-    const ok = project.setTranscriptWarningFingerprint(segmentId, fingerprint);
-    if (ok && project.projectPath) {
-      await engine.projects.saveProject(projectId);
-    }
-    return ok;
-  }
-);
-
-ipcMain.handle(
-  'replace-in-transcript',
-  async (_ev, projectId: string, find: string, replace: string) => {
-    const project = engine.projects.get(projectId);
-    return project.replaceInTranscript(find, replace);
-  }
-);
-
-ipcMain.handle(
-  'set-user-orientation',
-  async (_ev, projectId: string, o: 'landscape' | 'portrait' | null) => {
-    engine.projects.get(projectId).setUserOrientation(o);
-  }
-);
-
-ipcMain.handle(
-  'set-preview-rotation',
-  async (_ev, projectId: string, rotation: 0 | 90 | 180 | 270) => {
-    const project = engine.projects.get(projectId);
-    project.setPreviewRotation(rotation);
-    // Persist immediately so the rotation survives app restarts even if
-    // the user never hits Ctrl+S.
-    if (project.projectPath) {
-      await engine.projects.saveProject(projectId);
-    }
-  }
-);
-
-ipcMain.handle(
-  'accept-transcript-suggestion',
-  async (_ev, projectId: string, segmentId: string) => {
-    return engine.projects.get(projectId).acceptTranscriptSuggestion(segmentId);
-  }
-);
-
-ipcMain.handle(
-  'clear-transcript-suggestion',
-  async (_ev, projectId: string, segmentId: string) => {
-    return engine.projects.get(projectId).clearTranscriptSuggestion(segmentId);
-  }
-);
-
-ipcMain.handle(
-  'transcribe',
-  async (
-    _ev,
-    projectId: string,
-    opts: { engine?: 'whisper-local' | 'openai-api'; language?: string }
-  ) => {
-    const project = engine.projects.get(projectId);
-    engine.eventBus.emit({
-      type: 'transcription.started',
-      projectId,
-      engine: opts.engine ?? 'whisper-local',
-    });
-    try {
-      const transcript = await engine.transcription.transcribe(project.videoPath, {
-        engine: opts.engine,
-        language: opts.language,
-        onProgress: (percent) =>
-          engine.eventBus.emit({ type: 'transcription.progress', projectId, percent }),
-      });
-      project.setTranscript(transcript);
-      engine.eventBus.emit({
-        type: 'transcription.completed',
-        projectId,
-        segmentCount: transcript.segments.length,
-      });
-      return {
-        language: transcript.language,
-        engine: transcript.engine,
-        segmentCount: transcript.segments.length,
-      };
-    } catch (err) {
-      engine.eventBus.emit({
-        type: 'transcription.failed',
-        projectId,
-        error: (err as Error).message,
-      });
-      throw err;
-    }
-  }
-);
-
+const ipcCtx: IpcContext = {
+  engine,
+  getMainWindow: () => mainWindow,
+  getAgentWindow: () => agentWindow,
+  setAgentWindow: (w) => { agentWindow = w; },
+  getActiveProjectId: () => activeProjectId,
+  setActiveProjectId: (pid) => { activeProjectId = pid; },
+  broadcast,
+  qcpPathForVideo,
+  attachProjectWatcher,
+  markInternalSave,
+  resolveBundledDiarizationBase,
+  activeExports,
+  activeAgents,
+  agentSessionByProject,
+  createAgentWindow,
+};
+registerAllIpc(ipcCtx);
