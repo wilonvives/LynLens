@@ -1,6 +1,6 @@
 {
   "name": "lynlens",
-  "version": "0.4.1",
+  "version": "0.4.2",
   "private": true,
   "description": "LynLens - AI-First talking-video quick-cut editor (Core Engine + MCP + UI + CLI)",
   "scripts": {
