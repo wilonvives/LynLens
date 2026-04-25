@@ -1,7 +1,13 @@
 {
   "name": "@lynlens/desktop",
-  "version": "0.4.3",
+  "version": "0.4.4",
   "description": "LynLens desktop app (Electron) - UI for talking-video quick-cut editing",
+  "license": "MIT",
+  "homepage": "https://github.com/wilonvives/LynLens",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/wilonvives/LynLens.git"
+  },
   "main": "./dist/main/main/index.js",
   "scripts": {
     "build": "tsc -p tsconfig.main.json && vite build",

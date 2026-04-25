@@ -59,6 +59,12 @@ jobs:
 
       # On Windows the bootstrap script downloads the official prebuilt zip.
       - name: Download whisper binary + model
+        env:
+          # Forward the workflow token so the script's GitHub API call
+          # to find the latest whisper.cpp release uses authenticated
+          # rate limits (5000/hr) instead of anonymous (60/hr per IP,
+          # which busy GitHub-hosted runners share and blow through).
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: pnpm bootstrap:whisper
 
       - name: Build TypeScript

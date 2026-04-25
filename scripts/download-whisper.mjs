@@ -27,8 +27,14 @@ const resourcesRoot = path.join(repoRoot, 'packages', 'desktop', 'resources', 'w
 const GH_REPO = 'ggml-org/whisper.cpp';
 
 async function latestReleaseAssets() {
+  // Forward GITHUB_TOKEN when present (CI sets it). Without it, anonymous
+  // requests share an IP-wide 60/hr limit which busy CI runners blow
+  // through; the API then returns 403 and the build fails.
+  const headers = { Accept: 'application/vnd.github+json' };
+  const token = process.env.GITHUB_TOKEN || process.env.GH_TOKEN;
+  if (token) headers.Authorization = `Bearer ${token}`;
   const resp = await fetch(`https://api.github.com/repos/${GH_REPO}/releases/latest`, {
-    headers: { Accept: 'application/vnd.github+json' },
+    headers,
   });
   if (!resp.ok) throw new Error(`GitHub API ${resp.status}`);
   const data = await resp.json();
