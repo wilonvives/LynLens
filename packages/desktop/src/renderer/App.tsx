@@ -3,19 +3,25 @@ import {
   effectiveToSource,
   getEffectiveDuration,
   sourceToEffective,
-  type LynLensEvent,
-  type Segment,
 } from './core-browser';
-import { Timeline } from './Timeline';
 import { ExportDialog } from './ExportDialog';
-import { SubtitlePanel } from './SubtitlePanel';
 import { OrientationDialog } from './OrientationDialog';
 import { QuickMarkDialog } from './QuickMarkDialog';
 import { HighlightPanel } from './HighlightPanel';
 import { SocialCopyPanel } from './SocialCopyPanel';
 import { Resizer } from './Resizer';
-
-type WorkMode = 'precision' | 'highlight' | 'copywriter';
+import { usePlayerWrapSize } from './hooks/usePlayerWrapSize';
+import { useEngineEvents } from './hooks/useEngineEvents';
+import { usePlaybackLoop } from './hooks/usePlaybackLoop';
+import { useKeyboardShortcuts } from './hooks/useKeyboardShortcuts';
+import { MenuBar } from './components/MenuBar';
+import { WorkModeTabs, type WorkMode } from './components/WorkModeTabs';
+import { AIBar } from './components/AIBar';
+import { MediaPlayer } from './components/MediaPlayer';
+import { SegmentSidebar, type SegmentFilter, type SidebarTab } from './components/SegmentSidebar';
+import { BottomToolbar } from './components/BottomToolbar';
+import { PendingBanner } from './components/PendingBanner';
+import { TimelineSection } from './components/TimelineSection';
 
 function usePersistedSize(key: string, defaultValue: number): [number, (n: number) => void] {
   const [value, setValue] = useState<number>(() => {
@@ -36,8 +42,6 @@ function usePersistedSize(key: string, defaultValue: number): [number, (n: numbe
 import { useStore } from './store';
 import { formatBytes, formatTime } from './util';
 
-type SegmentFilter = 'all' | 'human' | 'ai' | 'pending';
-
 export function App() {
   const store = useStore();
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -45,7 +49,7 @@ export function App() {
   const [isPlaying, setIsPlaying] = useState(false);
   const [showExport, setShowExport] = useState(false);
   const [segFilter, setSegFilter] = useState<SegmentFilter>('all');
-  const [sidebarTab, setSidebarTab] = useState<'segments' | 'subtitles'>('segments');
+  const [sidebarTab, setSidebarTab] = useState<SidebarTab>('segments');
   const [showOrientDialog, setShowOrientDialog] = useState(false);
   const [showQuickMarkDialog, setShowQuickMarkDialog] = useState(false);
   const [workMode, setWorkMode] = useState<WorkMode>('precision');
@@ -138,17 +142,8 @@ export function App() {
    * inside the container. We measure the container with a ResizeObserver so
    * this survives panel resizes.
    */
-  const playerWrapRef = useRef<HTMLDivElement | null>(null);
-  const [playerWrapSize, setPlayerWrapSize] = useState({ w: 0, h: 0 });
-  useEffect(() => {
-    const el = playerWrapRef.current;
-    if (!el) return;
-    const ro = new ResizeObserver(() => {
-      setPlayerWrapSize({ w: el.clientWidth, h: el.clientHeight });
-    });
-    ro.observe(el);
-    return () => ro.disconnect();
-  }, []);
+  const playerWrapRef = useRef<HTMLDivElement>(null);
+  const playerWrapSize = usePlayerWrapSize(playerWrapRef);
 
   /**
    * Source-time ranges that are currently rippled out of the effective
@@ -180,291 +175,17 @@ export function App() {
     [store.segments]
   );
 
-  // Apply engine events and trigger state refresh for segment changes.
-  useEffect(() => {
-    const off = window.lynlens.onEngineEvent(async (event: LynLensEvent) => {
-      store.applyEvent(event);
-      if (
-        event.type.startsWith('segment.') ||
-        event.type === 'project.opened' ||
-        event.type === 'project.saved'
-      ) {
-        if (store.projectId) {
-          const qcp = await window.lynlens.getState(store.projectId);
-          store.refreshSegments(qcp.deleteSegments);
-        }
-      }
-      if (
-        (event.type === 'transcription.completed' ||
-          event.type === 'transcript.updated' ||
-          event.type === 'transcript.suggestion') &&
-        store.projectId
-      ) {
-        const qcp = await window.lynlens.getState(store.projectId);
-        store.setTranscript(qcp.transcript);
-      }
-      // Ripple committed/reverted fires segment.cut / segment.uncut per
-      // segment, which the segment.* branch above already refreshes. We
-      // don't need a separate handler — cutRanges is derived from segments.
-      if (event.type === 'project.reloaded' && store.projectId) {
-        const qcp = await window.lynlens.getState(store.projectId);
-        store.refreshSegments(qcp.deleteSegments);
-        store.setTranscript(qcp.transcript);
-        store.setAiMode(qcp.aiMode);
-        store.setUserOrientation(qcp.userOrientation ?? null);
-        store.setSpeakerNames(qcp.speakerNames ?? {});
-        store.setDiarizationEngine(qcp.diarizationEngine ?? null);
-      }
-      // Diarization added/renamed/cleared speakers — pull fresh transcript
-      // + speaker names. Kept in its own branch so if diarization IPC isn't
-      // wired yet (older main), the rest of the event flow still works.
-      if (
-        (event.type === 'diarization.completed' ||
-          event.type === 'diarization.renamed' ||
-          event.type === 'diarization.cleared') &&
-        store.projectId
-      ) {
-        const qcp = await window.lynlens.getState(store.projectId);
-        store.setTranscript(qcp.transcript);
-        store.setSpeakerNames(qcp.speakerNames ?? {});
-        store.setDiarizationEngine(qcp.diarizationEngine ?? null);
-      }
-    });
-    return () => off();
-  }, [store.projectId]);
+  useEngineEvents();
 
-  // Playhead RAF update.
-  //
-  // CRITICAL: do NOT depend on store.segments / store.previewMode here.
-  // When opening an old .qcp the main process replays N "segment.added"
-  // events to rebuild the project. Each one triggers refreshSegments,
-  // which creates a fresh segments array reference. If those refs were
-  // in the dep array, every replayed event would cleanup + re-schedule
-  // the RAF before its first frame ever fires — the playhead state
-  // ends up frozen at 0 even though the <video> element's currentTime
-  // is moving. Symptom: opening an old project, the playhead sticks at
-  // frame 1; the first user-triggered segment change happens to land
-  // between events, the RAF finally fires, and the playhead snaps to
-  // the correct spot.
-  //
-  // Fix: read the latest segments / previewMode through refs from inside
-  // the tick. The effect itself only needs to (re)mount when projectId
-  // changes (cleaning up the loop on unmount and on project switch).
-  const segmentsRef = useRef(store.segments);
-  useEffect(() => {
-    segmentsRef.current = store.segments;
-  }, [store.segments]);
-  const previewModeRef = useRef(store.previewMode);
-  useEffect(() => {
-    previewModeRef.current = store.previewMode;
-  }, [store.previewMode]);
-  useEffect(() => {
-    let raf = 0;
-    const tick = () => {
-      // Resolve the <video> element through the DOM rather than videoRef.
-      // The React ref turned out to be unreliable in dev — StrictMode and
-      // Fast Refresh can leave the closure pointing at a stale ref instance
-      // while the real <video> is alive in the DOM (see git history). The
-      // DOM is the single source of truth, so we just look it up here and
-      // cache it on the ref for the rest of the renderer that still uses
-      // videoRef.current. This is safe because the player-wrap renders at
-      // most ONE video element at a time.
-      const v = videoRef.current ?? document.querySelector<HTMLVideoElement>('.player-wrap video');
-      if (v && videoRef.current !== v) {
-        // Backfill the ref so the rest of App (keyboard shortcuts, seek, ...)
-        // sees the same element we just resolved.
-        (videoRef as React.MutableRefObject<HTMLVideoElement | null>).current = v;
-      }
-      if (v) {
-        setCurrentTime(v.currentTime);
-        // Committed ripple cuts: ALWAYS skip. A cut is permanent until the
-        // user clicks ↶ on its segment. If the playhead lands inside a cut
-        // zone (after seeking, or right after a fresh cut was committed),
-        // jump to the far side. Guard against NaN — before loadedmetadata
-        // fires v.duration is NaN, and writing currentTime = NaN throws an
-        // uncaught TypeError that kills the whole RAF chain.
-        const segs = segmentsRef.current;
-        const cut = segs.find(
-          (s) =>
-            s.status === 'cut' && v.currentTime >= s.start && v.currentTime < s.end
-        );
-        if (cut && Number.isFinite(v.duration)) {
-          const target = Math.min(v.duration, cut.end + 0.02);
-          if (Number.isFinite(target)) v.currentTime = target;
-        }
-        // Preview mode: also skip approved delete segments that haven't been
-        // rippled yet. This keeps the "preview成品" button useful before the
-        // user commits a cut.
-        if (previewModeRef.current && !v.paused) {
-          const currentSeg = segs.find(
-            (s) =>
-              s.status === 'approved' &&
-              v.currentTime >= s.start &&
-              v.currentTime < s.end
-          );
-          if (currentSeg && Number.isFinite(v.duration)) {
-            const target = Math.min(v.duration, currentSeg.end + 0.02);
-            if (Number.isFinite(target)) v.currentTime = target;
-          }
-        }
-      }
-      raf = requestAnimationFrame(tick);
-    };
-    raf = requestAnimationFrame(tick);
-    return () => cancelAnimationFrame(raf);
-  }, [store.projectId]);
+  usePlaybackLoop({
+    videoRef,
+    segments: store.segments,
+    previewMode: store.previewMode,
+    projectId: store.projectId,
+    setCurrentTime,
+  });
 
-  // Keyboard shortcuts
-  useEffect(() => {
-    const onKeyDown = async (e: KeyboardEvent) => {
-      const v = videoRef.current;
-      const active = document.activeElement;
-      const inField =
-        active instanceof HTMLInputElement ||
-        active instanceof HTMLTextAreaElement ||
-        active instanceof HTMLSelectElement;
-      if (inField) return;
-
-      // Ctrl+Z / Ctrl+Y / Ctrl+S / Ctrl+E
-      const meta = e.ctrlKey || e.metaKey;
-      if (meta && e.key.toLowerCase() === 'z' && !e.shiftKey) {
-        if (!store.projectId) return;
-        e.preventDefault();
-        await window.lynlens.undo(store.projectId);
-        return;
-      }
-      if (meta && (e.key.toLowerCase() === 'y' || (e.key.toLowerCase() === 'z' && e.shiftKey))) {
-        if (!store.projectId) return;
-        e.preventDefault();
-        await window.lynlens.redo(store.projectId);
-        return;
-      }
-      if (meta && e.key.toLowerCase() === 's') {
-        if (!store.projectId) return;
-        e.preventDefault();
-        await window.lynlens.saveProject(store.projectId);
-        return;
-      }
-      if (meta && e.key.toLowerCase() === 'e') {
-        if (!store.projectId) return;
-        e.preventDefault();
-        setShowExport(true);
-        return;
-      }
-      if (meta && e.key.toLowerCase() === 'r') {
-        if (!store.projectId) return;
-        e.preventDefault();
-        void window.lynlens.aiMarkSilence(store.projectId, {
-          minPauseSec: 1.0,
-          silenceThreshold: 0.03,
-        });
-        return;
-      }
-      if (e.shiftKey && e.key.toLowerCase() === 'a') {
-        if (!store.projectId) return;
-        e.preventDefault();
-        void window.lynlens.approveAllPending(store.projectId);
-        return;
-      }
-
-      if (!v) return;
-
-      switch (e.key) {
-        case ' ':
-          e.preventDefault();
-          if (v.paused) void v.play();
-          else v.pause();
-          break;
-        case 'Escape':
-          if (store.previewMode) store.setPreviewMode(false);
-          break;
-        case 'ArrowLeft':
-          e.preventDefault();
-          v.currentTime = Math.max(0, v.currentTime - (e.shiftKey ? 5 : 1));
-          break;
-        case 'ArrowRight':
-          e.preventDefault();
-          v.currentTime = Math.min(v.duration, v.currentTime + (e.shiftKey ? 5 : 1));
-          break;
-        case ',':
-          e.preventDefault();
-          if (store.videoMeta) v.currentTime = Math.max(0, v.currentTime - 1 / store.videoMeta.fps);
-          break;
-        case '.':
-          e.preventDefault();
-          if (store.videoMeta) v.currentTime = Math.min(v.duration, v.currentTime + 1 / store.videoMeta.fps);
-          break;
-        case 'j':
-        case 'J':
-          e.preventDefault();
-          // Approximation of J-K-L: we don't reverse decode, so J = half speed step and pause-rewind
-          v.playbackRate = Math.max(0.25, (v.playbackRate > 0 ? -1 : v.playbackRate - 1));
-          if (v.paused) void v.play();
-          break;
-        case 'k':
-        case 'K':
-          e.preventDefault();
-          v.playbackRate = 1;
-          if (!v.paused) v.pause();
-          break;
-        case 'l':
-        case 'L':
-          e.preventDefault();
-          v.playbackRate = v.playbackRate >= 4 ? 4 : Math.max(1, v.playbackRate) * 2;
-          if (v.paused) void v.play();
-          break;
-        case 'd':
-        case 'D':
-          if (e.repeat) return;
-          e.preventDefault();
-          if (!store.projectId) return;
-          brushRef.current = { start: v.currentTime };
-          break;
-        case '+':
-        case '=':
-          e.preventDefault();
-          dispatchTimelineZoom('in');
-          break;
-        case '-':
-        case '_':
-          e.preventDefault();
-          dispatchTimelineZoom('out');
-          break;
-        case '0':
-          e.preventDefault();
-          dispatchTimelineZoom('fit');
-          break;
-      }
-    };
-
-    const onKeyUp = async (e: KeyboardEvent) => {
-      const v = videoRef.current;
-      if (!v || !store.projectId) return;
-      if (e.key === 'd' || e.key === 'D') {
-        const brush = brushRef.current;
-        brushRef.current = null;
-        if (brush) {
-          const s = Math.min(brush.start, v.currentTime);
-          const eT = Math.max(brush.start, v.currentTime);
-          if (eT - s > 0.05) {
-            await window.lynlens.addSegment({
-              projectId: store.projectId,
-              start: s,
-              end: eT,
-              source: 'human',
-              reason: null,
-            });
-          }
-        }
-      }
-    };
-    window.addEventListener('keydown', onKeyDown);
-    window.addEventListener('keyup', onKeyUp);
-    return () => {
-      window.removeEventListener('keydown', onKeyDown);
-      window.removeEventListener('keyup', onKeyUp);
-    };
-  }, [store.projectId, store.previewMode, store.videoMeta]);
+  useKeyboardShortcuts({ videoRef, brushRef, setShowExport });
 
   const openVideo = useCallback(async () => {
     const result = await window.lynlens.openVideoDialog();
@@ -797,8 +518,6 @@ export function App() {
     return base + '_edited' + ext;
   }, [store.videoPath]);
 
-  const aiStatusClass =
-    store.aiStatus === 'transcribing' ? 'working' : store.aiStatus === 'error' ? 'error' : 'ready';
 
   return (
     <div
@@ -810,84 +529,9 @@ export function App() {
         if (f) void openFromDrop(f);
       }}
     >
-      <div className="menu-bar">
-        <span className="menu-item" onClick={openVideo}>
-          文件 · 打开视频
-        </span>
-        <span
-          className="menu-item"
-          onClick={async () => {
-            const result = await window.lynlens.openProjectDialog();
-            if (!result) return;
-            store.setProject(result);
-            // Restore segments + transcript. Cut ranges come along inside
-            // deleteSegments (as status='cut'), so one refreshSegments suffices.
-            const qcp = await window.lynlens.getState(result.projectId);
-            store.refreshSegments(qcp.deleteSegments);
-            store.setTranscript(qcp.transcript);
-            store.setAiMode(qcp.aiMode);
-            store.setUserOrientation(qcp.userOrientation ?? null);
-            store.setSpeakerNames(qcp.speakerNames ?? {});
-        store.setDiarizationEngine(qcp.diarizationEngine ?? null);
-            void window.lynlens.getWaveform(result.projectId, 0).then((env) => {
-              store.setWaveform({
-                peak: Float32Array.from(env.peak),
-                rms: Float32Array.from(env.rms),
-              });
-            });
-          }}
-        >
-          文件 · 打开工程
-        </span>
-        <span
-          className="menu-item"
-          onClick={() => store.projectId && window.lynlens.saveProject(store.projectId)}
-          style={{ opacity: store.projectId ? 1 : 0.4 }}
-        >
-          保存工程 <span className="kbd">Ctrl+S</span>
-        </span>
-        <span
-          className="menu-item"
-          onClick={() => store.projectId && setShowExport(true)}
-          style={{ opacity: store.projectId ? 1 : 0.4 }}
-        >
-          导出 <span className="kbd">Ctrl+E</span>
-        </span>
-      </div>
+      <MenuBar onOpenVideo={openVideo} onOpenExport={() => setShowExport(true)} />
 
-      <div className="work-mode-tabs">
-        <button
-          className={`work-mode-tab${workMode === 'precision' ? ' active' : ''}`}
-          onClick={() => void switchMode('precision')}
-        >
-          粗剪
-        </button>
-        <button
-          className={`work-mode-tab${workMode === 'highlight' ? ' active' : ''}`}
-          onClick={() => void switchMode('highlight')}
-          disabled={!store.projectId}
-          title={store.projectId ? undefined : '请先打开视频'}
-        >
-          高光
-        </button>
-        <button
-          className={`work-mode-tab${workMode === 'copywriter' ? ' active' : ''}`}
-          onClick={() => void switchMode('copywriter')}
-          disabled={!store.projectId}
-          title={store.projectId ? undefined : '请先打开视频'}
-        >
-          文案
-        </button>
-        <div className="work-mode-spacer" />
-        <button
-          className="work-mode-agent"
-          disabled={!store.projectId}
-          onClick={() => void window.lynlens.openAgentWindow()}
-          title="打开 AI 助手(独立窗口,可拖到别的屏幕)"
-        >
-          AGENT
-        </button>
-      </div>
+      <WorkModeTabs workMode={workMode} onSwitchMode={(m) => void switchMode(m)} />
 
       {workMode === 'highlight' ? (
         <HighlightPanel
@@ -898,334 +542,95 @@ export function App() {
       ) : workMode === 'copywriter' ? (
         <SocialCopyPanel />
       ) : (
-      <>
-      <div className="ai-bar">
-        <span>
-          <span className={`status-dot ${aiStatusClass}`} />
-          AI 状态: {store.aiStatus === 'idle' ? '就绪' : store.aiStatus === 'transcribing' ? '转录中' : '错误'}
-        </span>
-        <span>AI 模式:</span>
-        <div className="mode-switch">
-          <button
-            className={store.aiMode === 'L2' ? 'active' : ''}
-            onClick={() => store.setAiMode('L2')}
-            title="L2: AI 标记进入待审核状态，你逐条批准"
-          >
-            审核
-          </button>
-          <button
-            className={store.aiMode === 'L3' ? 'active' : ''}
-            onClick={() => {
-              if (
-                confirm(
-                  '启用自动模式? AI 标记将直接生效、可自动导出。建议仅在日常批处理且信任 AI 的场景使用。'
-                )
-              ) {
-                store.setAiMode('L3');
-              }
-            }}
-            title="L3: AI 标记直接生效,跳过人工审核"
-          >
-            自动
-          </button>
-        </div>
-        <div style={{ flex: 1 }} />
-        <button
-          className="ai"
-          disabled={!store.projectId || store.aiStatus === 'transcribing' || diarizing}
-          onClick={() => {
-            if (!store.projectId) return;
-            // Always open the combined dialog: orientation + speaker count.
-            // Pre-selecting count up front is the single biggest lever for
-            // good diarization results, so we never skip this step.
-            setShowOrientDialog(true);
-          }}
-          title="生成字幕 + 按声纹区分说话人,一步完成"
-        >
-          {store.aiStatus === 'transcribing'
-            ? `转录中 ${Math.round(store.transcribeProgress * 100)}%`
-            : diarizing
-              ? '区分声纹中...'
-              : store.transcript
-                ? `重新转录 (${store.transcript.segments.length} 段)`
-                : '字幕转录'}
-        </button>
-        {/* 区分说话人 button merged into 字幕转录 above — same dialog,
-            one-click pipeline. Chat panel MCP still exposes it separately. */}
-        <button
-          className="ai"
-          disabled={!store.projectId}
-          onClick={() => setShowQuickMarkDialog(true)}
-          title="自动标出停顿 / 语气词 / 重复段 (自选阈值)"
-        >
-          快速标记
-        </button>
-      </div>
-
-      <div className="main-area">
-        <div className="player-wrap" ref={playerWrapRef}>
-          {store.videoUrl ? (
-            <>
-              <video
-                ref={videoRef}
-                src={store.videoUrl}
-                onPlay={() => setIsPlaying(true)}
-                onPause={() => setIsPlaying(false)}
-                // Native progress events drive the playhead state. We used to
-                // rely entirely on a requestAnimationFrame loop in a useEffect,
-                // but that effect's lifecycle is fragile — re-runs caused by
-                // segment refreshes (when an old .qcp replays its segments)
-                // can cancel the RAF before it ever fires, leaving the React
-                // currentTime stuck at 0 even though the <video> element is
-                // playing. timeupdate/seeked/loadedmetadata are fired directly
-                // by the browser on the element, completely independent of
-                // any useEffect, so the playhead can never get "stuck" no
-                // matter what state churn happens upstream.
-                onTimeUpdate={(e) =>
-                  setCurrentTime((e.currentTarget as HTMLVideoElement).currentTime)
-                }
-                onSeeked={(e) =>
-                  setCurrentTime((e.currentTarget as HTMLVideoElement).currentTime)
-                }
-                onLoadedMetadata={(e) =>
-                  setCurrentTime((e.currentTarget as HTMLVideoElement).currentTime)
-                }
-                onError={(e) => console.error('[video] error', (e.target as HTMLVideoElement).error)}
-                controls={false}
-                style={(() => {
-                  const isSide = previewRotation === 90 || previewRotation === 270;
-                  // When rotated 90/270 the pre-rotation box must fit within
-                  // (containerH × containerW), not (containerW × containerH),
-                  // so after the transform the visible frame lands back inside
-                  // the player. maxWidth+maxHeight+objectFit:contain together
-                  // give us a clean letterboxed rotation.
-                  const maxW = isSide && playerWrapSize.h ? `${playerWrapSize.h}px` : '100%';
-                  const maxH = isSide && playerWrapSize.w ? `${playerWrapSize.w}px` : '100%';
-                  return {
-                    maxWidth: maxW,
-                    maxHeight: maxH,
-                    objectFit: 'contain' as const,
-                    transform: `rotate(${previewRotation}deg)`,
-                    transition: 'transform 0.2s ease',
-                  };
-                })()}
-              />
-              <button
-                className="preview-rotate-btn"
-                onClick={rotatePreview}
-                title="仅旋转预览画面,不影响原视频和导出"
-              >
-                旋转 {previewRotation}°
-              </button>
-            </>
-          ) : (
-            <div className="drop-hint">
-              <h2>拖入视频文件,或点击菜单「文件 · 打开视频」</h2>
-              支持 mp4 / mov / mkv / webm。导入后按 <span className="kbd">空格</span> 播放,
-              按住 <span className="kbd">D</span> 键刷选要删除的段落。
-            </div>
-          )}
-        </div>
-
-        <Resizer
-          direction="horizontal"
-          value={sidebarWidth}
-          onChange={setSidebarWidth}
-          min={220}
-          max={700}
-          invert
-        />
-        <div className="sidebar" style={{ flex: `0 0 ${sidebarWidth}px`, width: sidebarWidth }}>
-          <div className="sidebar-tabs">
-            <button
-              className={`sidebar-tab${sidebarTab === 'segments' ? ' active' : ''}`}
-              onClick={() => setSidebarTab('segments')}
-            >
-              标记段 ({store.segments.length})
-            </button>
-            <button
-              className={`sidebar-tab${sidebarTab === 'subtitles' ? ' active' : ''}`}
-              onClick={() => setSidebarTab('subtitles')}
-            >
-              字幕稿 {store.transcript ? `(${store.transcript.segments.length})` : ''}
-            </button>
-          </div>
-          {sidebarTab === 'segments' ? (
-            <>
-          <div className="sidebar-header">
-            <span>标记段 ({store.segments.length})</span>
-            <div className="sidebar-filter">
-              <button className={segFilter === 'all' ? 'active' : ''} onClick={() => setSegFilter('all')}>全部</button>
-              <button className={segFilter === 'human' ? 'active' : ''} onClick={() => setSegFilter('human')}>人工</button>
-              <button className={segFilter === 'ai' ? 'active' : ''} onClick={() => setSegFilter('ai')}>AI</button>
-              <button className={segFilter === 'pending' ? 'active' : ''} onClick={() => setSegFilter('pending')}>待审</button>
-            </div>
-          </div>
-          <div className="segment-list">
-            {filtered.length === 0 && (
-              <div style={{ padding: 20, color: '#666', fontSize: 12, textAlign: 'center' }}>
-                暂无标记段
-              </div>
-            )}
-            {filtered.map((s, i) => (
-              <SegmentRow key={s.id} seg={s} index={i + 1} onJump={onJumpTo} />
-            ))}
-          </div>
-          <div className="sidebar-footer">
-            共 {store.segments.length} 段 · 已删 {formatTime(totalDeleted)}
-            {pendingCount > 0 && (
-              <>
-                {' · '}
-                <span style={{ color: '#9b59b6' }}>待审 {pendingCount}</span>
-              </>
-            )}
-          </div>
-            </>
-          ) : (
-            <SubtitlePanel
-              projectId={store.projectId}
-              videoMeta={store.videoMeta}
-              transcript={store.transcript}
-              userOrientation={store.userOrientation}
-              currentTime={currentTime}
-              speakerNames={store.speakerNames}
-              cutSegments={cutSegmentsForPanel}
-              onJump={onJumpTo}
+        <>
+          <AIBar
+            diarizing={diarizing}
+            onOpenOrientDialog={() => setShowOrientDialog(true)}
+            onOpenQuickMarkDialog={() => setShowQuickMarkDialog(true)}
+          />
+          <div className="main-area">
+            <MediaPlayer
+              videoRef={videoRef}
+              playerWrapRef={playerWrapRef}
+              videoUrl={store.videoUrl}
+              playerWrapSize={playerWrapSize}
+              previewRotation={previewRotation}
+              setCurrentTime={setCurrentTime}
+              setIsPlaying={setIsPlaying}
+              onRotatePreview={rotatePreview}
             />
-          )}
-        </div>
-
-        {/* Chat now lives in a standalone BrowserWindow — opened by the
-            AGENT button in the tab bar. See AgentWindowShell.tsx. */}
-      </div>
-
-      <div className="toolbar">
-        <button
-          onClick={() => {
-            const v = videoRef.current;
-            if (v) {
-              if (v.paused) void v.play();
-              else v.pause();
-            }
-          }}
-          disabled={!store.videoUrl}
-        >
-          {isPlaying ? '暂停' : '播放'}
-        </button>
-        <button
-          className={store.previewMode ? 'ai' : ''}
-          onClick={() => store.setPreviewMode(!store.previewMode)}
-          disabled={!store.videoUrl}
-        >
-          {store.previewMode ? '预览中 (Esc 退出)' : '预览成品'}
-        </button>
-        <button
-          onClick={handleCommitRipple}
-          disabled={!store.videoUrl || approvedCount === 0}
-          title="把所有已批准的红框真的剪掉,时间轴压缩成品状态。原视频不动,可撤销。"
-        >
-          剪切 ({approvedCount})
-        </button>
-        <button
-          className="primary"
-          onClick={() => setShowExport(true)}
-          disabled={
-            !store.videoUrl || (store.segments.length === 0 && cutRanges.length === 0)
-          }
-        >
-          导出
-        </button>
-        <div className="spacer" />
-        <div className="stats">
-          {formatTime(effectiveCurrentTime)} / {formatTime(effectiveDuration)}
-          {totalCut > 0 && (
-            <>
-              {' · '}
-              <span style={{ color: '#f39c12' }}>已剪 {formatTime(totalCut)}</span>
-            </>
-          )}
-          {totalDeleted > 0 && (
-            <>
-              {' · '}待剪 {formatTime(totalDeleted)}
-            </>
-          )}
-        </div>
-      </div>
-
-      {pendingCount > 0 && (
-        <div
-          style={{
-            background: '#3a2d4a',
-            padding: '6px 14px',
-            borderTop: '1px solid #5a4373',
-            display: 'flex',
-            alignItems: 'center',
-            gap: 10,
-            fontSize: 12,
-          }}
-        >
-          <span style={{ color: '#d0b3ff' }}>
-            有 {pendingCount} 个 AI 待审核段落
-          </span>
-          <div style={{ flex: 1 }} />
-          <button
-            className="ai"
-            onClick={async () => {
+            <Resizer
+              direction="horizontal"
+              value={sidebarWidth}
+              onChange={setSidebarWidth}
+              min={220}
+              max={700}
+              invert
+            />
+            <div className="sidebar" style={{ flex: `0 0 ${sidebarWidth}px`, width: sidebarWidth }}>
+              <SegmentSidebar
+                projectId={store.projectId}
+                videoMeta={store.videoMeta}
+                transcript={store.transcript}
+                userOrientation={store.userOrientation}
+                currentTime={currentTime}
+                speakerNames={store.speakerNames}
+                cutSegmentsForPanel={cutSegmentsForPanel}
+                filtered={filtered}
+                totalDeleted={totalDeleted}
+                pendingCount={pendingCount}
+                segFilter={segFilter}
+                onSegFilterChange={setSegFilter}
+                sidebarTab={sidebarTab}
+                onSidebarTabChange={setSidebarTab}
+                onJumpTo={onJumpTo}
+              />
+            </div>
+          </div>
+          <BottomToolbar
+            videoRef={videoRef}
+            isPlaying={isPlaying}
+            approvedCount={approvedCount}
+            effectiveCurrentTime={effectiveCurrentTime}
+            effectiveDuration={effectiveDuration}
+            totalCut={totalCut}
+            totalDeleted={totalDeleted}
+            cutRangeCount={cutRanges.length}
+            onCommitRipple={handleCommitRipple}
+            onOpenExport={() => setShowExport(true)}
+          />
+          <PendingBanner pendingCount={pendingCount} />
+          <TimelineSection
+            timelineHeight={timelineHeight}
+            onTimelineHeightChange={setTimelineHeight}
+            effectiveDuration={effectiveDuration}
+            sourceDuration={sourceDuration}
+            cutRanges={cutRanges}
+            effectiveCurrentTime={effectiveCurrentTime}
+            isPlaying={isPlaying}
+            waveform={store.waveform}
+            segments={store.segments}
+            transcript={store.transcript}
+            onSeek={onSeek}
+            onScrubStart={onScrubStart}
+            onScrubUpdate={onScrubUpdate}
+            onScrubEnd={onScrubEnd}
+            onMarkRange={onMarkRange}
+            onEraseRange={onEraseRange}
+            onResizeSegment={onResizeSegment}
+            onResizeSubtitle={(segId, srcStart, srcEnd) => {
+              // Timeline already ran the source-time cascade; server will run
+              // it again (authoritative), which is fine — same result.
               if (!store.projectId) return;
-              await window.lynlens.approveAllPending(store.projectId);
+              void window.lynlens.updateTranscriptSegmentTime(
+                store.projectId,
+                segId,
+                srcStart,
+                srcEnd
+              );
             }}
-          >
-            ✓ 全部批准 (Shift+A)
-          </button>
-          <button
-            onClick={async () => {
-              if (!store.projectId) return;
-              await window.lynlens.rejectAllPending(store.projectId);
-            }}
-          >
-            ✗ 全部拒绝
-          </button>
-        </div>
-      )}
-      <Resizer
-        direction="vertical"
-        value={timelineHeight}
-        onChange={setTimelineHeight}
-        min={120}
-        max={500}
-        invert
-      />
-      <div className="timeline-outer" style={{ height: timelineHeight }}>
-        <Timeline
-          duration={effectiveDuration}
-          sourceDuration={sourceDuration}
-          cutRanges={cutRanges}
-          currentTime={effectiveCurrentTime}
-          isPlaying={isPlaying}
-          waveform={store.waveform}
-          segments={store.segments}
-          transcript={store.transcript}
-          onSeek={onSeek}
-          onScrubStart={onScrubStart}
-          onScrubUpdate={onScrubUpdate}
-          onScrubEnd={onScrubEnd}
-          onMarkRange={onMarkRange}
-          onEraseRange={onEraseRange}
-          onResizeSegment={onResizeSegment}
-          onResizeSubtitle={(segId, srcStart, srcEnd) => {
-            // Timeline already ran the source-time cascade; server will run
-            // it again (authoritative), which is fine — same result.
-            if (!store.projectId) return;
-            void window.lynlens.updateTranscriptSegmentTime(
-              store.projectId,
-              segId,
-              srcStart,
-              srcEnd
-            );
-          }}
-        />
-      </div>
-      </>
+          />
+        </>
       )}
 
       {showExport && store.videoPath && (
@@ -1398,82 +803,4 @@ function MarkOverCutDialog({
   );
 }
 
-function SegmentRow({
-  seg,
-  index,
-  onJump,
-}: {
-  seg: Segment;
-  index: number;
-  onJump: (t: number) => void;
-}) {
-  const cls = seg.status;
-  const isCut = seg.status === 'cut';
-  return (
-    <div className={`segment-item ${cls}`} onClick={() => onJump(seg.start)}>
-      <div className="num">#{index}</div>
-      <div className="meta">
-        <div>
-          <span style={{ opacity: 0.7, marginRight: 4 }}>{seg.source === 'ai' ? 'AI' : '人'}</span>
-          {isCut && <span style={{ color: '#f39c12', marginRight: 4 }}>已剪</span>}
-          <span
-            className="time"
-            style={isCut ? { textDecoration: 'line-through', opacity: 0.7 } : undefined}
-          >
-            {formatTime(seg.start)} - {formatTime(seg.end)} ({(seg.end - seg.start).toFixed(2)}s)
-          </span>
-        </div>
-        {seg.reason && <div className="reason">{seg.reason}</div>}
-      </div>
-      <div className="segment-actions" onClick={(e) => e.stopPropagation()}>
-        {seg.source === 'ai' && seg.status === 'pending' && (
-          <>
-            <button
-              title="批准 (A)"
-              onClick={() => {
-                const pid = useStore.getState().projectId;
-                if (pid) void window.lynlens.approveSegment(pid, seg.id);
-              }}
-            >
-              ✓
-            </button>
-            <button
-              title="拒绝 (X)"
-              onClick={() => {
-                const pid = useStore.getState().projectId;
-                if (pid) void window.lynlens.rejectSegment(pid, seg.id);
-              }}
-            >
-              ✗
-            </button>
-          </>
-        )}
-        {isCut && (
-          <button
-            title="撤销这一刀:段恢复为已批准,时间轴重新变长"
-            onClick={() => {
-              const pid = useStore.getState().projectId;
-              if (pid) void window.lynlens.revertRipple(pid, seg.id);
-            }}
-          >
-            ↶
-          </button>
-        )}
-        <button
-          title="删除"
-          onClick={() => {
-            const pid = useStore.getState().projectId;
-            if (pid) void window.lynlens.removeSegment(pid, seg.id);
-          }}
-        >
-          ×
-        </button>
-      </div>
-    </div>
-  );
-}
 
-function dispatchTimelineZoom(detail: 'in' | 'out' | 'fit') {
-  const el = document.querySelector('.timeline-wrap');
-  if (el) el.dispatchEvent(new CustomEvent('lynlens-zoom', { detail }));
-}
