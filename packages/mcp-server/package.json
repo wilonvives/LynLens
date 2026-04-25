@@ -1,6 +1,6 @@
 {
   "name": "@lynlens/mcp-server",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "LynLens MCP Server - exposes the Core Engine to Claude/Cursor via MCP protocol",
   "type": "module",
   "bin": {
