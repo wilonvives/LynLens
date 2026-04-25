@@ -142,6 +142,13 @@ export function ChatPanel({ open, onClose, width, detached, projectIdOverride }:
   // Which AI backend this chat is talking to. Persisted in main; we sync
   // on open so switching in one app window reflects in another next time.
   const [provider, setProviderState] = useState<'claude' | 'codex'>('claude');
+  // Always-on-top state for the detached agent window. Main owns the truth
+  // (BrowserWindow.isAlwaysOnTop); we mirror locally for the toggle.
+  const [pinned, setPinned] = useState(false);
+  useEffect(() => {
+    if (!detached) return;
+    void window.lynlens.getAgentWindowPinned().then(setPinned);
+  }, [detached]);
 
   // Fetch who we're authenticated as so the header can show it — also
   // refetch whenever the provider changes because each provider has its
@@ -299,20 +306,69 @@ export function ChatPanel({ open, onClose, width, detached, projectIdOverride }:
           )}
         </div>
         <div className="spacer" />
+        {detached && (
+          <button
+            className={`chat-icon-btn${pinned ? ' active' : ''}`}
+            onClick={async () => {
+              const next = !pinned;
+              await window.lynlens.setAgentWindowPinned(next);
+              setPinned(next);
+            }}
+            title={pinned ? '取消置顶' : '置顶(切到其他软件时也保持在最上层)'}
+            aria-label="置顶"
+          >
+            {/* Pushpin icon — filled = pinned, outline = not pinned */}
+            <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true">
+              {pinned ? (
+                <path
+                  d="M10.5 1.5L14.5 5.5L12 8L13 12L11.5 13.5L7.5 9.5L4 13H3V12L6.5 8.5L2.5 4.5L4 3L8 4L10.5 1.5Z"
+                  fill="currentColor"
+                />
+              ) : (
+                <path
+                  d="M10.5 1.5L14.5 5.5L12 8L13 12L11.5 13.5L7.5 9.5L4 13H3V12L6.5 8.5L2.5 4.5L4 3L8 4L10.5 1.5Z"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="1.3"
+                  strokeLinejoin="round"
+                />
+              )}
+            </svg>
+          </button>
+        )}
         <button
-          className="chat-close"
+          className="chat-icon-btn"
           onClick={async () => {
             if (!projectId) return;
             await window.lynlens.agentReset(projectId);
             setMessages([]);
           }}
           title="清空对话记录,开新话题"
+          aria-label="刷新对话"
         >
-          重置
+          {/* Refresh / reload icon */}
+          <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true">
+            <path
+              d="M8 2.5a5.5 5.5 0 014.95 3.1M13.5 3v3h-3M8 13.5a5.5 5.5 0 01-4.95-3.1M2.5 13v-3h3"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="1.4"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            />
+          </svg>
         </button>
         {!detached && (
-          <button className="chat-close" onClick={onClose} title="关闭">
-            ✕
+          <button className="chat-icon-btn" onClick={onClose} title="关闭" aria-label="关闭">
+            <svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true">
+              <path
+                d="M3 3l8 8M11 3l-8 8"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.6"
+                strokeLinecap="round"
+              />
+            </svg>
           </button>
         )}
       </div>

@@ -36,7 +36,12 @@ interface Props {
    * the ranges drive the effective-time display + "fully covered" detection.
    */
   cutSegments: CutSegmentRef[];
-  onJump: (effectiveT: number) => void;
+  /**
+   * Seek the player to a SOURCE-time second. Transcript segments live in
+   * source time, so all jump-from-subtitle paths pass seg.start directly.
+   * (Kept as a generic "second" rather than re-naming each call site.)
+   */
+  onJump: (sourceSec: number) => void;
 }
 
 /**
@@ -107,6 +112,70 @@ function parseTime(raw: string): number | null {
   if (!Number.isFinite(h) || !Number.isFinite(m) || !Number.isFinite(sec)) return null;
   if (h < 0 || m < 0 || sec < 0) return null;
   return h * 3600 + m * 60 + sec;
+}
+
+/**
+ * Export / copy menu.
+ *
+ * Hosted at module level (not inside SubtitlePanel) so the parent's state
+ * updates don't remount this component — clicking an item would otherwise
+ * race the outside-click handler and close too eagerly.
+ *
+ * Three items: copy plain text, copy with timestamps, download SRT.
+ * Clicking anywhere outside the menu closes it (window mousedown listener).
+ */
+interface ExportMenuProps {
+  onCopyPlain: () => void;
+  onCopyTimed: () => void;
+  onDownloadSrt: () => void;
+  disabled?: boolean;
+}
+function ExportMenu({ onCopyPlain, onCopyTimed, onDownloadSrt, disabled }: ExportMenuProps): JSX.Element {
+  const [open, setOpen] = useState(false);
+  const rootRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    if (!open) return;
+    const onDocDown = (e: MouseEvent): void => {
+      if (!rootRef.current?.contains(e.target as Node)) setOpen(false);
+    };
+    window.addEventListener('mousedown', onDocDown);
+    return () => window.removeEventListener('mousedown', onDocDown);
+  }, [open]);
+  function pick(fn: () => void): void {
+    setOpen(false);
+    fn();
+  }
+  return (
+    <div className="sub-export-wrap" ref={rootRef}>
+      <button
+        className="sub-export-btn"
+        onClick={() => setOpen((v) => !v)}
+        disabled={disabled}
+        title="复制或下载字幕"
+        aria-haspopup="menu"
+        aria-expanded={open}
+      >
+        {/* Download / share arrow icon */}
+        <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true">
+          <path
+            d="M8 2v8M5 7l3 3 3-3M3 13h10"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="1.4"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          />
+        </svg>
+      </button>
+      {open && (
+        <div className="sub-export-menu" role="menu">
+          <button onClick={() => pick(onCopyPlain)}>复制纯文本</button>
+          <button onClick={() => pick(onCopyTimed)}>复制时间戳</button>
+          <button onClick={() => pick(onDownloadSrt)}>下载 SRT</button>
+        </div>
+      )}
+    </div>
+  );
 }
 
 /**
@@ -273,6 +342,63 @@ export function SubtitlePanel({
   }
 
   /**
+   * Build a standards-compliant SRT blob. Uses effective time (post-ripple)
+   * so what the user plays back matches what the file says. Subtitles
+   * fully swallowed by cuts are skipped. Timestamps are HH:MM:SS,mmm —
+   * the SRT spec uses COMMA as the ms separator (not period).
+   */
+  function buildSrt(): string {
+    if (!transcript) return '';
+    const lines: string[] = [];
+    let idx = 1;
+    const fmt = (sec: number): string => {
+      const total = Math.max(0, Math.round(sec * 1000));
+      const h = Math.floor(total / 3600000);
+      const m = Math.floor((total % 3600000) / 60000);
+      const s = Math.floor((total % 60000) / 1000);
+      const ms = total % 1000;
+      return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')},${String(ms).padStart(3, '0')}`;
+    };
+    for (const seg of transcript.segments) {
+      const effStart = sourceToEffective(seg.start, cutRanges);
+      const effEnd = sourceToEffective(seg.end, cutRanges);
+      if (effEnd - effStart < 0.2) continue;
+      const text = seg.text.trim();
+      if (!text) continue;
+      lines.push(String(idx));
+      lines.push(`${fmt(effStart)} --> ${fmt(effEnd)}`);
+      lines.push(text);
+      lines.push('');
+      idx += 1;
+    }
+    return lines.join('\n');
+  }
+
+  /**
+   * Trigger a browser download of the SRT. Prepends a UTF-8 BOM (\uFEFF)
+   * so Windows players (Media Player / PotPlayer) render Chinese text
+   * correctly — without it these players guess GBK and show mojibake.
+   * macOS / Linux players strip or ignore the BOM, so it's safe everywhere.
+   */
+  function downloadSrt(): void {
+    if (!transcript) return;
+    const body = buildSrt();
+    if (!body) {
+      alert('没有可导出的字幕段');
+      return;
+    }
+    const blob = new Blob(['\uFEFF', body], { type: 'text/plain;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `subtitles-${Date.now()}.srt`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }
+
+  /**
    * Copy with timestamps. Format per line:
    *   [MM:SS - MM:SS] [Speaker] Text
    * Uses EFFECTIVE time (post-ripple) — matches what the user sees on
@@ -429,15 +555,12 @@ export function SubtitlePanel({
             <button onClick={doReplace} disabled={!replaceFind}>
               替换全部
             </button>
-            <button onClick={copyAll} title="纯文本,每段独占一行">
-              复制
-            </button>
-            <button
-              onClick={copyAllWithTimestamps}
-              title="每行开头带时间戳和说话人,例: [00:00 - 00:04] [说话人] 文本"
-            >
-              复制+时间
-            </button>
+            <ExportMenu
+              onCopyPlain={() => void copyAll()}
+              onCopyTimed={() => void copyAllWithTimestamps()}
+              onDownloadSrt={() => downloadSrt()}
+              disabled={!transcript || transcript.segments.length === 0}
+            />
           </div>
           <div className="sub-settings-row">
             <span>视频方向</span>
@@ -558,7 +681,28 @@ export function SubtitlePanel({
           (isFullyCut ? ' cut-full' : '') +
           (isPartialCut ? ' cut-partial' : '');
         return (
-          <div key={seg.id} className={cardCls} data-seg-id={seg.id}>
+          <div
+            key={seg.id}
+            className={cardCls}
+            data-seg-id={seg.id}
+            // Card-wide click seeks the playhead to this subtitle's start.
+            // Pass SOURCE time (seg.start) — that's what App.onJumpTo expects;
+            // it dispatches the lynlens-jump event in effective time itself.
+            // Earlier versions accidentally passed effStart here, which made
+            // the video seek to "the position from before the cuts" — the
+            // exact symptom users see when subtitle jumps land in the wrong
+            // place. Skipped when the click originates inside interactive
+            // controls — ± nudge buttons, speaker badge, etc. — so pressing a
+            // nudge doesn't also yank the video back to the segment head.
+            onClick={(e) => {
+              if (isFullyCut) return;
+              const el = e.target as HTMLElement;
+              if (el.closest('button, input, select, textarea, .sub-cut-dismiss, .sub-time-edit')) {
+                return;
+              }
+              onJump(seg.start);
+            }}
+          >
             <div className="sub-head">
               <span className="sub-idx">#{i + 1}</span>
               {isFullyCut && <span className="sub-cut-tag">(已剪)</span>}
@@ -646,6 +790,13 @@ export function SubtitlePanel({
             <textarea
               className="sub-text"
               value={currentText}
+              onFocus={() => {
+                // Starting to edit text should also seek the player there —
+                // keyboard-driven users expect the video to follow their
+                // editing cursor, same as clicking the card does. Use SOURCE
+                // time (seg.start), see card-onClick comment above.
+                if (!isFullyCut) onJump(seg.start);
+              }}
               onChange={(e) =>
                 setDraft((prev) => ({ ...prev, [seg.id]: e.target.value }))
               }
@@ -945,7 +1096,8 @@ interface TimestampEditorProps {
   effEnd: number;
   /** null when no edge of THIS segment is being edited. */
   editing: { edge: 'start' | 'end'; draft: string } | null;
-  onJump: (effectiveSec: number) => void;
+  /** Seek the player to a SOURCE-time second (see SubtitlePanel.onJump). */
+  onJump: (sourceSec: number) => void;
   onBeginEdit: (edge: 'start' | 'end', initialDraft: string) => void;
   onDraftChange: (draft: string) => void;
   /**
@@ -1046,7 +1198,10 @@ function TimestampEditor({
           // way to "go to" this subtitle. Compromise: alt/meta-click jumps,
           // plain click opens edit mode.
           if (e.altKey || e.metaKey) {
-            onJump(effStart);
+            // Pass SOURCE time — onJump expects source seconds despite the
+            // confusingly-named effectiveSec parameter (App routes it through
+            // onJumpTo, which seeks v.currentTime directly).
+            onJump(seg.start);
             return;
           }
           onBeginEdit(edge, formatTime(value));

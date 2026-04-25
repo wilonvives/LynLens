@@ -233,48 +233,86 @@ export function App() {
     return () => off();
   }, [store.projectId]);
 
-  // Playhead RAF update
+  // Playhead RAF update.
+  //
+  // CRITICAL: do NOT depend on store.segments / store.previewMode here.
+  // When opening an old .qcp the main process replays N "segment.added"
+  // events to rebuild the project. Each one triggers refreshSegments,
+  // which creates a fresh segments array reference. If those refs were
+  // in the dep array, every replayed event would cleanup + re-schedule
+  // the RAF before its first frame ever fires — the playhead state
+  // ends up frozen at 0 even though the <video> element's currentTime
+  // is moving. Symptom: opening an old project, the playhead sticks at
+  // frame 1; the first user-triggered segment change happens to land
+  // between events, the RAF finally fires, and the playhead snaps to
+  // the correct spot.
+  //
+  // Fix: read the latest segments / previewMode through refs from inside
+  // the tick. The effect itself only needs to (re)mount when projectId
+  // changes (cleaning up the loop on unmount and on project switch).
+  const segmentsRef = useRef(store.segments);
+  useEffect(() => {
+    segmentsRef.current = store.segments;
+  }, [store.segments]);
+  const previewModeRef = useRef(store.previewMode);
+  useEffect(() => {
+    previewModeRef.current = store.previewMode;
+  }, [store.previewMode]);
   useEffect(() => {
     let raf = 0;
     const tick = () => {
-      const v = videoRef.current;
+      // Resolve the <video> element through the DOM rather than videoRef.
+      // The React ref turned out to be unreliable in dev — StrictMode and
+      // Fast Refresh can leave the closure pointing at a stale ref instance
+      // while the real <video> is alive in the DOM (see git history). The
+      // DOM is the single source of truth, so we just look it up here and
+      // cache it on the ref for the rest of the renderer that still uses
+      // videoRef.current. This is safe because the player-wrap renders at
+      // most ONE video element at a time.
+      const v = videoRef.current ?? document.querySelector<HTMLVideoElement>('.player-wrap video');
+      if (v && videoRef.current !== v) {
+        // Backfill the ref so the rest of App (keyboard shortcuts, seek, ...)
+        // sees the same element we just resolved.
+        (videoRef as React.MutableRefObject<HTMLVideoElement | null>).current = v;
+      }
       if (v) {
         setCurrentTime(v.currentTime);
         // Committed ripple cuts: ALWAYS skip. A cut is permanent until the
         // user clicks ↶ on its segment. If the playhead lands inside a cut
         // zone (after seeking, or right after a fresh cut was committed),
-        // jump to the far side.
-        const cut = store.segments.find(
+        // jump to the far side. Guard against NaN — before loadedmetadata
+        // fires v.duration is NaN, and writing currentTime = NaN throws an
+        // uncaught TypeError that kills the whole RAF chain.
+        const segs = segmentsRef.current;
+        const cut = segs.find(
           (s) =>
             s.status === 'cut' && v.currentTime >= s.start && v.currentTime < s.end
         );
-        if (cut) {
-          v.currentTime = Math.min(v.duration, cut.end + 0.02);
+        if (cut && Number.isFinite(v.duration)) {
+          const target = Math.min(v.duration, cut.end + 0.02);
+          if (Number.isFinite(target)) v.currentTime = target;
         }
         // Preview mode: also skip approved delete segments that haven't been
         // rippled yet. This keeps the "preview成品" button useful before the
         // user commits a cut.
-        if (store.previewMode && !v.paused) {
-          const currentSeg = store.segments.find(
+        if (previewModeRef.current && !v.paused) {
+          const currentSeg = segs.find(
             (s) =>
               s.status === 'approved' &&
               v.currentTime >= s.start &&
               v.currentTime < s.end
           );
-          if (currentSeg) {
-            v.currentTime = Math.min(v.duration, currentSeg.end + 0.02);
+          if (currentSeg && Number.isFinite(v.duration)) {
+            const target = Math.min(v.duration, currentSeg.end + 0.02);
+            if (Number.isFinite(target)) v.currentTime = target;
           }
-        }
-        // Brush painting: extend mark to current playhead
-        if (brushRef.current && !v.paused && store.projectId) {
-          // do nothing visible; we'll commit on keyup
         }
       }
       raf = requestAnimationFrame(tick);
     };
     raf = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(raf);
-  }, [store.previewMode, store.segments, store.projectId]);
+  }, [store.projectId]);
 
   // Keyboard shortcuts
   useEffect(() => {
@@ -933,7 +971,25 @@ export function App() {
                 src={store.videoUrl}
                 onPlay={() => setIsPlaying(true)}
                 onPause={() => setIsPlaying(false)}
-                 
+                // Native progress events drive the playhead state. We used to
+                // rely entirely on a requestAnimationFrame loop in a useEffect,
+                // but that effect's lifecycle is fragile — re-runs caused by
+                // segment refreshes (when an old .qcp replays its segments)
+                // can cancel the RAF before it ever fires, leaving the React
+                // currentTime stuck at 0 even though the <video> element is
+                // playing. timeupdate/seeked/loadedmetadata are fired directly
+                // by the browser on the element, completely independent of
+                // any useEffect, so the playhead can never get "stuck" no
+                // matter what state churn happens upstream.
+                onTimeUpdate={(e) =>
+                  setCurrentTime((e.currentTarget as HTMLVideoElement).currentTime)
+                }
+                onSeeked={(e) =>
+                  setCurrentTime((e.currentTarget as HTMLVideoElement).currentTime)
+                }
+                onLoadedMetadata={(e) =>
+                  setCurrentTime((e.currentTarget as HTMLVideoElement).currentTime)
+                }
                 onError={(e) => console.error('[video] error', (e.target as HTMLVideoElement).error)}
                 controls={false}
                 style={(() => {

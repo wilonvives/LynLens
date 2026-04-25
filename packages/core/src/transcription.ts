@@ -148,6 +148,25 @@ export class WhisperLocalService implements TranscriptionService {
   }
 }
 
+/**
+ * Strip punctuation from transcript text.
+ *
+ * Product decision: LynLens subtitles are intended for口播-style video
+ * where每行一句话, no commas/periods. Whisper.cpp confidently inserts
+ * punctuation at model-inferred pause boundaries, which then appears in
+ * the UI as "被都好" and "," mid-line. We drop them post-parse so the
+ * rendered subtitle stays clean.
+ *
+ * What we strip: ASCII . , ; : ! ? and their full-width counterparts
+ * ，。；：！？、 plus common brackets / quotes. We intentionally leave
+ * hyphens alone — stripping them would break English words like "co-op"
+ * which are rare but real in some recordings.
+ */
+const PUNCT_RE = /[.,;:!?，。；：！？、"'"''「」『』()（）<>《》…]/g;
+function stripPunctuation(s: string): string {
+  return s.replace(PUNCT_RE, '').replace(/\s+/g, ' ').trim();
+}
+
 function parseWhisperCppJson(json: unknown, model: string): Transcript {
   const j = json as {
     result?: { language?: string };
@@ -164,7 +183,7 @@ function parseWhisperCppJson(json: unknown, model: string): Transcript {
     const words: TranscriptWord[] = (seg.tokens ?? [])
       .filter((t) => t.offsets && !t.text.startsWith('['))
       .map((t) => ({
-        w: t.text.trim(),
+        w: stripPunctuation(t.text),
         start: (t.offsets!.from ?? 0) / 1000,
         end: (t.offsets!.to ?? 0) / 1000,
       }))
@@ -173,7 +192,7 @@ function parseWhisperCppJson(json: unknown, model: string): Transcript {
       id: `t_${uuid().slice(0, 8)}`,
       start,
       end,
-      text: seg.text.trim(),
+      text: stripPunctuation(seg.text),
       words,
     };
   });

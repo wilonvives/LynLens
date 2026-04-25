@@ -103,6 +103,8 @@ const api: IpcApi = {
     ipcRenderer.on('active-project-changed', listener);
     return () => ipcRenderer.removeListener('active-project-changed', listener);
   },
+  setAgentWindowPinned: (pinned) => ipcRenderer.invoke('agent-window-set-pinned', pinned),
+  getAgentWindowPinned: () => ipcRenderer.invoke('agent-window-get-pinned'),
   onAgentEvent: (cb) => {
     const listener = (_ev: Electron.IpcRendererEvent, event: unknown) => cb(event as never);
     ipcRenderer.on('agent-event', listener);

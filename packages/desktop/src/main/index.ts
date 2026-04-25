@@ -782,6 +782,21 @@ ipcMain.handle('agent-set-active-project-id', async (_ev, pid: string | null) =>
   broadcast('active-project-changed', pid);
 });
 
+ipcMain.handle('agent-window-set-pinned', async (_ev, pinned: boolean) => {
+  if (!agentWindow || agentWindow.isDestroyed()) return;
+  // `screen-saver` level keeps the window above most apps including
+  // fullscreen ones; plain `true` defaults to `floating` which some
+  // macOS full-screen apps can still cover. For a chat popup that
+  // should stay visible while the user browses other tools, the extra
+  // aggressive level matches the stated intent of "置顶".
+  agentWindow.setAlwaysOnTop(pinned, 'screen-saver');
+});
+
+ipcMain.handle('agent-window-get-pinned', async () => {
+  if (!agentWindow || agentWindow.isDestroyed()) return false;
+  return agentWindow.isAlwaysOnTop();
+});
+
 /**
  * Read the current provider's login identity so the chat panel can show
  * "Connected as ...". For Claude that's ~/.claude.json; for Codex it's

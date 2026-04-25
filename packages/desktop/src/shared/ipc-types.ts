@@ -331,6 +331,10 @@ export interface IpcApi {
   agentSetActiveProjectId(projectId: string | null): Promise<void>;
   /** Detached window subscription to active-project changes. */
   onActiveProjectChanged(callback: (projectId: string | null) => void): () => void;
+  /** Toggle the detached Agent window's always-on-top flag. */
+  setAgentWindowPinned(pinned: boolean): Promise<void>;
+  /** Read the current always-on-top state (for restoring toggle UI). */
+  getAgentWindowPinned(): Promise<boolean>;
   onAgentEvent(callback: (event: AgentEvent) => void): () => void;
 }
 

@@ -544,24 +544,36 @@ export function Timeline(props: TimelineProps) {
           { start: rangeStart, end: rangeEnd },
           cutRanges
         );
-        for (const piece of pieces) {
-          const x1 = secToPx(piece.start);
-          const x2 = secToPx(piece.end);
-          if (x2 < 0 || x1 > w) continue;
-          const clampedX1 = Math.max(0, x1);
-          const clampedX2 = Math.min(w, x2);
-          const width = clampedX2 - clampedX1;
-          if (width < 2) continue;
-          const boxW = Math.max(0, width - 2);
-          const boxH = Math.max(0, waveHeight - 2);
-          const radius = Math.min(6, boxW / 2, boxH / 2);
-          ctx.beginPath();
-          ctx.roundRect(clampedX1 + 1, 1, boxW, boxH, radius);
-          ctx.fillStyle = 'rgba(14,122,254,0.10)';
-          ctx.fill();
-          ctx.strokeStyle = 'rgba(14,122,254,0.85)';
-          ctx.lineWidth = 2;
-          ctx.stroke();
+        // Draw ONE continuous blue frame from the first piece's start to
+        // the last piece's end. When a subtitle straddles one or more cut
+        // ranges, mapRangeToEffective returns multiple pieces — but in
+        // EFFECTIVE time those pieces are adjacent (cuts are collapsed).
+        // Rendering each piece as a separate rounded rect creates visible
+        // gaps + double borders where they meet, so users saw the "same
+        // subtitle" fractured into 2-3 frames. A single spanning rect
+        // reads as one subtitle, which is what the user's brain expects.
+        if (pieces.length > 0) {
+          const first = pieces[0];
+          const last = pieces[pieces.length - 1];
+          const x1 = secToPx(first.start);
+          const x2 = secToPx(last.end);
+          if (x2 >= 0 && x1 <= w) {
+            const clampedX1 = Math.max(0, x1);
+            const clampedX2 = Math.min(w, x2);
+            const width = clampedX2 - clampedX1;
+            if (width >= 2) {
+              const boxW = Math.max(0, width - 2);
+              const boxH = Math.max(0, waveHeight - 2);
+              const radius = Math.min(6, boxW / 2, boxH / 2);
+              ctx.beginPath();
+              ctx.roundRect(clampedX1 + 1, 1, boxW, boxH, radius);
+              ctx.fillStyle = 'rgba(14,122,254,0.10)';
+              ctx.fill();
+              ctx.strokeStyle = 'rgba(14,122,254,0.85)';
+              ctx.lineWidth = 2;
+              ctx.stroke();
+            }
+          }
         }
 
         // Edge grab markers — thin vertical bars at the first piece's
@@ -604,20 +616,26 @@ export function Timeline(props: TimelineProps) {
         ctx.setLineDash([4, 3]);
         ctx.strokeStyle = 'rgba(14,122,254,0.6)';
         ctx.lineWidth = 1.5;
-        for (const piece of nPieces) {
-          const x1 = secToPx(piece.start);
-          const x2 = secToPx(piece.end);
-          if (x2 < 0 || x1 > w) continue;
-          const clampedX1 = Math.max(0, x1);
-          const clampedX2 = Math.min(w, x2);
-          const width = clampedX2 - clampedX1;
-          if (width < 2) continue;
-          const boxW = Math.max(0, width - 2);
-          const boxH = Math.max(0, waveHeight - 2);
-          const radius = Math.min(6, boxW / 2, boxH / 2);
-          ctx.beginPath();
-          ctx.roundRect(clampedX1 + 1, 1, boxW, boxH, radius);
-          ctx.stroke();
+        // Same "single spanning rect" treatment as the active frame above —
+        // a cut-straddling neighbor is still one subtitle visually.
+        if (nPieces.length > 0) {
+          const first = nPieces[0];
+          const last = nPieces[nPieces.length - 1];
+          const x1 = secToPx(first.start);
+          const x2 = secToPx(last.end);
+          if (x2 >= 0 && x1 <= w) {
+            const clampedX1 = Math.max(0, x1);
+            const clampedX2 = Math.min(w, x2);
+            const width = clampedX2 - clampedX1;
+            if (width >= 2) {
+              const boxW = Math.max(0, width - 2);
+              const boxH = Math.max(0, waveHeight - 2);
+              const radius = Math.min(6, boxW / 2, boxH / 2);
+              ctx.beginPath();
+              ctx.roundRect(clampedX1 + 1, 1, boxW, boxH, radius);
+              ctx.stroke();
+            }
+          }
         }
         ctx.restore();
       }
@@ -990,8 +1008,17 @@ export function Timeline(props: TimelineProps) {
       return;
     }
 
-    // ── No modifier: first check if mouse is over a segment edge/body ────
-    const hit = hitTestSegment(startX, rect.width);
+    // ── No modifier: playhead takes priority over segment hit ────────────
+    // If the click lands within 5px of the playhead line, we treat it as a
+    // scrub/seek — not a segment edge drag. Previously, clicking on a
+    // segment boundary that happened to overlap the playhead would grab
+    // the edge and prevent the user from moving the cursor on that pixel.
+    const playheadX = secToPx(currentTime);
+    const PLAYHEAD_PRIORITY_PX = 5;
+    const onPlayhead = Math.abs(startX - playheadX) <= PLAYHEAD_PRIORITY_PX;
+
+    // ── No modifier: check if mouse is over a segment edge/body ─────────
+    const hit = onPlayhead ? null : hitTestSegment(startX, rect.width);
     if (hit) {
       // Record initial drag state; defer preview state until actual move so a
       // click (no drag) inside a segment still counts as a click-seek.
@@ -1144,6 +1171,13 @@ export function Timeline(props: TimelineProps) {
         setHoverCursor('ew-resize');
         return;
       }
+    }
+    // Mirror the mousedown priority: if hovering within 5px of the
+    // playhead we show the default cursor (scrub intent), not ew-resize.
+    const playheadX = secToPx(currentTime);
+    if (Math.abs(x - playheadX) <= 5) {
+      setHoverCursor('default');
+      return;
     }
     const hit = hitTestSegment(x, rect.width);
     if (!hit) setHoverCursor('default');
