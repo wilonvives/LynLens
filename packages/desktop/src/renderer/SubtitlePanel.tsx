@@ -1111,6 +1111,7 @@ interface TimestampEditorProps {
 }
 
 function TimestampEditor({
+  seg,
   effStart,
   effEnd,
   editing,

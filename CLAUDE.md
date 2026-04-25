@@ -115,6 +115,44 @@ click seek to a position "from before the cuts".
 
 When in doubt, name the parameter `srcSec` or `effSec`, never just `sec`.
 
+## Export must be frame-accurate AND color-accurate (hard rule)
+
+The user's expectation, stated explicitly: "导出能用，帧没跑，颜色没跑". This
+is non-negotiable. Two ways to break it that have already shipped and caused
+visible bugs:
+
+1. **`-c copy` stream-copy export** snaps cuts to the nearest keyframe, which
+   produces visible "jumps" at every cut (the keep range starts a few frames
+   earlier than the user intended). NEVER ship this as the default. The
+   v0.4.1 export pipeline removed it entirely; if anyone wants to add it
+   back as an opt-in, the dialog must clearly warn that cuts will not land
+   exactly where they were marked.
+2. **Re-encoding without forwarding color tags** produces output containers
+   with empty/default colr boxes. QuickTime falls back to BT.709 and looks
+   correct; Windows Media Player and most browsers default differently and
+   show shifted colors. For SDR sources always forward `-colorspace`,
+   `-color_primaries`, `-color_trc`, `-color_range` from the source via
+   `probeColorMeta`, and bake the same tags into the bitstream via
+   `-x264-params` / `-x265-params`.
+3. **HDR sources (HLG / PQ / Dolby Vision) must be tone-mapped to SDR
+   BT.709**, not preserved as HDR. Mac players (QuickTime / Safari) decode
+   HDR transfer functions correctly, but Windows native player and most
+   browsers don't — they render BT.2020 HDR as if it were BT.709 SDR,
+   producing the same "color shift" symptom users report. The export
+   pipeline detects HDR via `colorMeta.isHdr` (transfer is `smpte2084`
+   for PQ or `arib-std-b67` for HLG) and routes through a `zscale +
+   tonemap=hable` filter chain that converts to BT.709 8-bit yuv420p.
+   This sacrifices HDR highlight fidelity for universal compatibility,
+   which is the right tradeoff for talking-head content. Real-world
+   trigger: iPhone 15 Pro records Dolby Vision Profile 8.4 (HLG-compatible)
+   by default — every iPhone HDR recording will hit this path.
+
+The current export pipeline (single path, no mode toggle) lives in
+`packages/core/src/export-service.ts → exportFrameAccurate`. Picking the
+encoder is automatic from source bit depth — 10-bit / HDR sources go
+through libx265, everything else through libx264. Don't break that
+heuristic without checking that the bundled ffmpeg has the right encoders.
+
 ## React patterns
 
 - **Refs for DOM elements are unreliable in dev** (StrictMode + Vite Fast

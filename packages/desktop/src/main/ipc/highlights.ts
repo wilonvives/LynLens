@@ -177,10 +177,13 @@ export function registerHighlightsIpc(ctx: IpcContext): void {
       const ac = new AbortController();
       activeExports.set(projectId, ac);
       try {
+        // Single export pipeline now: frame-accurate cuts + color preserved.
+        // The previous mode: 'fast' (stream copy) was removed in v0.4.1 —
+        // it caused frame jumps at every cut and color shift on Windows.
         return await engine.exports.export(project, {
           outputPath,
-          mode: 'fast',          // stream copy, identical bytes
-          quality: 'original',    // irrelevant for fast mode
+          mode: 'precise',
+          quality: 'original',
           signal: ac.signal,
           ffmpegPaths: engine.ffmpegPaths,
           keepOverride,

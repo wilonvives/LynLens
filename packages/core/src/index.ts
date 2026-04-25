@@ -13,6 +13,7 @@ export {
 export {
   extractWaveform,
   probeVideo,
+  probeColorMeta,
   resolveFfmpegPaths,
   runFfmpeg,
   mkTmpDir,
@@ -20,6 +21,7 @@ export {
   type RunProgress,
   type RunFfmpegOptions,
   type WaveformEnvelope,
+  type VideoColorMeta,
 } from './ffmpeg';
 export { SAFETY, ToolCallGovernor, assertNotOverwritingSource, assertWithinDeleteRatio } from './safety';
 export {

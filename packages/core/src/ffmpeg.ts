@@ -32,6 +32,11 @@ interface ProbeStream {
   height?: number;
   r_frame_rate?: string;
   avg_frame_rate?: string;
+  pix_fmt?: string;
+  color_primaries?: string;
+  color_transfer?: string;
+  color_space?: string;
+  color_range?: string;
   tags?: Record<string, string>;
   side_data_list?: Array<{
     side_data_type?: string;
@@ -42,6 +47,184 @@ interface ProbeStream {
 interface ProbeResult {
   streams?: ProbeStream[];
   format?: ProbeFormat;
+}
+
+/**
+ * Color tags + pixel format extracted from the source video. Used by export
+ * to forward color metadata into the output so players (especially strict
+ * ones like Windows native MP4 player) don't render with the wrong color
+ * matrix and produce visible color shift.
+ *
+ * "unknown" means the source had no tag — the export pipeline falls back to
+ * BT.709 SDR limited-range, which is the safe default for non-HDR content.
+ */
+export interface VideoColorMeta {
+  /** e.g. 'yuv420p', 'yuv420p10le', 'yuv422p10le'. */
+  pixFmt: string;
+  /** e.g. 'bt709', 'bt2020', 'smpte170m', 'unknown'. */
+  colorPrimaries: string;
+  /** Transfer characteristics. e.g. 'bt709', 'smpte2084' (PQ HDR), 'arib-std-b67' (HLG HDR), 'unknown'. */
+  colorTransfer: string;
+  /** Matrix coefficients. e.g. 'bt709', 'bt2020nc', 'unknown'. */
+  colorSpace: string;
+  /** 'tv' = limited range, 'pc' = full range, 'unknown'. */
+  colorRange: 'tv' | 'pc' | 'unknown';
+  /** Derived from pixFmt suffix: 8 / 10 / 12. */
+  bitDepth: 8 | 10 | 12;
+  /** True if the transfer function indicates HDR (PQ or HLG). */
+  isHdr: boolean;
+}
+
+/** Default color metadata when nothing can be detected — safe SDR BT.709 8-bit. */
+function defaultColorMeta(): VideoColorMeta {
+  return {
+    pixFmt: 'yuv420p',
+    colorPrimaries: 'unknown',
+    colorTransfer: 'unknown',
+    colorSpace: 'unknown',
+    colorRange: 'unknown',
+    bitDepth: 8,
+    isHdr: false,
+  };
+}
+
+function bitDepthFromPixFmt(pixFmt: string): 8 | 10 | 12 {
+  if (/12(le|be)$/.test(pixFmt)) return 12;
+  if (/10(le|be)$/.test(pixFmt)) return 10;
+  return 8;
+}
+
+export async function probeColorMeta(
+  videoPath: string,
+  paths = resolveFfmpegPaths()
+): Promise<VideoColorMeta> {
+  // Try ffprobe first (clean JSON). If it's missing — common because we
+  // bundle ffmpeg but historically not ffprobe — fall through to parsing
+  // `ffmpeg -i` stderr, which carries the same info in a more compact
+  // form. Without this fallback, HDR sources on systems without ffprobe
+  // are silently misdetected as SDR (the catch returned hardcoded SDR
+  // defaults) and exported with shifted color on Windows — exactly the
+  // bug this function exists to prevent.
+  try {
+    return await probeColorWithFfprobe(videoPath, paths);
+  } catch {
+    try {
+      return await probeColorWithFfmpegStderr(videoPath, paths);
+    } catch {
+      return defaultColorMeta();
+    }
+  }
+}
+
+async function probeColorWithFfprobe(
+  videoPath: string,
+  paths: FfmpegPaths
+): Promise<VideoColorMeta> {
+  const args = [
+    '-v', 'error',
+    '-print_format', 'json',
+    '-show_streams',
+    '-select_streams', 'v:0',
+    videoPath,
+  ];
+  const out = await runAndCollect(paths.ffprobe, args);
+  const parsed = JSON.parse(out.stdout) as ProbeResult;
+  const v = parsed.streams?.[0];
+  if (!v) throw new Error('no video stream');
+  const pixFmt = v.pix_fmt ?? 'yuv420p';
+  const colorTransfer = v.color_transfer ?? 'unknown';
+  const rawRange = v.color_range ?? 'unknown';
+  const colorRange: 'tv' | 'pc' | 'unknown' =
+    rawRange === 'tv' || rawRange === 'pc' ? rawRange : 'unknown';
+  return {
+    pixFmt,
+    colorPrimaries: v.color_primaries ?? 'unknown',
+    colorTransfer,
+    colorSpace: v.color_space ?? 'unknown',
+    colorRange,
+    bitDepth: bitDepthFromPixFmt(pixFmt),
+    isHdr: colorTransfer === 'smpte2084' || colorTransfer === 'arib-std-b67',
+  };
+}
+
+/**
+ * Fallback color probe that parses the `Stream` line from `ffmpeg -i`
+ * stderr. The line looks like:
+ *
+ *   Video: hevc (Main 10), yuv420p10le(tv, bt2020nc/bt2020/arib-std-b67), 1920x1080
+ *   Video: h264 (High), yuv420p(tv, bt709), 1920x1080
+ *   Video: h264, yuv420p, 1920x1080            (no color tags at all)
+ *
+ * The triplet inside parens is `matrix/primaries/transfer` (ffmpeg's
+ * colorspace / color_primaries / color_trc). When only one color tag
+ * appears the three are identical — that's how ffmpeg condenses it.
+ */
+async function probeColorWithFfmpegStderr(
+  videoPath: string,
+  paths: FfmpegPaths
+): Promise<VideoColorMeta> {
+  return new Promise((resolve, reject) => {
+    const proc = spawn(paths.ffmpeg, ['-hide_banner', '-i', videoPath], { windowsHide: true });
+    let stderr = '';
+    proc.stderr?.on('data', (d) => (stderr += d.toString()));
+    proc.on('error', reject);
+    proc.on('close', () => {
+      const meta = parseColorFromFfmpegStderr(stderr);
+      if (!meta) reject(new Error('could not parse color metadata from ffmpeg stderr'));
+      else resolve(meta);
+    });
+  });
+}
+
+export function parseColorFromFfmpegStderr(stderr: string): VideoColorMeta | null {
+  const lineMatch = stderr.match(/Stream #\d+:\d+.*?: Video:[^\n]*/);
+  if (!lineMatch) return null;
+  const line = lineMatch[0];
+
+  // Pull pix_fmt token + optional color-info parenthetical. Pix formats start
+  // with one of yuv / nv / gbr / rgb / bgr / p0 — that prefix is enough to
+  // skip earlier tokens like the codec name (hevc, h264) and codec profile
+  // (Main 10, High).
+  const pixCandidates = [...line.matchAll(/\b((?:yuv|nv|gbr|rgb|bgr|p0)\w+)(?:\(([^)]+)\))?/g)];
+  if (pixCandidates.length === 0) return null;
+  const [, pixFmt, colorInfo = ''] = pixCandidates[0];
+
+  let colorRange: 'tv' | 'pc' | 'unknown' = 'unknown';
+  let colorPrimaries = 'unknown';
+  let colorTransfer = 'unknown';
+  let colorSpace = 'unknown';
+
+  if (colorInfo) {
+    const rangeMatch = colorInfo.match(/\b(tv|pc)\b/);
+    if (rangeMatch) colorRange = rangeMatch[1] as 'tv' | 'pc';
+
+    // Triple form: matrix/primaries/transfer.
+    const triMatch = colorInfo.match(/([a-z][\w-]+)\/([a-z][\w-]+)\/([a-z][\w-]+)/);
+    if (triMatch) {
+      colorSpace = triMatch[1];
+      colorPrimaries = triMatch[2];
+      colorTransfer = triMatch[3];
+    } else {
+      // Single tag form (e.g. "tv, bt709") — ffmpeg condenses identical
+      // matrix/primaries/transfer to one token.
+      const single = colorInfo.match(/,\s*([a-z][\w-]+)\b/);
+      if (single && single[1] !== 'tv' && single[1] !== 'pc') {
+        colorSpace = single[1];
+        colorPrimaries = single[1];
+        colorTransfer = single[1];
+      }
+    }
+  }
+
+  return {
+    pixFmt,
+    colorPrimaries,
+    colorTransfer,
+    colorSpace,
+    colorRange,
+    bitDepth: bitDepthFromPixFmt(pixFmt),
+    isHdr: colorTransfer === 'smpte2084' || colorTransfer === 'arib-std-b67',
+  };
 }
 
 export async function probeVideo(videoPath: string, paths = resolveFfmpegPaths()): Promise<VideoMeta> {
