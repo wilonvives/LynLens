@@ -16,6 +16,10 @@
 
 > 当前未代码签名。首次启动 Mac 端右键→打开、Windows 端"更多信息→仍要运行"绕过系统警告。代码签名 + 公证已在 `electron-builder.yml` 配好,等运营准备好再启用。
 
+## 贡献
+
+欢迎 PR / issue。流程见 [CONTRIBUTING.md](CONTRIBUTING.md)——简单说：fork → 改 → PR；大改动先开 issue 讨论。Bug 报告和需求请用模板（GitHub 会自动套）。
+
 ## AI Agent 对接
 
 LynLens 是为 AI agent 设计的。安装应用后,agent（Claude / Codex / OpenClaw 等）可以通过这两条通道操作工程：

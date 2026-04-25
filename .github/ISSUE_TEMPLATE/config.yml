@@ -1,0 +1,10 @@
+# 关掉"空白 issue"，强制走 bug / feature 模板。
+# 真有别的事可以选 "Question" 链接打开 GitHub Discussion 或新开 PR。
+blank_issues_enabled: false
+contact_links:
+  - name: 问题不属于 bug 也不是新功能?
+    url: https://github.com/wilonvives/LynLens/issues/new?labels=question
+    about: 用 question 标签开 issue 直接问
+  - name: 想看代码 / 提 PR
+    url: https://github.com/wilonvives/LynLens/blob/main/CONTRIBUTING.md
+    about: 贡献流程在 CONTRIBUTING.md
