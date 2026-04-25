@@ -81,10 +81,35 @@ function detectPlatform() {
 
 async function download(url, outPath, label) {
   process.stdout.write(`↓ ${label ?? url}\n`);
-  const resp = await fetch(url, { redirect: 'follow' });
-  if (!resp.ok) throw new Error(`HTTP ${resp.status} fetching ${url}`);
-  if (!resp.body) throw new Error('Empty body');
-  await pipeline(resp.body, createWriteStream(outPath));
+  // Retry on transient errors (502/503/504/network drops). GitHub Releases
+  // CDN 502s sporadically and there's no signal beforehand; CI runners
+  // hitting it once would otherwise fail the whole release. 3 attempts
+  // with linear backoff is enough — sustained outage is rare and would
+  // surface in the third try too.
+  const MAX_ATTEMPTS = 3;
+  let lastErr;
+  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+    try {
+      const resp = await fetch(url, { redirect: 'follow' });
+      if (!resp.ok) {
+        const transient = resp.status >= 500 || resp.status === 408 || resp.status === 429;
+        if (!transient || attempt === MAX_ATTEMPTS) {
+          throw new Error(`HTTP ${resp.status} fetching ${url}`);
+        }
+        process.stdout.write(`  attempt ${attempt} got ${resp.status}, retrying…\n`);
+      } else {
+        if (!resp.body) throw new Error('Empty body');
+        await pipeline(resp.body, createWriteStream(outPath));
+        return;
+      }
+    } catch (err) {
+      lastErr = err;
+      if (attempt === MAX_ATTEMPTS) throw err;
+      process.stdout.write(`  attempt ${attempt} failed (${err.message}), retrying…\n`);
+    }
+    await new Promise((r) => setTimeout(r, 1000 * attempt));
+  }
+  throw lastErr ?? new Error(`Download failed after ${MAX_ATTEMPTS} attempts`);
 }
 
 async function extractZip(archive, destDir) {
