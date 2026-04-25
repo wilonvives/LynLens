@@ -60,6 +60,17 @@ export default tseslint.config(
       'no-var': 'error',
       // Empty catch blocks are suspicious
       'no-empty': ['warn', { allowEmptyCatch: true }],
+      // File size guardrails. Per CLAUDE.md: 400 typical, 800 hard ceiling.
+      // We warn at 800 to flag debt without blocking dev — exceeding it
+      // means a file has crossed from "acceptable" into "must split".
+      'max-lines': [
+        'warn',
+        { max: 800, skipBlankLines: true, skipComments: true },
+      ],
+      'max-lines-per-function': [
+        'warn',
+        { max: 200, skipBlankLines: true, skipComments: true, IIFEs: true },
+      ],
     },
   },
   {
