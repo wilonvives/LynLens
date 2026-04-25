@@ -51,20 +51,24 @@ mac:
     - target: dmg
       arch: [arm64]
   category: public.app-category.video
-  hardenedRuntime: true
-  gatekeeperAssess: false
-  # Signing happens automatically when these env vars are present in the
-  # build environment:
-  #   CSC_LINK, CSC_KEY_PASSWORD            — Developer ID .p12 (base64)
-  #   APPLE_ID, APPLE_APP_SPECIFIC_PASSWORD, APPLE_TEAM_ID  — for notarization
-  # If the env vars are missing, builds are unsigned (dev/local case).
-  entitlements: build/entitlements.mac.plist
-  entitlementsInherit: build/entitlements.mac.plist
-  # notarize is intentionally NOT set: electron-builder defaults to false
-  # when Apple credentials are missing. Setting `notarize: true` without
-  # creds makes it error early with cryptic "not a file" failures
-  # because it tries to invoke notarytool with empty args. Once we
-  # add Apple Developer creds to GH Secrets, change to `notarize: true`.
+  # ---------------------------------------------------------------
+  # Signing config is intentionally OFF until we own an Apple Developer
+  # cert. With `hardenedRuntime: true` + `entitlements` + `notarize`
+  # all set but CSC_LINK / APPLE_ID env vars missing, electron-builder
+  # tries to invoke codesign / notarytool with empty creds and dies
+  # with the cryptic "/packages/desktop not a file" error.
+  #
+  # When signing creds are added (CSC_LINK + CSC_KEY_PASSWORD + APPLE_ID
+  # + APPLE_APP_SPECIFIC_PASSWORD + APPLE_TEAM_ID), uncomment this whole
+  # block to enable hardened runtime + entitlements + notarization:
+  #
+  #   hardenedRuntime: true
+  #   gatekeeperAssess: false
+  #   entitlements: build/entitlements.mac.plist
+  #   entitlementsInherit: build/entitlements.mac.plist
+  #   notarize: true
+  # ---------------------------------------------------------------
+  identity: null    # forces electron-builder to skip signing entirely
   extraResources:
     - from: resources/ffmpeg/mac-${arch}
       to: ffmpeg
