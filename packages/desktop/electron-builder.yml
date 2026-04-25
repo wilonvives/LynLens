@@ -6,6 +6,10 @@ directories:
   output: release
   buildResources: build
 
+# 1024x1024 PNG. electron-builder auto-generates Mac .icns + Windows .ico
+# from this single source — no need to ship platform-specific icon files.
+icon: build/icon.png
+
 asar: false
 
 files:

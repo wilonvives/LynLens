@@ -1,6 +1,6 @@
 {
   "name": "@lynlens/desktop",
-  "version": "0.4.6",
+  "version": "0.4.7",
   "description": "LynLens desktop app (Electron) - UI for talking-video quick-cut editing",
   "license": "MIT",
   "homepage": "https://github.com/wilonvives/LynLens",
