@@ -4,6 +4,27 @@
 
 > 一个可以被 AI 操控、也可以被人手动操控的"视频去废引擎"。AI 通过 MCP 协议读取文字稿、做剪辑决策、改字幕、生成高光片段、写社媒文案;人类通过 Electron UI 审核、微调、直接操作。两种模式随时切换,**同一份项目状态,同一套工具**。
 
+## 下载
+
+最新稳定版从 GitHub Releases 拿：**<https://github.com/wilonvives/LynLens/releases/latest>**
+
+| 平台 | 文件 | 说明 |
+|---|---|---|
+| macOS (Apple Silicon) | `LynLens-<version>-arm64.dmg` | M1 / M2 / M3 / M4 |
+| macOS (Intel) | `LynLens-<version>.dmg` | 旧 Mac |
+| Windows | `LynLens-Setup-<version>.exe` | x64 安装包 |
+
+> 当前未代码签名。首次启动 Mac 端右键→打开、Windows 端"更多信息→仍要运行"绕过系统警告。代码签名 + 公证已在 `electron-builder.yml` 配好,等运营准备好再启用。
+
+## AI Agent 对接
+
+LynLens 是为 AI agent 设计的。安装应用后,agent（Claude / Codex / OpenClaw 等）可以通过这两条通道操作工程：
+
+1. **进程内 Claude Agent SDK** — 应用内置聊天面板,Claude 直接调 47 个 MCP 工具(列表见下方"工具表")
+2. **外部 HTTP MCP server** — 应用启动时自动开 `http://127.0.0.1:<port>/mcp`,Codex / Cursor / 任何支持 MCP 的 IDE 都能连。在 agent 这一端登录(`claude` 或 `codex` CLI)后,LynLens 就能用了
+
+agent 没装 / 没登录时应用本身仍然可用,只是聊天面板会提示"未登录"。
+
 ## 仓库结构
 
 ```

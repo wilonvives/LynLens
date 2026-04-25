@@ -1,6 +1,6 @@
 {
   "name": "@lynlens/desktop",
-  "version": "0.4.2",
+  "version": "0.4.3",
   "description": "LynLens desktop app (Electron) - UI for talking-video quick-cut editing",
   "main": "./dist/main/main/index.js",
   "scripts": {

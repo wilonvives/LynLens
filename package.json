@@ -1,8 +1,14 @@
 {
   "name": "lynlens",
-  "version": "0.4.2",
+  "version": "0.4.3",
   "private": true,
+  "license": "MIT",
   "description": "LynLens - AI-First talking-video quick-cut editor (Core Engine + MCP + UI + CLI)",
+  "homepage": "https://github.com/wilonvives/LynLens",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/wilonvives/LynLens.git"
+  },
   "scripts": {
     "build": "pnpm -r --filter \"./packages/*\" run build",
     "test": "pnpm -r --filter \"./packages/*\" run test",
