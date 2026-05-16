@@ -416,6 +416,13 @@
   font-size: 11px;
   color: var(--text3);
   flex-shrink: 0;
+  /* Pin to the top of the scrollable subtitle list so the orientation hint
+     + learning badge stay visible as the user scrolls through hundreds of
+     cards. Background opaque so cards scrolling underneath don't bleed through. */
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  background: var(--bg);
 }
 .sub-settings-spacer { flex: 1 1 0; }
 .sub-orient-hint {
@@ -638,3 +645,375 @@
   margin-top: 2px;
 }
 
+
+/* ============================================================================
+   Learning status badge — chip in the subtitle settings bar that opens a
+   popover showing recent corrections + pending auto-promotions + a manage
+   section. Stays out of the way until clicked.
+   ============================================================================ */
+.learning-badge-wrap {
+  position: relative;
+}
+.learning-badge {
+  background: rgba(80, 60, 140, 0.18);
+  color: var(--text2);
+  border: 1px solid #4a3c70;
+  border-radius: 12px;
+  padding: 2px 9px;
+  font-size: 11px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.12s, color 0.12s, border-color 0.12s;
+}
+.learning-badge:hover {
+  background: rgba(120, 90, 200, 0.28);
+  color: var(--text);
+  border-color: #6f5cb0;
+}
+.learning-popover {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  min-width: 260px;
+  max-width: 340px;
+  background: #1f1f22;
+  border: 1px solid #3a3a3d;
+  border-radius: 6px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.6);
+  z-index: 50;
+  padding: 10px;
+  color: var(--text);
+}
+.learning-popover-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+  font-size: 12px;
+}
+.learning-reset-link {
+  background: transparent;
+  border: none;
+  color: var(--text3);
+  font-size: 11px;
+  cursor: pointer;
+  text-decoration: underline;
+  padding: 0;
+}
+.learning-reset-link:hover { color: #ff8b8b; }
+.learning-section {
+  margin-top: 8px;
+}
+.learning-section-title {
+  font-size: 10.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text3);
+  margin-bottom: 4px;
+}
+/* 2-row grid: "from" on row 1, "to" on row 2 (prefixed with ↓ via ::before).
+   Count + ✕ button span both rows on the right. This survives long
+   Chinese text — text wraps horizontally instead of getting squeezed
+   into a vertical strip when from + to together exceed the popover width. */
+.learning-row {
+  display: grid;
+  grid-template-columns: 1fr auto auto;
+  column-gap: 8px;
+  row-gap: 1px;
+  padding: 6px 0;
+  font-size: 12px;
+  border-bottom: 1px solid #2a2a2d;
+  align-items: center;
+}
+.learning-row:last-child { border-bottom: none; }
+.learning-from {
+  grid-row: 1;
+  grid-column: 1;
+  color: #ff9e9e;
+  font-family: ui-monospace, monospace;
+  word-break: break-word;
+  min-width: 0;
+}
+.learning-arrow {
+  /* Hidden in stacked layout — direction is implied by row order +
+     color (red→green) + the ↓ prefix on .learning-to. */
+  display: none;
+}
+.learning-to {
+  grid-row: 2;
+  grid-column: 1;
+  color: #9eff9e;
+  font-family: ui-monospace, monospace;
+  word-break: break-word;
+  min-width: 0;
+}
+.learning-to::before {
+  content: '↓ ';
+  color: var(--text3);
+}
+.learning-count {
+  grid-row: 1 / span 2;
+  grid-column: 2;
+  align-self: center;
+  color: var(--text3);
+  font-size: 10.5px;
+  font-variant-numeric: tabular-nums;
+}
+.learning-forget {
+  grid-row: 1 / span 2;
+  grid-column: 3;
+  align-self: center;
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--text3);
+  font-size: 11px;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  padding: 0;
+  cursor: pointer;
+  line-height: 1;
+}
+.learning-forget:hover {
+  background: rgba(255, 100, 100, 0.18);
+  border-color: #b04040;
+  color: #ff8b8b;
+}
+.learning-empty {
+  font-size: 11px;
+  color: var(--text3);
+  line-height: 1.5;
+  padding: 6px 4px;
+}
+
+/* ✕ on each sub-card head to delete the entire transcript segment. Subtle
+   by default; turns reddish on hover so it reads as "destructive". */
+.sub-head-spacer { flex: 1; }
+.sub-remove {
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--text3);
+  font-size: 13px;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  padding: 0;
+  cursor: pointer;
+  line-height: 1;
+  flex-shrink: 0;
+}
+.sub-remove:hover {
+  background: rgba(255, 80, 80, 0.15);
+  border-color: #b04040;
+  color: #ff8b8b;
+}
+
+/* Bulk "清理空字幕段 (N)" button inside the settings popover. */
+.sub-bulk-clean {
+  background: #2a2a2d;
+  color: var(--text2);
+  border: 1px solid #3a3a3d;
+  border-radius: 4px;
+  padding: 4px 10px;
+  font-size: 12px;
+  cursor: pointer;
+}
+.sub-bulk-clean:hover:not(:disabled) {
+  background: rgba(255, 80, 80, 0.12);
+  border-color: #b04040;
+  color: #ff8b8b;
+}
+.sub-bulk-clean:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+/* + on each sub-card head to insert a new empty segment after this one. */
+.sub-insert {
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--text3);
+  font-size: 15px;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  padding: 0;
+  cursor: pointer;
+  line-height: 1;
+  flex-shrink: 0;
+  margin-right: 2px;
+}
+.sub-insert:hover {
+  background: rgba(80, 200, 80, 0.15);
+  border-color: #4a8a4a;
+  color: #9eff9e;
+}
+
+/* "应用" button on each pending-promotion row: skip the count-3 threshold. */
+.learning-promote {
+  background: rgba(78, 200, 120, 0.18);
+  border: 1px solid #3f9e60;
+  color: #b9f5cc;
+  font-size: 11px;
+  padding: 1px 8px;
+  border-radius: 10px;
+  cursor: pointer;
+  white-space: nowrap;
+  line-height: 1.4;
+}
+.learning-promote:hover {
+  background: rgba(78, 200, 120, 0.32);
+  color: #fff;
+}
+
+/* ============================================================================
+   Learning manage dialog — full management surface for the learning memory.
+   Scales beyond the 5-row popover via search + tabs + scrollable list.
+   ============================================================================ */
+.learning-mgr-tabs {
+  display: flex;
+  gap: 4px;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 10px;
+  flex-shrink: 0;
+}
+.learning-mgr-tab {
+  background: transparent;
+  color: var(--text2);
+  border: none;
+  padding: 8px 14px;
+  font-size: 13px;
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+}
+.learning-mgr-tab:hover { color: var(--text); }
+.learning-mgr-tab.active {
+  color: var(--accent);
+  border-bottom-color: var(--accent);
+}
+
+.learning-mgr-toolbar {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 10px;
+  flex-shrink: 0;
+}
+.learning-mgr-search {
+  flex: 1;
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 6px 10px;
+  font-size: 13px;
+}
+.learning-mgr-search:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+.learning-mgr-import {
+  background: rgba(80, 140, 240, 0.18);
+  color: #b9d4ff;
+  border: 1px solid #4a6fa0;
+  border-radius: 4px;
+  padding: 6px 12px;
+  font-size: 12px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.learning-mgr-import:hover {
+  background: rgba(80, 140, 240, 0.32);
+  color: #fff;
+}
+.learning-mgr-danger {
+  background: transparent;
+  color: var(--text3);
+  border: 1px solid #3a3a3d;
+  border-radius: 4px;
+  padding: 6px 12px;
+  font-size: 12px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.learning-mgr-danger:hover {
+  background: rgba(255, 80, 80, 0.12);
+  color: #ff8b8b;
+  border-color: #b04040;
+}
+
+.learning-mgr-list {
+  flex: 1;
+  overflow-y: auto;
+  min-height: 200px;
+  padding-right: 6px;
+}
+.learning-mgr-empty {
+  color: var(--text3);
+  font-size: 12px;
+  padding: 20px;
+  text-align: center;
+}
+
+/* Proper noun rows — single line: term + category badge + ✕ */
+.learning-mgr-noun-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 0;
+  border-bottom: 1px solid #2a2a2d;
+  font-size: 12px;
+}
+.learning-mgr-noun-row:last-child { border-bottom: none; }
+.learning-mgr-noun-term {
+  flex: 1;
+  color: var(--text);
+  font-family: ui-monospace, monospace;
+  word-break: break-word;
+  min-width: 0;
+}
+.learning-mgr-noun-cat {
+  background: #2a2a2d;
+  color: var(--text2);
+  border-radius: 10px;
+  padding: 1px 8px;
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+/* Keep-original rows — just the word + ✕ */
+.learning-mgr-keep-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 0;
+  border-bottom: 1px solid #2a2a2d;
+  font-size: 12px;
+}
+.learning-mgr-keep-row:last-child { border-bottom: none; }
+.learning-mgr-keep-word {
+  flex: 1;
+  color: var(--text);
+  font-family: ui-monospace, monospace;
+  word-break: break-word;
+  min-width: 0;
+}
+
+/* Popover footer: link to the full manage dialog. */
+.learning-popover-foot {
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px solid #2a2a2d;
+  text-align: right;
+}
+.learning-manage-link {
+  background: transparent;
+  border: none;
+  color: var(--accent);
+  font-size: 11px;
+  cursor: pointer;
+  padding: 0;
+}
+.learning-manage-link:hover {
+  text-decoration: underline;
+}

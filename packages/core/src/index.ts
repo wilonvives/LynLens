@@ -32,6 +32,9 @@ export {
   detectFillers,
   detectRetakes,
   filterTranscriptByCuts,
+  applyAutoCorrections,
+  applyProperNouns,
+  mergeShortEnglishSegments,
   toWav16kMono,
   DEFAULT_FILLERS,
   type TranscriptionService,
@@ -41,6 +44,14 @@ export {
   type WhisperModel,
   type FillerMatch,
 } from './transcription';
+export { LearningMemory, defaultLearningMemoryPath, applyCorrectionsToText, minimalDiff, isPathologicalCorrection } from './learning-memory';
+export { LearningService } from './learning-service';
+export {
+  PROMOTION_THRESHOLD,
+  type LearningMemoryV1,
+  type CorrectionLogEntry,
+  type LearningMemorySnapshot,
+} from './learning-memory-types';
 export { LynLensEngine } from './engine';
 export {
   buildHighlightSystemPrompt,

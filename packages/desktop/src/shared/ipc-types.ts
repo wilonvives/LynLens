@@ -290,6 +290,29 @@ export interface IpcApi {
     fingerprint: string | null
   ): Promise<boolean>;
   replaceInTranscript(projectId: string, find: string, replace: string): Promise<number>;
+  /**
+   * Remove a transcript segment entirely. Used after the user has consolidated
+   * its text into a neighbour and wants the now-empty card gone. Returns true
+   * if the segment existed.
+   */
+  removeTranscriptSegment(projectId: string, segmentId: string): Promise<boolean>;
+  /** Bulk: remove every transcript segment whose text trims to empty. Returns count removed. */
+  removeEmptyTranscriptSegments(projectId: string): Promise<number>;
+  /**
+   * Insert a new empty transcript segment right after `afterSegmentId`. Used
+   * by the "+" button on each card. Returns the new segment, or null if
+   * there's no room (anchor is at video end) or the anchor doesn't exist.
+   */
+  insertTranscriptSegmentAfter(
+    projectId: string,
+    afterSegmentId: string
+  ): Promise<{
+    id: string;
+    start: number;
+    end: number;
+    text: string;
+    words: Array<{ w: string; start: number; end: number }>;
+  } | null>;
   acceptTranscriptSuggestion(projectId: string, segmentId: string): Promise<boolean>;
   clearTranscriptSuggestion(projectId: string, segmentId: string): Promise<boolean>;
   /**
@@ -298,6 +321,69 @@ export interface IpcApi {
    * the chosen absolute path on success, null when the user cancels.
    */
   saveSrt(projectId: string, content: string): Promise<string | null>;
+
+  // ---- Learning memory ----
+  /**
+   * Compact summary of what LynLens has learned so far (counts + most-recent
+   * corrections + pending-promotion entries). Used by the subtitle panel's
+   * status banner and the learning manage dialog.
+   */
+  learningGetSnapshot(): Promise<{
+    autoCorrectionCount: number;
+    properNounCount: number;
+    keepOriginalCount: number;
+    recentCorrections: Array<{
+      from: string;
+      to: string;
+      count: number;
+      firstSeenAt: string;
+      lastSeenAt: string;
+      seenInProjects: string[];
+    }>;
+    pendingPromotions: Array<{
+      from: string;
+      to: string;
+      count: number;
+      firstSeenAt: string;
+      lastSeenAt: string;
+      seenInProjects: string[];
+    }>;
+  }>;
+  /** Full dump of learning memory state — used by the manage dialog. */
+  learningGetAll(): Promise<{
+    autoCorrections: Record<string, string>;
+    properNouns: Record<string, string>;
+    keepOriginal: string[];
+    correctionLog: Array<{
+      from: string;
+      to: string;
+      count: number;
+      firstSeenAt: string;
+      lastSeenAt: string;
+      seenInProjects: string[];
+    }>;
+  }>;
+  /** Remove a learned rule. Returns true if something was actually forgotten. */
+  learningForget(kind: 'correction' | 'noun' | 'keep', key: string): Promise<boolean>;
+  /** Wipe all learned state. Caller is expected to confirm with the user first. */
+  learningReset(): Promise<void>;
+  /**
+   * Force-promote a correction to auto-correction (bypasses the count-3
+   * threshold). Backs the "应用" button on pending entries.
+   */
+  learningPromote(from: string, to: string): Promise<void>;
+  /**
+   * One-time import from the `wilon@subtitle-craft` skill's learning-memory
+   * JSON. If `jsonPath` is omitted the main process tries the default skill
+   * path; if missing, prompts the user with a file picker. Returns count of
+   * NEW entries added, or null if the user cancelled.
+   */
+  learningImportSkill(jsonPath?: string): Promise<{
+    autoCorrections: number;
+    properNouns: number;
+    keepOriginal: number;
+  } | null>;
+
   setUserOrientation(projectId: string, o: 'landscape' | 'portrait' | null): Promise<void>;
   /** Persist the preview rotation in the .qcp so it survives restart. */
   setPreviewRotation(projectId: string, rotation: 0 | 90 | 180 | 270): Promise<void>;

@@ -78,11 +78,24 @@ const api: IpcApi = {
     ipcRenderer.invoke('set-transcript-warning-fingerprint', pid, sid, fp),
   replaceInTranscript: (pid, find, replace) =>
     ipcRenderer.invoke('replace-in-transcript', pid, find, replace),
+  removeTranscriptSegment: (pid, sid) =>
+    ipcRenderer.invoke('remove-transcript-segment', pid, sid),
+  removeEmptyTranscriptSegments: (pid) =>
+    ipcRenderer.invoke('remove-empty-transcript-segments', pid),
+  insertTranscriptSegmentAfter: (pid, afterSid) =>
+    ipcRenderer.invoke('insert-transcript-segment-after', pid, afterSid),
   acceptTranscriptSuggestion: (pid, sid) =>
     ipcRenderer.invoke('accept-transcript-suggestion', pid, sid),
   clearTranscriptSuggestion: (pid, sid) =>
     ipcRenderer.invoke('clear-transcript-suggestion', pid, sid),
   saveSrt: (pid, content) => ipcRenderer.invoke('save-srt', pid, content),
+  // ---- Learning memory ----
+  learningGetSnapshot: () => ipcRenderer.invoke('learning-get-snapshot'),
+  learningGetAll: () => ipcRenderer.invoke('learning-get-all'),
+  learningForget: (kind, key) => ipcRenderer.invoke('learning-forget', kind, key),
+  learningReset: () => ipcRenderer.invoke('learning-reset'),
+  learningPromote: (from, to) => ipcRenderer.invoke('learning-promote', from, to),
+  learningImportSkill: (jsonPath) => ipcRenderer.invoke('learning-import-skill', jsonPath),
   setUserOrientation: (pid, o) => ipcRenderer.invoke('set-user-orientation', pid, o),
   setPreviewRotation: (pid, rotation) => ipcRenderer.invoke('set-preview-rotation', pid, rotation),
   onEngineEvent: (cb) => {

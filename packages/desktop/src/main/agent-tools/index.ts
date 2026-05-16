@@ -25,6 +25,7 @@ import { speakerTools } from './speakers';
 import { highlightTools } from './highlights';
 import { socialTools } from './social';
 import { exportTools } from './export';
+import { learningTools } from './learning';
 
 export const ALL_TOOLS: LynLensToolDef[] = [
   ...projectTools,
@@ -34,6 +35,7 @@ export const ALL_TOOLS: LynLensToolDef[] = [
   ...highlightTools,
   ...socialTools,
   ...exportTools,
+  ...learningTools,
 ];
 
 export { type LynLensToolDef, type ToolResult } from './types';

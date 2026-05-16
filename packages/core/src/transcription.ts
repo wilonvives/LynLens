@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { v4 as uuid } from 'uuid';
 import { mkTmpDir, resolveFfmpegPaths, type FfmpegPaths } from './ffmpeg';
+import { applyCorrectionsToText, isPathologicalCorrection } from './learning-memory';
 import type { Transcript, TranscriptSegment, TranscriptWord } from './types';
 
 export type WhisperModel = 'tiny' | 'base' | 'small' | 'medium' | 'large-v3';
@@ -35,6 +36,24 @@ export interface TranscribeOptions {
    * post-cut transcript automatically.
    */
   cutRanges?: ReadonlyArray<{ start: number; end: number }>;
+  /**
+   * Learned auto-corrections from LearningMemory. Applied AFTER whisper
+   * (and after cut-range filtering) so the same correction the user kept
+   * making manually is now made automatically. Empty / undefined → no-op.
+   *
+   * Word-level timing is preserved — we replace the segment text but the
+   * underlying word array timestamps don't shift (we don't currently
+   * propagate the replacement into per-word `w` fields; future enhancement
+   * if subtitle exporters need word-accurate sync of corrected text).
+   */
+  autoCorrections?: Readonly<Record<string, string>>;
+  /**
+   * Canonical-cased proper nouns from LearningMemory. Whisper inconsistently
+   * cases brand / person names ("bmw motorrad" vs "BMW Motorrad"). When
+   * provided, every case variant of each canonical term snaps to the
+   * user-taught form. Empty / undefined → no-op.
+   */
+  properNouns?: Readonly<Record<string, string>>;
 }
 
 export interface TranscriptionService {
@@ -168,15 +187,144 @@ export class WhisperLocalService implements TranscriptionService {
       const raw = await fs.readFile(jsonPath, 'utf-8');
       const parsed = JSON.parse(raw);
       options.onProgress?.(100);
-      const transcript = parseWhisperCppJson(parsed, options.model ?? 'base');
+      let transcript = parseWhisperCppJson(parsed, options.model ?? 'base');
       if (options.cutRanges && options.cutRanges.length > 0) {
-        return filterTranscriptByCuts(transcript, options.cutRanges);
+        transcript = filterTranscriptByCuts(transcript, options.cutRanges);
       }
+      if (options.autoCorrections && Object.keys(options.autoCorrections).length > 0) {
+        transcript = applyAutoCorrections(transcript, options.autoCorrections);
+      }
+      if (options.properNouns && Object.keys(options.properNouns).length > 0) {
+        transcript = applyProperNouns(transcript, options.properNouns);
+      }
+      // English fragments ("and the" / "section" / "sixty eight" as separate
+      // cards) are unreadable as subtitles; merge them. CJK is left alone —
+      // it has its own per-orientation max-len cap from whisper.cpp.
+      transcript = mergeShortEnglishSegments(transcript);
       return transcript;
     } finally {
       await cleanup();
     }
   }
+}
+
+/**
+ * Apply learned auto-corrections to every segment's text. Operates on the
+ * `text` field only — per-word `words[].w` are left alone (we don't expose
+ * word-level corrected text yet, and rewriting the word array reliably
+ * requires re-tokenisation we'd rather defer).
+ *
+ * Pure function — caller passes a dictionary, gets a new Transcript back.
+ * Useful for testing and for callers that want to apply corrections without
+ * going through the full transcribe pipeline.
+ */
+export function applyAutoCorrections(
+  transcript: Transcript,
+  corrections: Readonly<Record<string, string>>
+): Transcript {
+  // Defence-in-depth: filter pathological rules at apply-time too. The
+  // record-time guard catches new rules, but legacy files (and any future
+  // import path) might still carry them. Cheaper to drop here than to debug
+  // mangled subtitles later.
+  const safe: Record<string, string> = {};
+  for (const [from, to] of Object.entries(corrections)) {
+    if (!isPathologicalCorrection(from, to)) safe[from] = to;
+  }
+  if (Object.keys(safe).length === 0) return transcript;
+  const out: TranscriptSegment[] = transcript.segments.map((seg) => {
+    const next = applyCorrectionsToText(seg.text, safe);
+    if (next === seg.text) return seg;
+    return { ...seg, text: next };
+  });
+  return { ...transcript, segments: out };
+}
+
+/**
+ * Normalise proper nouns to their canonical (user-taught) casing.
+ * Whisper often outputs "bmw motorrad" / "BMW MOTORRAD" / mixed case for the
+ * same brand; if the user has taught "BMW Motorrad" via the properNouns
+ * store, every case variant in the transcript snaps to that canonical form.
+ *
+ * Case-insensitive whole-substring match. Doesn't touch text the user hasn't
+ * explicitly taught — over-applying would be worse than under-applying
+ * since users can always teach more nouns.
+ */
+export function applyProperNouns(
+  transcript: Transcript,
+  properNouns: Readonly<Record<string, string>>
+): Transcript {
+  const keys = Object.keys(properNouns);
+  if (keys.length === 0) return transcript;
+  // Pre-compile case-insensitive matchers for each canonical term. Escape
+  // regex metachars so terms like "Touch n Go" stay literal.
+  const matchers = keys.map((canonical) => ({
+    canonical,
+    re: new RegExp(escapeRegExp(canonical), 'gi'),
+  }));
+  const out: TranscriptSegment[] = transcript.segments.map((seg) => {
+    let next = seg.text;
+    for (const m of matchers) {
+      next = next.replace(m.re, m.canonical);
+    }
+    if (next === seg.text) return seg;
+    return { ...seg, text: next };
+  });
+  return { ...transcript, segments: out };
+}
+
+function escapeRegExp(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/**
+ * Merge consecutive short segments that look like fragmented English
+ * subtitles. Whisper sometimes splits English content into tiny chunks
+ * ("and the", "section", "sixty eight", "of the") that read as garbage in
+ * the subtitle panel — each card is only 1-3 words.
+ *
+ * Conservative rules — only merges when ALL hold:
+ *   - Both segments are mostly Latin (no CJK chars). Chinese has its own
+ *     length cap set by `--max-len` and doesn't fragment this way.
+ *   - The gap between them is short (< maxGapSec).
+ *   - The combined text stays within maxChars (default 50, ~Netflix line).
+ *
+ * Caller-controlled defaults are intentionally generous; over-merging is
+ * uglier than under-merging so we err on the side of leaving long natural
+ * sentences alone.
+ */
+export function mergeShortEnglishSegments(
+  transcript: Transcript,
+  opts: { maxChars?: number; maxGapSec?: number } = {}
+): Transcript {
+  const maxChars = opts.maxChars ?? 50;
+  const maxGapSec = opts.maxGapSec ?? 1.0;
+  if (transcript.segments.length < 2) return transcript;
+  const out: TranscriptSegment[] = [];
+  let cur: TranscriptSegment = { ...transcript.segments[0] };
+  const hasCJK = (s: string): boolean => /[一-鿿]/.test(s);
+  for (let i = 1; i < transcript.segments.length; i++) {
+    const next = transcript.segments[i];
+    const gap = next.start - cur.end;
+    const combined = cur.text + ' ' + next.text;
+    const eligible =
+      !hasCJK(cur.text) &&
+      !hasCJK(next.text) &&
+      gap < maxGapSec &&
+      combined.length <= maxChars;
+    if (eligible) {
+      cur = {
+        ...cur,
+        end: next.end,
+        text: combined,
+        words: [...(cur.words ?? []), ...(next.words ?? [])],
+      };
+    } else {
+      out.push(cur);
+      cur = { ...next };
+    }
+  }
+  out.push(cur);
+  return { ...transcript, segments: out };
 }
 
 /**
@@ -352,7 +500,18 @@ export class WhisperApiService implements TranscriptionService {
       }
       const data = (await resp.json()) as OpenAIVerboseJson;
       options.onProgress?.(100);
-      return parseOpenAiVerbose(data, this.opts.model ?? 'whisper-1');
+      let transcript = parseOpenAiVerbose(data, this.opts.model ?? 'whisper-1');
+      if (options.cutRanges && options.cutRanges.length > 0) {
+        transcript = filterTranscriptByCuts(transcript, options.cutRanges);
+      }
+      if (options.autoCorrections && Object.keys(options.autoCorrections).length > 0) {
+        transcript = applyAutoCorrections(transcript, options.autoCorrections);
+      }
+      if (options.properNouns && Object.keys(options.properNouns).length > 0) {
+        transcript = applyProperNouns(transcript, options.properNouns);
+      }
+      transcript = mergeShortEnglishSegments(transcript);
+      return transcript;
     } finally {
       await cleanup();
     }

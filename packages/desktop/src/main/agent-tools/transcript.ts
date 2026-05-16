@@ -34,6 +34,63 @@ export const transcriptTools: LynLensToolDef[] = [
   },
 
   {
+    name: 'remove_transcript_segment',
+    description:
+      '删除某一段字幕(从字幕稿里彻底拿掉)。常用场景:用户把这段内容合并进了上一段或下一段,这张卡空了想清理。注意:这只删字幕项目,不影响视频本身。',
+    schema: {
+      projectId: z.string(),
+      segmentId: z.string(),
+    },
+    handler: async (args: { projectId: string; segmentId: string }, engine) => {
+      const ok = engine.projects
+        .get(args.projectId)
+        .removeTranscriptSegment(args.segmentId);
+      return okOrFail(
+        ok,
+        `已删除字幕段 ${args.segmentId.slice(0, 8)}`,
+        `未找到字幕段 ${args.segmentId}`
+      );
+    },
+  },
+
+  {
+    name: 'remove_empty_transcript_segments',
+    description:
+      '一次性清理所有"文字为空"的字幕段。用户合并完句子后这些空卡片自动清掉。返回删除的条数。',
+    schema: {
+      projectId: z.string(),
+    },
+    handler: async (args: { projectId: string }, engine) => {
+      const n = engine.projects.get(args.projectId).removeEmptyTranscriptSegments();
+      return text(n > 0 ? `已清理 ${n} 个空字幕段` : '没有空字幕段需要清理');
+    },
+  },
+
+  {
+    name: 'insert_transcript_segment_after',
+    description:
+      '在指定字幕段后面插入一段空白字幕(用户要手动加一行时)。新段会从锚点段的结束时间开始,默认 0.5 秒长(或到下一段开始为止)。返回新段的 id 和时间。',
+    schema: {
+      projectId: z.string(),
+      afterSegmentId: z.string(),
+    },
+    handler: async (
+      args: { projectId: string; afterSegmentId: string },
+      engine
+    ) => {
+      const seg = engine.projects
+        .get(args.projectId)
+        .insertTranscriptSegmentAfter(args.afterSegmentId);
+      if (!seg) {
+        return text('未能插入新段(锚点不存在,或没有空隙可插入)');
+      }
+      return text(
+        `已插入新段 ${seg.id.slice(0, 8)} (${seg.start.toFixed(2)}s - ${seg.end.toFixed(2)}s)`
+      );
+    },
+  },
+
+  {
     name: 'update_transcript_segment_time',
     description:
       '调整某段字幕的起止时间(source 秒)。级联规则:碰到前/后段时,邻居的就近边会让位。',

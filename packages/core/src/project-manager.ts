@@ -10,6 +10,7 @@ import {
 } from './diarization';
 import { getEffectiveDuration } from './ripple';
 import type { HighlightVariant } from './highlight-parser';
+import { applyCorrectionsToText, isPathologicalCorrection } from './learning-memory';
 import { fingerprintTranscript, hashCutRanges } from './variant-status';
 import type {
   AiMode,
@@ -20,8 +21,14 @@ import type {
   SocialCopySetData,
   SocialStylePresetData,
   Transcript,
+  TranscriptSegment,
   VideoMeta,
 } from './types';
+
+/** Shorter than uuid v4, friendly for transcript segment ids. */
+function randomShortId(): string {
+  return uuid().slice(0, 8);
+}
 
 export class Project {
   readonly id: string;
@@ -219,12 +226,160 @@ export class Project {
    * homophones, etc). Preserves the segment's start/end timing and its word
    * array — only the displayed text changes.
    */
+  /**
+   * Apply a dictionary of corrections to every transcript segment's text.
+   * Used right after a single-segment edit to propagate the just-learned
+   * rule to the rest of the transcript — user fixes "前里 → 钱骡" in one
+   * card, all other cards containing "前里" get auto-fixed too.
+   *
+   * IMPORTANT: emits `transcript.updated` only — NOT the fine-grained
+   * `transcript.segment.text-changed` event — to avoid LearningService
+   * re-recording corrections we just applied (which would create a
+   * feedback loop of duplicate log entries).
+   *
+   * @param skipSegmentId — optional. If set, that segment isn't touched
+   *        (typically the one the user just edited; its text is already
+   *        correct).
+   * @returns count of segments actually changed.
+   */
+  applyAutoCorrectionsToTranscript(
+    corrections: Readonly<Record<string, string>>,
+    opts: { skipSegmentId?: string } = {}
+  ): number {
+    if (!this.transcript) return 0;
+    // Drop any rule that fails the safety guard before we touch a single
+    // segment. Otherwise one bad rule slipped in via legacy file / import
+    // path will mangle every other segment in the project.
+    const safe: Record<string, string> = {};
+    for (const [from, to] of Object.entries(corrections)) {
+      if (!isPathologicalCorrection(from, to)) safe[from] = to;
+    }
+    if (Object.keys(safe).length === 0) return 0;
+    let changed = 0;
+    for (const seg of this.transcript.segments) {
+      if (opts.skipSegmentId && seg.id === opts.skipSegmentId) continue;
+      const next = applyCorrectionsToText(seg.text, safe);
+      if (next !== seg.text) {
+        seg.text = next;
+        changed++;
+        this.eventBus.emit({
+          type: 'transcript.updated',
+          projectId: this.id,
+          segmentId: seg.id,
+        });
+      }
+    }
+    if (changed > 0) this.modifiedAt = new Date().toISOString();
+    return changed;
+  }
+
+  /**
+   * Remove a transcript segment entirely. Used when the user has cleared
+   * the text (often after consolidating its content into a neighbour) and
+   * wants the now-empty card gone.
+   *
+   * Time range is dropped — the gap stays a gap in the transcript. We
+   * don't redistribute the freed time to neighbours because that would
+   * surprise users who deliberately shortened ranges.
+   *
+   * Returns true if the segment existed and was removed.
+   */
+  removeTranscriptSegment(segmentId: string): boolean {
+    if (!this.transcript) return false;
+    const idx = this.transcript.segments.findIndex((s) => s.id === segmentId);
+    if (idx < 0) return false;
+    this.transcript.segments.splice(idx, 1);
+    this.modifiedAt = new Date().toISOString();
+    // Reuse the existing transcript.updated event — UI re-reads the
+    // segment list and the missing entry just vanishes from the panel.
+    this.eventBus.emit({ type: 'transcript.updated', projectId: this.id, segmentId });
+    return true;
+  }
+
+  /**
+   * Insert a new empty transcript segment right after `afterSegmentId`.
+   * Used by the UI's "+ 添加一行" button — the user clicks + on card N and
+   * a fresh empty card appears as card N+1 ready to type into.
+   *
+   * Time placement: starts at the anchor's end and ends 0.5s later, but
+   * clamps to leave at least 50ms gap before the next neighbour (or the
+   * video duration) — no overlap, no zero-width segments.
+   *
+   * Returns the new segment, or null if the anchor doesn't exist or there's
+   * no room to insert (i.e. anchor.end is already at or past videoDuration).
+   */
+  insertTranscriptSegmentAfter(afterSegmentId: string): TranscriptSegment | null {
+    if (!this.transcript) return null;
+    const idx = this.transcript.segments.findIndex((s) => s.id === afterSegmentId);
+    if (idx < 0) return null;
+    const anchor = this.transcript.segments[idx];
+    const next = this.transcript.segments[idx + 1];
+    const ceiling = next ? next.start - 0.05 : this.videoMeta.duration - 0.05;
+    if (ceiling <= anchor.end) return null; // no room at all
+    const start = anchor.end;
+    const end = Math.min(anchor.end + 0.5, ceiling);
+    if (end - start < 0.05) return null;
+    const newSeg: TranscriptSegment = {
+      id: `t_${randomShortId()}`,
+      start,
+      end,
+      text: '',
+      words: [],
+    };
+    this.transcript.segments.splice(idx + 1, 0, newSeg);
+    this.modifiedAt = new Date().toISOString();
+    this.eventBus.emit({
+      type: 'transcript.updated',
+      projectId: this.id,
+      segmentId: newSeg.id,
+    });
+    return newSeg;
+  }
+
+  /**
+   * Bulk-remove every transcript segment whose `text.trim()` is empty.
+   * Returns the count removed. Useful after the user has consolidated
+   * sentences into a single card and wants the cleared neighbours gone
+   * in one click.
+   */
+  removeEmptyTranscriptSegments(): number {
+    if (!this.transcript) return 0;
+    const before = this.transcript.segments.length;
+    this.transcript.segments = this.transcript.segments.filter((s) => s.text.trim().length > 0);
+    const removed = before - this.transcript.segments.length;
+    if (removed > 0) {
+      this.modifiedAt = new Date().toISOString();
+      // Fire a generic transcript.updated so the UI refetches. We don't
+      // know the specific ids removed; sending a dummy segmentId is fine
+      // since consumers just use the event as a "go re-read" signal.
+      this.eventBus.emit({
+        type: 'transcript.updated',
+        projectId: this.id,
+        segmentId: '__bulk__',
+      });
+    }
+    return removed;
+  }
+
   updateTranscriptSegment(segmentId: string, newText: string): boolean {
     if (!this.transcript) return false;
     const seg = this.transcript.segments.find((s) => s.id === segmentId);
     if (!seg) return false;
+    const oldText = seg.text;
     seg.text = newText;
     this.modifiedAt = new Date().toISOString();
+    // Fine-grained event for the learning system (carries before/after).
+    // Emitted BEFORE the legacy event so subscribers that care about the
+    // diff see it first. Both are emitted on every text change — keep in sync.
+    if (oldText !== newText) {
+      this.eventBus.emit({
+        type: 'transcript.segment.text-changed',
+        projectId: this.id,
+        segmentId,
+        oldText,
+        newText,
+      });
+    }
     this.eventBus.emit({ type: 'transcript.updated', projectId: this.id, segmentId });
     return true;
   }
@@ -459,7 +614,19 @@ export class Project {
         changed += 1;
       }
     }
-    if (changed > 0) this.modifiedAt = new Date().toISOString();
+    if (changed > 0) {
+      this.modifiedAt = new Date().toISOString();
+      // High-confidence learning signal — the user explicitly typed a
+      // find/replace pair, so we don't wait for the count-3 threshold.
+      // LearningService promotes this straight to autoCorrections.
+      this.eventBus.emit({
+        type: 'transcript.find-replace',
+        projectId: this.id,
+        find,
+        replace,
+        replacedCount: changed,
+      });
+    }
     return changed;
   }
 

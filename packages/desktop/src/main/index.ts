@@ -172,6 +172,16 @@ const engine = new LynLensEngine({ ffmpegPaths: resolveBundledFfmpegPaths() });
     console.log('[lynlens] whisper binaries not found; transcription disabled');
   }
 }
+// Load learning memory from ~/.lynlens/learning-memory.json and start the
+// event subscription that records future user corrections. Without this,
+// the learning system is inert — recordCorrection() would throw and
+// autoCorrections would be empty on every transcribe.
+void engine.boot().then(() => {
+  const snap = engine.learningMemory.snapshot();
+  console.log(
+    `[lynlens] learning memory loaded: ${snap.autoCorrectionCount} corrections, ${snap.properNounCount} proper nouns, ${snap.keepOriginalCount} keep-original`
+  );
+});
 
 // ============================================================================
 // Long-running operation registries (drained on quit)

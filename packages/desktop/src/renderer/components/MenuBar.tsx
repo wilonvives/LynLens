@@ -3,6 +3,7 @@ import { useStore } from '../store';
 interface MenuBarProps {
   onOpenVideo: () => void;
   onOpenExport: () => void;
+  onOpenShortcuts: () => void;
 }
 
 /**
@@ -13,7 +14,7 @@ interface MenuBarProps {
  * out to multiple store setters after the IPC returns. Wrapping it in
  * a callback would just hide the call sites without saving lines.
  */
-export function MenuBar({ onOpenVideo, onOpenExport }: MenuBarProps): JSX.Element {
+export function MenuBar({ onOpenVideo, onOpenExport, onOpenShortcuts }: MenuBarProps): JSX.Element {
   const store = useStore();
 
   return (
@@ -59,6 +60,14 @@ export function MenuBar({ onOpenVideo, onOpenExport }: MenuBarProps): JSX.Elemen
         style={{ opacity: store.projectId ? 1 : 0.4 }}
       >
         导出 <span className="kbd">Ctrl+E</span>
+      </span>
+      <span style={{ flex: 1 }} />
+      <span
+        className="menu-item"
+        onClick={onOpenShortcuts}
+        title="查看所有键盘快捷键"
+      >
+        ⌨ 快捷键
       </span>
     </div>
   );

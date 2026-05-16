@@ -44,7 +44,18 @@ export function registerTranscriptIpc(ctx: IpcContext): void {
     'update-transcript-segment',
     async (_ev, projectId: string, segmentId: string, newText: string) => {
       const project = engine.projects.get(projectId);
-      return project.updateTranscriptSegment(segmentId, newText);
+      const ok = project.updateTranscriptSegment(segmentId, newText);
+      // After the edit fires, LearningService has (synchronously, via event
+      // bus) added the new from→to to autoCorrections. Now replay all
+      // autoCorrections against the rest of the transcript so the user's
+      // single edit ripples through every other card with the same error.
+      // This is THE key UX improvement requested: "改一处全部改完",
+      // no need for the user to manually fix 50 instances of 前里 → 钱骡.
+      if (ok) {
+        const corrections = engine.learningMemory.getAutoCorrections();
+        project.applyAutoCorrectionsToTranscript(corrections, { skipSegmentId: segmentId });
+      }
+      return ok;
     }
   );
 
@@ -87,6 +98,42 @@ export function registerTranscriptIpc(ctx: IpcContext): void {
   );
 
   ipcMain.handle(
+    'remove-transcript-segment',
+    async (_ev, projectId: string, segmentId: string) => {
+      const project = engine.projects.get(projectId);
+      const ok = project.removeTranscriptSegment(segmentId);
+      if (ok && project.projectPath) {
+        await engine.projects.saveProject(projectId);
+      }
+      return ok;
+    }
+  );
+
+  ipcMain.handle(
+    'insert-transcript-segment-after',
+    async (_ev, projectId: string, afterSegmentId: string) => {
+      const project = engine.projects.get(projectId);
+      const seg = project.insertTranscriptSegmentAfter(afterSegmentId);
+      if (seg && project.projectPath) {
+        await engine.projects.saveProject(projectId);
+      }
+      return seg;
+    }
+  );
+
+  ipcMain.handle(
+    'remove-empty-transcript-segments',
+    async (_ev, projectId: string) => {
+      const project = engine.projects.get(projectId);
+      const n = project.removeEmptyTranscriptSegments();
+      if (n > 0 && project.projectPath) {
+        await engine.projects.saveProject(projectId);
+      }
+      return n;
+    }
+  );
+
+  ipcMain.handle(
     'accept-transcript-suggestion',
     async (_ev, projectId: string, segmentId: string) => {
       return engine.projects.get(projectId).acceptTranscriptSuggestion(segmentId);
@@ -122,6 +169,15 @@ export function registerTranscriptIpc(ctx: IpcContext): void {
       // cut produces a "spans across cut" warning on the subtitle card and
       // downstream copy generation includes already-cut text.
       const cutRanges = project.cutRanges;
+      // Apply learned auto-corrections so the user's repeated manual fixes
+      // ("在作" → "在做" etc.) get baked in to the new transcript without
+      // needing to redo the work. New corrections recorded since boot live
+      // here — LearningMemory is shared across the engine, no reload needed.
+      const autoCorrections = engine.learningMemory.getAutoCorrections();
+      // Proper nouns get canonical-cased so "bmw motorrad" → "BMW Motorrad"
+      // without the user having to fix every instance. Same source-of-truth
+      // as autoCorrections: whatever the user has taught LynLens.
+      const properNouns = engine.learningMemory.getProperNouns();
       engine.eventBus.emit({
         type: 'transcription.started',
         projectId,
@@ -133,6 +189,8 @@ export function registerTranscriptIpc(ctx: IpcContext): void {
           language: opts.language,
           maxLen,
           cutRanges,
+          autoCorrections,
+          properNouns,
           onProgress: (percent) =>
             engine.eventBus.emit({ type: 'transcription.progress', projectId, percent }),
         });

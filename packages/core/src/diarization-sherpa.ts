@@ -251,17 +251,33 @@ function runChildCollectingStdout(
       signal?.removeEventListener('abort', onAbort);
       reject(err);
     });
-    proc.once('close', (code) => {
+    proc.once('close', (code, sigName) => {
       signal?.removeEventListener('abort', onAbort);
-      if (code === 0) resolve(stdout);
-      else {
-        // macOS Gatekeeper / missing dylib errors surface here with
-        // code 137 / 132 etc. Hint the user.
-        const hint = stderr.includes('quarantine')
-          ? '\n提示: macOS Gatekeeper 可能拦了二进制,试试:\n  xattr -cr packages/desktop/resources/diarization/mac-arm64/'
-          : '';
-        reject(new Error(`sherpa-onnx exited ${code}: ${stderr.trim()}${hint}`));
+      if (code === 0) {
+        resolve(stdout);
+        return;
       }
+      // sherpa-onnx writes per-frame progress lines (`progress 12.34%`) to
+      // stderr. Failures are interleaved with thousands of these progress
+      // lines — surfacing them raw drowns the actual error in noise.
+      // Strip progress lines + keep the last few real lines.
+      const cleanLines = stderr
+        .split(/\r?\n/)
+        .map((l) => l.trim())
+        .filter((l) => l.length > 0 && !/^progress\s+[\d.]+%/i.test(l));
+      const tail = cleanLines.slice(-4).join('\n');
+      // code === null means the process was killed by a signal (OOM-kill
+      // for SIGKILL on long videos, or SIGTERM/SIGSEGV otherwise).
+      // Surface this distinctly so the user knows it wasn't sherpa's fault.
+      const exitDesc =
+        code === null
+          ? `被系统终止 (signal ${sigName ?? 'unknown'}, 通常是内存不足或视频过长)`
+          : `退出码 ${code}`;
+      const hint = stderr.includes('quarantine')
+        ? '\n提示: macOS Gatekeeper 可能拦了二进制,试试:\n  xattr -cr packages/desktop/resources/diarization/mac-arm64/'
+        : '';
+      const cleanMessage = tail.length > 0 ? `\n${tail}` : '';
+      reject(new Error(`sherpa-onnx ${exitDesc}${cleanMessage}${hint}`));
     });
   });
 }

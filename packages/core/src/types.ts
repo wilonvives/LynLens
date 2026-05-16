@@ -238,6 +238,31 @@ export type LynLensEvent =
   | { type: 'project.closed'; projectId: string }
   | { type: 'project.reloaded'; projectId: string; segmentCount: number }
   | { type: 'transcript.updated'; projectId: string; segmentId: string }
+  /**
+   * Fine-grained variant of transcript.updated that carries the before/after
+   * text. The learning system uses this to record corrections; everything
+   * else can keep listening to transcript.updated. Both fire on the same
+   * mutation — keep them in sync inside ProjectManager.
+   */
+  | {
+      type: 'transcript.segment.text-changed';
+      projectId: string;
+      segmentId: string;
+      oldText: string;
+      newText: string;
+    }
+  /**
+   * Fired by `replaceInTranscript` whenever a find/replace actually changed at
+   * least one segment. Treated by the learning system as a high-confidence
+   * direct mapping (user explicitly typed "replace X with Y").
+   */
+  | {
+      type: 'transcript.find-replace';
+      projectId: string;
+      find: string;
+      replace: string;
+      replacedCount: number;
+    }
   | { type: 'transcript.suggestion'; projectId: string; segmentId: string; hasSuggestion: boolean }
   | { type: 'segment.added'; projectId: string; segment: Segment }
   | { type: 'segment.removed'; projectId: string; segmentId: string }

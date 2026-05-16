@@ -7,6 +7,7 @@ import {
 import { ExportDialog } from './ExportDialog';
 import { OrientationDialog } from './OrientationDialog';
 import { QuickMarkDialog } from './QuickMarkDialog';
+import { ShortcutsDialog } from './ShortcutsDialog';
 import { HighlightPanel } from './HighlightPanel';
 import { SocialCopyPanel } from './SocialCopyPanel';
 import { Resizer } from './Resizer';
@@ -48,6 +49,7 @@ export function App() {
   const [currentTime, setCurrentTime] = useState(0);
   const [isPlaying, setIsPlaying] = useState(false);
   const [showExport, setShowExport] = useState(false);
+  const [showShortcuts, setShowShortcuts] = useState(false);
   const [segFilter, setSegFilter] = useState<SegmentFilter>('all');
   const [sidebarTab, setSidebarTab] = useState<SidebarTab>('segments');
   const [showOrientDialog, setShowOrientDialog] = useState(false);
@@ -529,7 +531,11 @@ export function App() {
         if (f) void openFromDrop(f);
       }}
     >
-      <MenuBar onOpenVideo={openVideo} onOpenExport={() => setShowExport(true)} />
+      <MenuBar
+        onOpenVideo={openVideo}
+        onOpenExport={() => setShowExport(true)}
+        onOpenShortcuts={() => setShowShortcuts(true)}
+      />
 
       <WorkModeTabs workMode={workMode} onSwitchMode={(m) => void switchMode(m)} />
 
@@ -645,6 +651,7 @@ export function App() {
           onConfirm={handleExportConfirm}
         />
       )}
+      {showShortcuts && <ShortcutsDialog onClose={() => setShowShortcuts(false)} />}
       {showOrientDialog && store.videoMeta && store.projectId && (
         <OrientationDialog
           videoMeta={store.videoMeta}
@@ -683,7 +690,13 @@ export function App() {
                   : `转录 + 声纹区分完成: ${r.speakers.length} 位说话人, ${r.segmentCount} 段已贴标签。`;
               alert(msg);
             } catch (err) {
-              alert(`声纹区分失败 (字幕已生成): ${(err as Error).message}`);
+              // Defensive: cap to 400 chars so a runaway stderr can't
+              // produce a wall-of-text alert that's impossible to read or
+              // dismiss. The core-side message-cleaning should already
+              // keep it short; this is belt + suspenders.
+              const raw = (err as Error).message ?? String(err);
+              const msg = raw.length > 400 ? raw.slice(0, 400) + '\n…' : raw;
+              alert(`声纹区分失败 (字幕已生成):\n\n${msg}`);
             } finally {
               setDiarizing(false);
             }

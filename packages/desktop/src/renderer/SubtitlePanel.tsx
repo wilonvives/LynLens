@@ -14,6 +14,7 @@ import {
 } from './core-browser';
 import { formatTime } from './util';
 import { useStore } from './store';
+import { LearningStatusBadge } from './components/LearningStatusBadge';
 
 interface CutSegmentRef {
   id: string;
@@ -511,6 +512,7 @@ export function SubtitlePanel({
           {orientation === 'landscape' ? '横屏' : '竖屏'} · 中{limits.zh}/英{limits.en}
         </span>
         <span className="sub-settings-spacer" />
+        <LearningStatusBadge />
         <button
           className="sub-settings-btn"
           onClick={() => setShowSettings((v) => !v)}
@@ -592,6 +594,28 @@ export function SubtitlePanel({
               />
               <span>隐藏已被剪切的字幕</span>
             </label>
+          </div>
+          <div className="sub-settings-row">
+            {(() => {
+              // Count empty segments live so the button can show a number +
+              // disable itself when there's nothing to clean.
+              const emptyCount =
+                transcript?.segments.filter((s) => s.text.trim().length === 0).length ?? 0;
+              return (
+                <button
+                  className="sub-bulk-clean"
+                  disabled={!projectId || emptyCount === 0}
+                  onClick={async () => {
+                    if (!projectId || emptyCount === 0) return;
+                    if (!confirm(`清理 ${emptyCount} 个空字幕段？`)) return;
+                    await window.lynlens.removeEmptyTranscriptSegments(projectId);
+                  }}
+                  title="一次性删掉所有文字为空的字幕段（不影响视频）"
+                >
+                  清理空字幕段 ({emptyCount})
+                </button>
+              );
+            })()}
           </div>
           <div className="sub-settings-row">
             <label
@@ -785,6 +809,44 @@ export function SubtitlePanel({
                 </span>
               )}
               {dirty && <span className="sub-dirty">·未保存</span>}
+              <span className="sub-head-spacer" />
+              <button
+                className="sub-insert"
+                onClick={async (e) => {
+                  e.stopPropagation();
+                  if (!projectId) return;
+                  const inserted = await window.lynlens.insertTranscriptSegmentAfter(
+                    projectId,
+                    seg.id
+                  );
+                  if (!inserted) {
+                    alert('无法插入新段——这段之后没有空隙可用。');
+                  }
+                }}
+                title="在这段后面插入一行新字幕"
+              >
+                +
+              </button>
+              <button
+                className="sub-remove"
+                onClick={async (e) => {
+                  e.stopPropagation();
+                  if (!projectId) return;
+                  // Non-empty segments require a confirm — empty ones go straight through.
+                  // The user's most common case for this button is "I cleared the text
+                  // and now want this card gone", so empty == zero friction.
+                  const hasText = (draft[seg.id] ?? seg.text).trim().length > 0;
+                  if (hasText) {
+                    if (!confirm(`删除这一段字幕？\n\n「${(draft[seg.id] ?? seg.text).slice(0, 30)}」`)) {
+                      return;
+                    }
+                  }
+                  await window.lynlens.removeTranscriptSegment(projectId, seg.id);
+                }}
+                title="删除这段字幕（不影响视频）"
+              >
+                ✕
+              </button>
             </div>
             <textarea
               className="sub-text"
