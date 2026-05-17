@@ -114,6 +114,17 @@ export interface PackagingSegment {
     wordEffects?: WordEffect[];
     /** User-set drag-handle placement (overrides style.position). */
     transform?: SubtitleTransform;
+    /**
+     * Per-segment style role. AI assigns based on segment content:
+     *   - "narrate" (default): standard yellow text on dark background +
+     *     thick black outline + white top highlight (3D bevel).
+     *     Most segments use this (~80%).
+     *   - "emphasis": white capsule background + drop shadow + thin
+     *     black outline + white text + red keywords. For warning /
+     *     accusation / hook / punchline moments (~10-20%).
+     * Renderer picks the visual style by reading this. Undefined → narrate.
+     */
+    role?: 'narrate' | 'emphasis';
   };
   camera?: CameraMove;
   /** v0.6+ placeholder, renderer ignores in v0.5. */
@@ -220,12 +231,23 @@ export function buildPackagingSystemPrompt(): string {
    - 金句 / 钩子 80-100 (大强调),
    - **永远不要超过 120**。超出会被自动 clamp,而且会丑。
    想要"更突出"应该是换颜色 / 加描边,不是单纯放大字号。
-5. **段级别 subtitle 只允许 wordEffects 字段** — 不要给某段单独设
+5. **段级别 subtitle 只允许 wordEffects + role 字段** — 不要给某段单独设
    color / position / size / font / outline / bgColor,
    不同段用不同色/位会让整体很乱(已被用户反馈"乱飞")。
    全行风格统一在 defaults.subtitle 里设一次;段级别的差异化只通
-   过 wordEffects 体现(关键词变色/放大)。
-   段级别非 wordEffects 字段会被自动丢弃。
+   过 wordEffects (关键词变色/放大) 和 role (整段视觉风格切换) 体现。
+   段级别其他字段会被自动丢弃。
+
+6. **role 字段(可选,仅 energetic vibe 用)** — 给每段判断视觉风格角色:
+   - "narrate" (默认) — 普通讲述段。整段黄字 + 厚黑边 + 白顶高光。
+     大约 80% 的段都是这种。不设 role 等同 "narrate"。
+   - "emphasis" — 警告 / 控诉 / 钩子 / 大爆点段。整段套白胶囊背景 +
+     白字 + 关键词红色高亮。大约 10-20% 的段才用,**不要滥用**。
+   判定 "emphasis" 的依据:
+   * 段落含"你"+控诉口吻 ("你这样做就是 X" / "你的 Y 没了" / "现在你在 Z 乱讲话")
+   * 警告 / 提醒 ("注意" / "记住" / "千万别")
+   * 总结性钩子 / 反转句 ("但其实..." / "事实是..." / "真相只有一个")
+   平铺直叙的解释段 → narrate, 不要用 emphasis.
 
 JSON 输出格式硬性要求(违反会解析失败):
 A. 只输出 JSON 对象,前后不要任何文字,不要 \`\`\`json 代码块围栏
@@ -238,7 +260,7 @@ E. 不要 JSON 注释
 {
   "defaults": {
     "subtitle": {
-      "color": "#ffffff"
+      "color": "#ffd700"
     }
   },
   "segments": [
@@ -253,9 +275,18 @@ E. 不要 JSON 注释
     {
       "segmentIdx": 12,
       "subtitle": {
+        "role": "emphasis",
         "wordEffects": [
-          { "wordIdx": 1, "highlight": "#ff3333", "size": 72 },
-          { "wordIdx": 2, "highlight": "#ff3333", "size": 72 }
+          { "wordIdx": 2, "highlight": "#ff3333" }
+        ]
+      }
+    },
+    {
+      "segmentIdx": 18,
+      "subtitle": {
+        "role": "emphasis",
+        "wordEffects": [
+          { "wordIdx": 5, "highlight": "#ff3333" }
         ]
       }
     }
@@ -422,7 +453,10 @@ function sanitiseSubtitleStyle(input: unknown): SubtitleStyle | null {
  */
 function sanitiseSubtitleWithWordEffects(
   input: unknown
-): (SubtitleStyle & { wordEffects?: WordEffect[] }) | null {
+): (SubtitleStyle & {
+  wordEffects?: WordEffect[];
+  role?: 'narrate' | 'emphasis';
+}) | null {
   if (typeof input !== 'object' || input === null) return null;
   const v = input as Record<string, unknown>;
   const wordEffects: WordEffect[] = [];
@@ -446,7 +480,13 @@ function sanitiseSubtitleWithWordEffects(
       if (effect.highlight || effect.size || effect.effect) wordEffects.push(effect);
     }
   }
-  if (wordEffects.length > 0) return { wordEffects };
+  // role: 'narrate' | 'emphasis' (segment-level style switch — the high-
+  // energy template uses two distinct visual styles per AI judgment).
+  const role: 'narrate' | 'emphasis' | undefined =
+    v.role === 'emphasis' ? 'emphasis' : v.role === 'narrate' ? 'narrate' : undefined;
+  if (wordEffects.length > 0 || role) {
+    return { wordEffects: wordEffects.length ? wordEffects : undefined, role };
+  }
   return null;
 }
 

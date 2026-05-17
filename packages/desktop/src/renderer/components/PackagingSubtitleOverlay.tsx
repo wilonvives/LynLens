@@ -121,7 +121,8 @@ export function PackagingSubtitleOverlay({
 
   // Resolve style (defaults only — segment-level non-wordEffects/transform
   // overrides are stripped). transform IS read per-segment because that's
-  // explicitly user-set via drag handles.
+  // explicitly user-set via drag handles. role IS read per-segment because
+  // it's an explicit AI judgement to switch the segment's visual treatment.
   const recipe = plan?.segments.find((s) => s.segmentIdx === activeIdx);
   const merged: SubtitleStyle = {
     ...FALLBACK_STYLE,
@@ -129,21 +130,59 @@ export function PackagingSubtitleOverlay({
   };
   const wordEffects: WordEffect[] = recipe?.subtitle?.wordEffects ?? [];
   const userTransform = recipe?.subtitle?.transform;
+  const role: 'narrate' | 'emphasis' =
+    recipe?.subtitle?.role === 'emphasis' ? 'emphasis' : 'narrate';
 
   const font = merged.font ?? FALLBACK_STYLE.font!;
   const baseSize = clampSize(merged.size ?? FALLBACK_STYLE.size!);
-  const color = merged.color ?? FALLBACK_STYLE.color!;
+  const defaultColor = merged.color ?? FALLBACK_STYLE.color!;
   const baseOutline = merged.outline ?? FALLBACK_STYLE.outline!;
   const bgColor = merged.bgColor;
   const position = merged.position ?? 'bottom';
 
+  // Per-role visual treatment.
+  //
+  // narrate (default ~80% of segments): yellow text + thick black outline +
+  //   subtle white top-edge highlight (gives a faux-3D bevel feel). Matches
+  //   the dominant style in the reference video the user shared (5月16日_
+  //   edited_高光_SLAPP).
+  //
+  // emphasis (~10-20%): white CAPSULE background + drop shadow + thin
+  //   black text outline + white text body with RED keywords. Matches the
+  //   reference's "现在你在网络上 [乱讲话]" punchline frames. The keyword
+  //   color (#ff3333) overrides the white default for highlighted words.
+  const rolePalette =
+    role === 'emphasis'
+      ? {
+          // base text + outline
+          textColor: '#ffffff',
+          keywordColor: '#ff3333',
+          outlineColor: '#000000',
+          outlineWidth: 1.5,
+          topHighlight: false,
+          // background pill
+          pillBg: '#ffffff',
+          pillPaddingY: 8,
+          pillPaddingX: 22,
+          pillRadius: 999,
+          pillShadow: '0 6px 18px rgba(0,0,0,0.45)',
+        }
+      : {
+          textColor: defaultColor === '#ffffff' ? '#fed800' : defaultColor,
+          keywordColor: '#ff3333',
+          outlineColor: baseOutline.color,
+          outlineWidth: Math.max(baseOutline.width, 4),
+          topHighlight: true,
+          pillBg: undefined,
+          pillPaddingY: 6,
+          pillPaddingX: 18,
+          pillRadius: 0,
+          pillShadow: undefined,
+        };
+
   const scale =
     sourceHeight > 0 && displayHeight > 0 ? displayHeight / sourceHeight : 1;
   const size = Math.max(8, Math.round(baseSize * scale));
-  const outline = {
-    color: baseOutline.color,
-    width: Math.max(0.5, baseOutline.width * scale),
-  };
 
   const orientedSize =
     merged.size === undefined && orientation === 'portrait'
@@ -283,16 +322,29 @@ export function PackagingSubtitleOverlay({
   const effectByIdx = new Map<number, WordEffect>();
   wordEffects.forEach((w) => effectByIdx.set(w.wordIdx, w));
 
-  const textShadow = outline.width > 0
+  // Outline (8-direction text-shadow ring) plus, for `narrate` role
+  // only, an additional white 3D-bevel top-edge highlight that gives
+  // the bold yellow chars a glossy reflective feel — matches the
+  // reference video's signature look. Without this highlight the
+  // yellow looks flat and the role looks bland.
+  const effOutlineWidth = Math.max(0.5, rolePalette.outlineWidth * scale);
+  const outlineRing = effOutlineWidth > 0
     ? Array.from({ length: 8 })
         .map((_, i) => {
           const angle = (i * Math.PI) / 4;
-          const dx = Math.cos(angle) * outline.width;
-          const dy = Math.sin(angle) * outline.width;
-          return `${dx.toFixed(1)}px ${dy.toFixed(1)}px 0 ${outline.color}`;
+          const dx = Math.cos(angle) * effOutlineWidth;
+          const dy = Math.sin(angle) * effOutlineWidth;
+          return `${dx.toFixed(1)}px ${dy.toFixed(1)}px 0 ${rolePalette.outlineColor}`;
         })
         .join(', ')
-    : 'none';
+    : '';
+  // Top-edge highlight: a single white shadow offset UPWARD creates a
+  // glossy bevel on top of each glyph. Layer ABOVE the outline ring
+  // so the white shows through. Scale with display.
+  const topHighlight = rolePalette.topHighlight
+    ? `0 -${Math.max(1, effOutlineWidth * 0.5).toFixed(1)}px 0 #ffffff`
+    : '';
+  const textShadow = [topHighlight, outlineRing].filter(Boolean).join(', ') || 'none';
 
   // Resolve transform to actually apply (null = use flex baseline).
   const renderTransform = effectiveTransform;
@@ -309,31 +361,32 @@ export function PackagingSubtitleOverlay({
   // line. Dragging LEFT (x=10%) leaves 90% available so it looked fine.
   // `max-content` makes the container size to its natural content
   // width (one-line preferred), with `maxWidth: 92%` still capping it.
+  const containerCommon: React.CSSProperties = {
+    width: 'max-content',
+    maxWidth: '92%',
+    padding: `${rolePalette.pillPaddingY}px ${rolePalette.pillPaddingX}px`,
+    background: rolePalette.pillBg ?? bgColor ?? 'transparent',
+    borderRadius: rolePalette.pillRadius || (bgColor ? 6 : 0),
+    boxShadow: rolePalette.pillShadow,
+    textAlign: 'center' as const,
+    lineHeight: 1.2,
+  };
+
   const textContainerStyle: React.CSSProperties = renderTransform
     ? {
+        ...containerCommon,
         position: 'absolute',
         left: `${renderTransform.x * 100}%`,
         top: `${renderTransform.y * 100}%`,
         transform: `translate(-50%, -50%) scale(${renderTransform.scale}) rotate(${renderTransform.rotation}deg)`,
         transformOrigin: 'center center',
-        width: 'max-content',
-        maxWidth: '92%',
-        padding: '6px 18px',
-        background: bgColor ?? 'transparent',
-        borderRadius: bgColor ? 6 : 0,
-        textAlign: 'center',
-        lineHeight: 1.2,
         pointerEvents: 'auto',
         cursor: isEditing ? 'move' : 'pointer',
         outline: isEditing ? '1.5px dashed rgba(122, 162, 247, 0.9)' : 'none',
         outlineOffset: 2,
       }
     : {
-        width: 'max-content',
-        maxWidth: '92%',
-        padding: '6px 18px',
-        background: bgColor ?? 'transparent',
-        borderRadius: bgColor ? 6 : 0,
+        ...containerCommon,
         textAlign: 'center',
         lineHeight: 1.2,
         pointerEvents: onEnterEdit ? 'auto' : 'none',
@@ -395,7 +448,14 @@ export function PackagingSubtitleOverlay({
       >
         {tokens.map((tok, i) => {
           const eff = effectByIdx.get(i);
-          const tokColor = eff?.highlight ?? color;
+          // For narrate role: base = yellow, keyword highlight override
+          //   color if AI provided one.
+          // For emphasis role: base = white (sits on white pill), keyword
+          //   override = red (the punchline word). If AI explicitly
+          //   provided highlight, use that; otherwise fall back to the
+          //   role's keywordColor.
+          const baseColor = rolePalette.textColor;
+          const tokColor = eff?.highlight ?? baseColor;
           const tokSize = eff?.size
             ? Math.max(8, Math.round(clampSize(eff.size) * scale))
             : orientedSize;
