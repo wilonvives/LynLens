@@ -9,6 +9,7 @@ import { OrientationDialog } from './OrientationDialog';
 import { QuickMarkDialog } from './QuickMarkDialog';
 import { ShortcutsDialog } from './ShortcutsDialog';
 import { HighlightPanel } from './HighlightPanel';
+import { PackagingPanel } from './PackagingPanel';
 import { SocialCopyPanel } from './SocialCopyPanel';
 import { Resizer } from './Resizer';
 import { usePlayerWrapSize } from './hooks/usePlayerWrapSize';
@@ -544,6 +545,11 @@ export function App() {
           effectiveDuration={effectiveDuration}
           videoPath={store.videoPath}
           previewRotation={previewRotation}
+        />
+      ) : workMode === 'packaging' ? (
+        <PackagingPanel
+          effectiveDuration={effectiveDuration}
+          videoPath={store.videoPath}
         />
       ) : workMode === 'copywriter' ? (
         <SocialCopyPanel />
