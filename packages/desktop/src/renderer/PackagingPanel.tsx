@@ -69,8 +69,25 @@ export function PackagingPanel({ effectiveDuration }: Props): JSX.Element {
   const [generating, setGenerating] = useState(false);
   const [vibe, setVibe] = useState<PackagingVibe>('default');
   const [showMicroEditor, setShowMicroEditor] = useState(false);
-  /** True while the export dialog is open (path/quality + progress UI). */
-  const [showExportDialog, setShowExportDialog] = useState(false);
+  /**
+   * Snapshot of the export target at the moment the user clicked
+   * 🎬 导出成品. We freeze (variantId, title, defaultPath) here instead
+   * of reading the live selection so switching variants mid-export
+   * doesn't a) change the dialog filename, b) confuse which variant
+   * the export is actually for, or c) silently send a different
+   * variantId to the IPC than what the title says.
+   *
+   * null → dialog closed. Set on button click, cleared on close /
+   * after-export-finishes.
+   */
+  type ExportTarget = {
+    variantId: string | null;
+    title: string;
+    defaultPath: string;
+  };
+  const [exportTarget, setExportTarget] = useState<ExportTarget | null>(null);
+  /** Live export progress (from engine events) — drives banner + button lock. */
+  const exportState = useStore((s) => s.export);
 
   // Preview render state.
   const [preview, setPreview] = useState<PreviewState | null>(null);
@@ -316,8 +333,23 @@ export function PackagingPanel({ effectiveDuration }: Props): JSX.Element {
             </button>
             <button
               className="primary"
-              onClick={() => setShowExportDialog(true)}
-              title="把花字烧进视频,导出成片"
+              onClick={() => {
+                // Snapshot the target NOW so switching variants while
+                // the dialog is open / encoding runs can't change what
+                // gets exported.
+                const title = selectedVariant?.title ?? '整片';
+                setExportTarget({
+                  variantId: selectedVariantId,
+                  title,
+                  defaultPath: `${title}-包装.mp4`,
+                });
+              }}
+              disabled={exportState.active}
+              title={
+                exportState.active
+                  ? '当前已有导出任务在跑,等它完成'
+                  : '把花字烧进视频,导出成片'
+              }
             >
               🎬 导出成品
             </button>
@@ -400,6 +432,51 @@ export function PackagingPanel({ effectiveDuration }: Props): JSX.Element {
           >
             🎬 正在播放变体「{selectedVariant.title}」 · {selectedVariant.segments.length} 段 ·{' '}
             {formatTime(selectedVariant.durationSeconds)} · 预渲染为连续片段
+          </div>
+        )}
+
+        {/* Export-in-progress banner. Stays visible across variant
+            switches so the user is never confused about which target
+            the encoder is working on. Disappears the moment ffmpeg
+            finishes (engine.bus emits export.completed → store clears
+            export.active). */}
+        {exportState.active && exportTarget && (
+          <div
+            style={{
+              padding: '8px 12px',
+              fontSize: 12,
+              color: '#fff',
+              background: 'rgba(122, 162, 247, 0.18)',
+              border: '1px solid rgba(122, 162, 247, 0.6)',
+              borderRadius: 4,
+              display: 'flex',
+              alignItems: 'center',
+              gap: 10,
+            }}
+          >
+            <span style={{ fontSize: 14 }}>🎬</span>
+            <span style={{ flex: 1 }}>
+              正在导出「{exportTarget.title}」 — {exportState.stage}{' '}
+              {exportState.percent.toFixed(0)}%
+            </span>
+            <div
+              style={{
+                flex: '0 0 120px',
+                height: 6,
+                background: 'rgba(0,0,0,0.3)',
+                borderRadius: 3,
+                overflow: 'hidden',
+              }}
+            >
+              <div
+                style={{
+                  width: `${exportState.percent}%`,
+                  height: '100%',
+                  background: '#7aa2f7',
+                  transition: 'width 0.2s linear',
+                }}
+              />
+            </div>
           </div>
         )}
 
@@ -646,27 +723,26 @@ export function PackagingPanel({ effectiveDuration }: Props): JSX.Element {
         />
       )}
 
-      {/* Final export with花字 burned in. Same ExportDialog component
-          the other tabs use — for progress display + path picking. */}
-      {showExportDialog && plan && (
+      {/* Final export with花字 burned in. The dialog is bound to the
+          SNAPSHOTTED export target (captured when the button was
+          clicked) — switching variants now won't change the export.
+          The user can still browse other variants while the encode
+          runs; the export-in-progress banner above keeps them oriented. */}
+      {exportTarget && plan && (
         <ExportDialog
-          title={
-            selectedVariant
-              ? `导出包装成品 — ${selectedVariant.title}`
-              : '导出包装成品 — 整片'
-          }
-          defaultPath={`${selectedVariant?.title ?? '整片'}-包装.mp4`}
-          onClose={() => setShowExportDialog(false)}
+          title={`导出包装成品 — ${exportTarget.title}`}
+          defaultPath={exportTarget.defaultPath}
+          onClose={() => setExportTarget(null)}
           onConfirm={async ({ outputPath, quality }) => {
             try {
               await window.lynlens.exportPackaged(
                 projectId,
-                selectedVariantId,
+                exportTarget.variantId,
                 outputPath,
                 quality
               );
-              setShowExportDialog(false);
-              alert(`导出完成: ${outputPath}`);
+              setExportTarget(null);
+              alert(`✅ 导出完成: ${outputPath}`);
             } catch (err) {
               alert(`导出失败: ${(err as Error).message}`);
             }
