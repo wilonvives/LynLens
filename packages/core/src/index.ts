@@ -98,6 +98,7 @@ export {
   type PackagingSegment,
   type PackagingVibe,
   type SubtitleStyle,
+  type SubtitleTransform,
   type WordEffect,
 } from './packaging-plan';
 export {

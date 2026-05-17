@@ -43,13 +43,13 @@ import { PackagingSubtitleOverlay } from './components/PackagingSubtitleOverlay'
 import {
   PackagingAudioTab,
   PackagingCameraTab,
-  PackagingInlineEditor,
   PackagingRightPanel,
   PackagingSubtitlesTab,
   PackagingTemplatesTab,
   PackagingTimelineBar,
   type PackagingTab,
 } from './components/packaging';
+import type { SubtitleTransform } from '@lynlens/core';
 import { useStore } from './store';
 import { formatTime } from './util';
 
@@ -95,8 +95,13 @@ export function PackagingPanel({ effectiveDuration }: Props): JSX.Element {
    */
   const [jumpToIdx, setJumpToIdx] = useState<number | null>(null);
   const [jumpToken, setJumpToken] = useState(0);
-  /** Floating quick-edit toolbar visibility (shown over the video preview). */
-  const [showInlineEditor, setShowInlineEditor] = useState(false);
+  /**
+   * Index of the segment currently in DIRECT-MANIPULATION edit mode
+   * (drag handles visible on the subtitle in the preview). null = no
+   * subtitle is being edited. Click subtitle → enter; click outside →
+   * exit.
+   */
+  const [editingSegmentIdx, setEditingSegmentIdx] = useState<number | null>(null);
 
   // Preview render state.
   const [preview, setPreview] = useState<PreviewState | null>(null);
@@ -572,32 +577,40 @@ export function PackagingPanel({ effectiveDuration }: Props): JSX.Element {
                     orientation={orientation}
                     sourceHeight={videoMeta.height}
                     displayHeight={wrapSize.h}
-                    onSubtitleClick={(segmentIdx) => {
-                      // Two actions on subtitle click:
-                      //   1. Pop up the inline mini-toolbar over the
-                      //      video for instant 位置/颜色 changes (the
-                      //      gesture user expects from open-pai etc).
-                      //   2. ALSO scroll the corresponding card into
-                      //      view in the 字幕 tab and switch to it, so
-                      //      keyword-level edits are one click away.
-                      setShowInlineEditor(true);
+                    editingSegmentIdx={editingSegmentIdx}
+                    onEnterEdit={(segmentIdx) => {
+                      // Click subtitle → enter direct-manipulation edit
+                      // mode (drag handles appear). Also jump the right-
+                      // side card so keyword edits are one click away.
+                      setEditingSegmentIdx(segmentIdx);
                       setActiveTab('subtitles');
                       setJumpToIdx(segmentIdx);
                       setJumpToken((t) => t + 1);
                     }}
+                    onExitEdit={() => setEditingSegmentIdx(null)}
+                    onTransformChange={(segmentIdx, t: SubtitleTransform) => {
+                      if (!plan) return;
+                      // Upsert this segment's transform without touching
+                      // other fields. Debounce-save via handlePlanChange.
+                      const existing = plan.segments.find(
+                        (s) => s.segmentIdx === segmentIdx
+                      );
+                      const base = existing ?? { segmentIdx };
+                      const nextSeg = {
+                        ...base,
+                        subtitle: { ...(base.subtitle ?? {}), transform: t },
+                      };
+                      const others = plan.segments.filter(
+                        (s) => s.segmentIdx !== segmentIdx
+                      );
+                      handlePlanChange({
+                        ...plan,
+                        segments: [...others, nextSeg].sort(
+                          (a, b) => a.segmentIdx - b.segmentIdx
+                        ),
+                      });
+                    }}
                   />
-                  {/* Floating quick-edit toolbar — appears over the
-                      video preview when subtitle is clicked. */}
-                  {showInlineEditor && plan && (
-                    <PackagingInlineEditor
-                      plan={plan}
-                      onPlanChange={handlePlanChange}
-                      onClose={() => setShowInlineEditor(false)}
-                      subtitlePosition={
-                        plan.defaults.subtitle?.position ?? 'bottom'
-                      }
-                    />
-                  )}
                 </div>
               ) : sourceVideoUrl ? (
                 <div style={{ color: 'var(--text3)' }}>

@@ -6,7 +6,8 @@
  */
 export { PackagingAudioTab } from './PackagingAudioTab';
 export { PackagingCameraTab } from './PackagingCameraTab';
-export { PackagingInlineEditor } from './PackagingInlineEditor';
+// PackagingInlineEditor removed — replaced by direct-manipulation
+// handles on the subtitle overlay (PackagingSubtitleOverlay edit mode).
 export { PackagingRightPanel, type PackagingTab } from './PackagingRightPanel';
 export { PackagingSegmentCard } from './PackagingSegmentCard';
 export { PackagingSubtitlesTab } from './PackagingSubtitlesTab';

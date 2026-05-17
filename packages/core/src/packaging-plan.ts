@@ -78,6 +78,30 @@ export interface SubtitleStyle {
   animation?: 'none' | 'fade-in' | 'typewriter';
 }
 
+/**
+ * Free-form per-segment placement set by the user via drag handles in
+ * the preview. When present, it OVERRIDES the default position (top/
+ * center/bottom) for that one segment.
+ *
+ * Why user-only: the parser strips this from AI responses to keep
+ * baseline consistent (chaos when AI auto-positions). Drag handles
+ * in PackagingSubtitleOverlay write to this, and setPackagingPlan
+ * persists it without going through the parser, so it survives.
+ *
+ * Coords are FRACTIONS of the frame so they scale correctly across
+ * preview / export resolutions.
+ */
+export interface SubtitleTransform {
+  /** Center X, 0-1 fraction of frame width. Default 0.5 = horizontal center. */
+  x: number;
+  /** Center Y, 0-1 fraction of frame height. Default depends on style.position. */
+  y: number;
+  /** Multiplier on the resolved font-size. 0.3 ≤ s ≤ 3.0. Default 1.0. */
+  scale: number;
+  /** Clockwise rotation in degrees. -180 ≤ r ≤ 180. Default 0. */
+  rotation: number;
+}
+
 export interface PackagingSegment {
   /** Index into the variant's segments[] (or transcript's segments[]). */
   segmentIdx: number;
@@ -88,6 +112,8 @@ export interface PackagingSegment {
      * for v0.6+ (renderer ignores it for now).
      */
     wordEffects?: WordEffect[];
+    /** User-set drag-handle placement (overrides style.position). */
+    transform?: SubtitleTransform;
   };
   camera?: CameraMove;
   /** v0.6+ placeholder, renderer ignores in v0.5. */

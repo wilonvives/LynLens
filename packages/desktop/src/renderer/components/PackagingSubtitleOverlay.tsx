@@ -1,77 +1,52 @@
 /**
- * HTML/CSS subtitle overlay for the 包装 tab.
+ * Subtitle overlay for the 包装 tab — renders the current line and,
+ * when the user clicks it, switches into an EDIT MODE with direct-
+ * manipulation drag handles (move / scale / rotate) à la Figma/开拍.
  *
- * Goal (kept deliberately small per user request "先从小的字幕效果花字做"):
- * just render the current subtitle on top of a normal `<video>` element,
- * using the PackagingPlan's per-segment styling + per-word highlights
- * (the "花字" effect — keyword in a different colour / size).
+ * Coordinate system for transforms:
+ *   - `transform.x`, `transform.y` are 0-1 FRACTIONS of the video frame
+ *     (so they survive across preview/export resolutions).
+ *   - `transform.scale` multiplies the base font-size.
+ *   - `transform.rotation` is degrees, clockwise.
  *
- * No Remotion. No camera zoom. No transitions. Just text overlay.
+ * Edit mode lifecycle (driven by parent state via props):
+ *   - Click subtitle text → onEnterEdit(segmentIdx).
+ *   - Parent flips `editingSegmentIdx`; this component re-renders with
+ *     bounding box + 4 corner scale handles + 1 rotation handle.
+ *   - On pointer-down on a handle, drag logic kicks in (move/scale/
+ *     rotate). On move, fires onTransformChange so parent can persist.
+ *   - Click outside (on the transparent overlay surface) → onExitEdit().
  *
- * How it picks the current subtitle:
- *   - Caller passes `currentTimeSec` — the playhead position in the
- *     CURRENTLY-LOADED video file's timeline.
- *   - When `playlist` is provided (variant preview), this is preview/
- *     variant time. We map it back to source time via the playlist so
- *     transcript lookup (which is in source time) works.
- *   - When `playlist` is missing or empty, currentTimeSec is treated as
- *     source time directly (整片 fallback).
- *   - Find the transcript segment whose source-time range contains the
- *     mapped time; that's the "current line".
- *   - Look up that segment's index in the plan's segments[] to get the
- *     subtitle style + wordEffects.
- *   - Render the tokens with default style; override the highlighted
- *     ones with their color/size.
+ * Export note: ASS \pos and \frz tags for the burned-in export need to
+ * use these transforms too — that's a separate change in ass-generator,
+ * deferred for now (preview is what the user is iterating on).
  */
-import { useMemo } from 'react';
+import { useMemo, useRef } from 'react';
 import type {
   PackagingPlan,
   PreviewPlaylistEntry,
   SubtitleStyle,
+  SubtitleTransform,
   Transcript,
   WordEffect,
 } from '@lynlens/core';
 
 interface Props {
-  /** Project transcript (source-time segments). */
   transcript: Transcript;
-  /** AI-generated styling plan. null → no decoration, plain default. */
   plan: PackagingPlan | null;
-  /**
-   * Current playback position. In VARIANT seconds when `playlist` is set
-   * (preview mp4 playback); in SOURCE seconds when `playlist` is empty
-   * (整片). The component reduces this to source time internally via the
-   * playlist before looking up the transcript segment.
-   */
   currentTimeSec: number;
-  /**
-   * Optional source↔variant time mapping. One entry per variant segment
-   * (or a single 1:1 entry for 整片). When empty/undefined, currentTimeSec
-   * is treated as source time directly.
-   */
   playlist?: PreviewPlaylistEntry[];
-  /** Display orientation hint (affects default sizes). */
   orientation?: 'portrait' | 'landscape' | 'unknown';
-  /**
-   * Source video height in px (typically videoMeta.height). AI returns
-   * font-sizes scaled to this — e.g. size:56 on a 1080-high video means
-   * roughly "5% of video height". We rescale to the rendered display
-   * size so subtitles aren't huge when the video plays small.
-   */
   sourceHeight: number;
-  /**
-   * Currently-rendered video height in px (from a ResizeObserver on the
-   * video-aspect wrap). Used to scale font sizes proportionally.
-   */
   displayHeight: number;
-  /**
-   * Click handler — fires with the active transcript segment's index
-   * when the user clicks the visible subtitle text. Used by the 包装
-   * tab to jump to that segment's card in the 字幕 editor. Click events
-   * elsewhere on the overlay (transparent regions) pass through to the
-   * video underneath, preserving play/pause-on-click.
-   */
-  onSubtitleClick?: (segmentIdx: number) => void;
+  /** Index of the segment currently in edit mode (handles visible). */
+  editingSegmentIdx?: number | null;
+  /** User clicked subtitle text → request to enter edit mode. */
+  onEnterEdit?: (segmentIdx: number) => void;
+  /** User clicked outside subtitle → request to exit edit mode. */
+  onExitEdit?: () => void;
+  /** Drag/scale/rotate delta — persist to plan. */
+  onTransformChange?: (segmentIdx: number, t: SubtitleTransform) => void;
 }
 
 const FALLBACK_STYLE: SubtitleStyle = {
@@ -82,15 +57,30 @@ const FALLBACK_STYLE: SubtitleStyle = {
   position: 'bottom',
 };
 
-/**
- * Defensive font-size cap (matches packaging-plan.ts parser). Old plans
- * stored in .qcp before the parser cap landed still have wild sizes; we
- * clamp at render time so preview can't blow up regardless of where the
- * plan came from.
- */
+/** Defensive font-size cap (mirrors packaging-plan parser cap). */
 function clampSize(v: number): number {
   if (!Number.isFinite(v) || v <= 0) return 56;
   return Math.min(120, Math.max(16, v));
+}
+
+function clamp(v: number, lo: number, hi: number): number {
+  return Math.max(lo, Math.min(hi, v));
+}
+
+/**
+ * Derive an initial transform from the resolved style.position so that
+ * when the user first clicks a subtitle (no transform yet), the handles
+ * appear AT the visual position the subtitle is currently rendered.
+ */
+function deriveInitialTransform(
+  position: 'top' | 'center' | 'bottom'
+): SubtitleTransform {
+  return {
+    x: 0.5,
+    y: position === 'top' ? 0.12 : position === 'center' ? 0.5 : 0.88,
+    scale: 1.0,
+    rotation: 0,
+  };
 }
 
 export function PackagingSubtitleOverlay({
@@ -101,13 +91,11 @@ export function PackagingSubtitleOverlay({
   orientation,
   sourceHeight,
   displayHeight,
-  onSubtitleClick,
+  editingSegmentIdx,
+  onEnterEdit,
+  onExitEdit,
+  onTransformChange,
 }: Props): JSX.Element | null {
-  // Map variant time → source time using the playlist. If currentTimeSec
-  // falls between variant entries (mid-seek / outside any entry), the
-  // lookup returns null and we render no subtitle (correct — there's no
-  // source position to look up). With no playlist, treat the input as
-  // source time directly.
   const sourceTimeSec = useMemo<number | null>(() => {
     if (!playlist || playlist.length === 0) return currentTimeSec;
     for (const e of playlist) {
@@ -115,16 +103,11 @@ export function PackagingSubtitleOverlay({
         return e.srcStart + (currentTimeSec - e.variantStart);
       }
     }
-    // Past the end: clamp to the last entry's srcEnd so the final
-    // subtitle keeps showing until the video ends.
     const last = playlist[playlist.length - 1];
     if (currentTimeSec >= last.variantEnd) return last.srcEnd - 0.001;
     return null;
   }, [playlist, currentTimeSec]);
 
-  // Locate the active transcript segment for the current playhead.
-  // Linear scan is fine — transcript segments are small (hundreds, not
-  // millions) and this runs at most every onTimeUpdate fire (~4 Hz).
   const { activeSeg, activeIdx } = useMemo(() => {
     if (sourceTimeSec === null) return { activeSeg: null, activeIdx: -1 };
     for (let i = 0; i < transcript.segments.length; i++) {
@@ -136,42 +119,24 @@ export function PackagingSubtitleOverlay({
     return { activeSeg: null, activeIdx: -1 };
   }, [transcript.segments, sourceTimeSec]);
 
-  if (!activeSeg) return null;
-
-  // Resolve the styling for THIS segment:
-  //   whole-line styling = FALLBACK ← plan.defaults.subtitle
-  //   per-keyword highlights = recipe.subtitle.wordEffects (only)
-  //
-  // We deliberately DO NOT merge recipe.subtitle's color/position/size/
-  // font/outline/bgColor — those whole-line overrides made adjacent
-  // segments render in different colors / positions (user reported
-  // "preview 乱飞"). The parser now drops them on new generations, but
-  // plans persisted to .qcp before that change still carry them; this
-  // render-time filter makes loading an old plan look clean too.
-  // Wholesale per-segment styling, if ever needed, should land as a
-  // proper feature with its own UI affordance, not a free-for-all on
-  // AI's whims.
+  // Resolve style (defaults only — segment-level non-wordEffects/transform
+  // overrides are stripped). transform IS read per-segment because that's
+  // explicitly user-set via drag handles.
   const recipe = plan?.segments.find((s) => s.segmentIdx === activeIdx);
   const merged: SubtitleStyle = {
     ...FALLBACK_STYLE,
     ...(plan?.defaults.subtitle ?? {}),
   };
   const wordEffects: WordEffect[] = recipe?.subtitle?.wordEffects ?? [];
+  const userTransform = recipe?.subtitle?.transform;
 
   const font = merged.font ?? FALLBACK_STYLE.font!;
-  // Render-time defensive cap. The parser also clamps but plans saved
-  // before the cap landed (or hand-edited .qcp files) can still carry
-  // wild sizes; cap here so the preview never explodes.
   const baseSize = clampSize(merged.size ?? FALLBACK_STYLE.size!);
   const color = merged.color ?? FALLBACK_STYLE.color!;
   const baseOutline = merged.outline ?? FALLBACK_STYLE.outline!;
   const bgColor = merged.bgColor;
   const position = merged.position ?? 'bottom';
 
-  // Scale source-resolution px sizes to the actual displayed video size.
-  // AI returns sizes calibrated for the source (e.g. 56px on a 1080-tall
-  // video). When the video plays at 400px tall in a small player, 56px
-  // text would be HUGE relative to the frame. Multiply by the ratio.
   const scale =
     sourceHeight > 0 && displayHeight > 0 ? displayHeight / sourceHeight : 1;
   const size = Math.max(8, Math.round(baseSize * scale));
@@ -180,15 +145,144 @@ export function PackagingSubtitleOverlay({
     width: Math.max(0.5, baseOutline.width * scale),
   };
 
-  // Tokenise to map wordEffects.wordIdx to spans. Whitespace split is
-  // simple; CJK without spaces becomes one token (wordIdx=0). Per v0.6
-  // we can add char-level tokenisation if AI needs more granularity.
+  const orientedSize =
+    merged.size === undefined && orientation === 'portrait'
+      ? Math.round(size * 1.15)
+      : size;
+
+  const isEditing = editingSegmentIdx === activeIdx && activeIdx >= 0;
+  const effectiveTransform = userTransform ?? null;
+
+  // Drag state — refs (not state) so pointermove updates don't re-render.
+  const wrapRef = useRef<HTMLDivElement | null>(null);
+  type DragState =
+    | { type: 'move'; startX: number; startY: number; start: SubtitleTransform }
+    | {
+        type: 'scale';
+        startX: number;
+        startY: number;
+        start: SubtitleTransform;
+        centerX: number;
+        centerY: number;
+        startDist: number;
+      }
+    | {
+        type: 'rotate';
+        start: SubtitleTransform;
+        centerX: number;
+        centerY: number;
+        startAngle: number;
+      };
+  const dragRef = useRef<DragState | null>(null);
+
+  /**
+   * Start a drag. Creates fresh `move` + `end` handlers each invocation
+   * so addEventListener / removeEventListener always see the same
+   * reference (avoiding stale-closure leaks when the component re-
+   * renders mid-drag).
+   */
+  function startDrag(
+    kind: 'move' | 'scale' | 'rotate',
+    e: React.PointerEvent
+  ): void {
+    e.stopPropagation();
+    e.preventDefault();
+    if (activeIdx < 0 || !onTransformChange) return;
+    const wrap = wrapRef.current;
+    if (!wrap) return;
+    const rect = wrap.getBoundingClientRect();
+    const t = userTransform ?? deriveInitialTransform(position);
+    // First click that hasn't established a transform yet → commit the
+    // derived one so handles render around the visual baseline.
+    if (!userTransform) onTransformChange(activeIdx, t);
+
+    let state: DragState;
+    if (kind === 'move') {
+      state = {
+        type: 'move',
+        startX: e.clientX,
+        startY: e.clientY,
+        start: t,
+      };
+    } else if (kind === 'scale') {
+      const centerX = rect.left + rect.width * t.x;
+      const centerY = rect.top + rect.height * t.y;
+      const startDist = Math.hypot(e.clientX - centerX, e.clientY - centerY);
+      state = {
+        type: 'scale',
+        startX: e.clientX,
+        startY: e.clientY,
+        start: t,
+        centerX,
+        centerY,
+        startDist: startDist || 1,
+      };
+    } else {
+      const centerX = rect.left + rect.width * t.x;
+      const centerY = rect.top + rect.height * t.y;
+      const startAngle =
+        (Math.atan2(e.clientY - centerY, e.clientX - centerX) * 180) / Math.PI;
+      state = {
+        type: 'rotate',
+        start: t,
+        centerX,
+        centerY,
+        startAngle,
+      };
+    }
+    dragRef.current = state;
+
+    // Capture refs once at drag start so the move handler keeps using
+    // the SAME wrap rect even if a re-render replaces wrapRef.current.
+    const capturedRect = rect;
+    const capturedActiveIdx = activeIdx;
+    const capturedOnChange = onTransformChange;
+
+    const move = (ev: PointerEvent): void => {
+      const s = dragRef.current;
+      if (!s) return;
+      if (s.type === 'move') {
+        const dx = (ev.clientX - s.startX) / capturedRect.width;
+        const dy = (ev.clientY - s.startY) / capturedRect.height;
+        capturedOnChange(capturedActiveIdx, {
+          ...s.start,
+          x: clamp(s.start.x + dx, 0.05, 0.95),
+          y: clamp(s.start.y + dy, 0.05, 0.95),
+        });
+      } else if (s.type === 'scale') {
+        const d = Math.hypot(ev.clientX - s.centerX, ev.clientY - s.centerY);
+        const ratio = d / s.startDist;
+        capturedOnChange(capturedActiveIdx, {
+          ...s.start,
+          scale: clamp(s.start.scale * ratio, 0.3, 3.0),
+        });
+      } else {
+        const now =
+          (Math.atan2(ev.clientY - s.centerY, ev.clientX - s.centerX) * 180) /
+          Math.PI;
+        const delta = now - s.startAngle;
+        let r = s.start.rotation + delta;
+        while (r > 180) r -= 360;
+        while (r < -180) r += 360;
+        capturedOnChange(capturedActiveIdx, { ...s.start, rotation: r });
+      }
+    };
+    const end = (): void => {
+      dragRef.current = null;
+      window.removeEventListener('pointermove', move);
+      window.removeEventListener('pointerup', end);
+    };
+    window.addEventListener('pointermove', move);
+    window.addEventListener('pointerup', end);
+  }
+
+  if (!activeSeg) return null;
+
+  // Tokenise for wordEffects mapping.
   const tokens = activeSeg.text.split(/\s+/).filter((t) => t.length > 0);
   const effectByIdx = new Map<number, WordEffect>();
   wordEffects.forEach((w) => effectByIdx.set(w.wordIdx, w));
 
-  // 8-direction text-shadow approximates a stroke — works around CJK
-  // glyph clipping issues in -webkit-text-stroke.
   const textShadow = outline.width > 0
     ? Array.from({ length: 8 })
         .map((_, i) => {
@@ -200,6 +294,42 @@ export function PackagingSubtitleOverlay({
         .join(', ')
     : 'none';
 
+  // Resolve transform to actually apply (null = use flex baseline).
+  const renderTransform = effectiveTransform;
+
+  // Text container — when transform set: absolutely placed at (x, y) with
+  // CSS transform for scale + rotation. Otherwise: flex-positioned via
+  // outer container's verticalStyle.
+  const textContainerStyle: React.CSSProperties = renderTransform
+    ? {
+        position: 'absolute',
+        left: `${renderTransform.x * 100}%`,
+        top: `${renderTransform.y * 100}%`,
+        transform: `translate(-50%, -50%) scale(${renderTransform.scale}) rotate(${renderTransform.rotation}deg)`,
+        transformOrigin: 'center center',
+        maxWidth: '92%',
+        padding: '6px 18px',
+        background: bgColor ?? 'transparent',
+        borderRadius: bgColor ? 6 : 0,
+        textAlign: 'center',
+        lineHeight: 1.2,
+        pointerEvents: 'auto',
+        cursor: isEditing ? 'move' : 'pointer',
+        outline: isEditing ? '1.5px dashed rgba(122, 162, 247, 0.9)' : 'none',
+        outlineOffset: 2,
+      }
+    : {
+        maxWidth: '92%',
+        padding: '6px 18px',
+        background: bgColor ?? 'transparent',
+        borderRadius: bgColor ? 6 : 0,
+        textAlign: 'center',
+        lineHeight: 1.2,
+        pointerEvents: onEnterEdit ? 'auto' : 'none',
+        cursor: onEnterEdit ? 'pointer' : 'default',
+      };
+
+  // verticalStyle only matters when there's no transform.
   const verticalStyle: React.CSSProperties =
     position === 'top'
       ? { justifyContent: 'flex-start', paddingTop: '8%' }
@@ -207,59 +337,54 @@ export function PackagingSubtitleOverlay({
         ? { justifyContent: 'center' }
         : { justifyContent: 'flex-end', paddingBottom: '12%' };
 
-  // Adjust default size by orientation if the AI didn't pick one.
-  // Portrait videos play in a tall narrow box; same px size feels
-  // smaller. Bump 1.15x for portrait. (Subtle — most of the resizing
-  // is already handled by the source→display scale above.)
-  const orientedSize =
-    merged.size === undefined && orientation === 'portrait'
-      ? Math.round(size * 1.15)
-      : size;
-
   return (
     <div
+      ref={wrapRef}
+      onClick={(e) => {
+        // Click on the empty (transparent) overlay area → exit edit
+        // mode if we're in one. When not editing, this div has
+        // pointerEvents: none so clicks pass through to the video for
+        // play/pause.
+        if (isEditing && e.target === e.currentTarget && onExitEdit) {
+          onExitEdit();
+        }
+      }}
       style={{
         position: 'absolute',
         inset: 0,
-        display: 'flex',
-        // flex-direction COLUMN so:
-        //   - justifyContent controls VERTICAL placement (top/center/bottom)
-        //   - alignItems controls HORIZONTAL placement (always center)
-        // The old code used row direction with the same fields, which
-        // made position='bottom' actually render text on the RIGHT edge
-        // vertically centered — looked like "字在中间" in every screenshot.
+        display: renderTransform ? 'block' : 'flex',
+        // Column direction so justify=flex-end goes BOTTOM (was a CSS bug
+        // before — used row direction which pushed to the right edge).
         flexDirection: 'column',
         alignItems: 'center',
-        pointerEvents: 'none',
-        ...verticalStyle,
+        // Outer overlay needs pointer-events only when in edit mode (so
+        // we can catch click-outside to exit). Otherwise pass clicks
+        // through to the video for play/pause.
+        pointerEvents: isEditing ? 'auto' : 'none',
+        ...(renderTransform ? {} : verticalStyle),
       }}
     >
       <div
         onClick={(e) => {
-          if (!onSubtitleClick) return;
-          // Stop propagation so the click doesn't ALSO toggle video
-          // play/pause (the video element has its own onClick).
+          if (!onEnterEdit) return;
           e.stopPropagation();
-          onSubtitleClick(activeIdx);
+          if (!isEditing) onEnterEdit(activeIdx);
         }}
-        style={{
-          maxWidth: '92%',
-          padding: '6px 18px',
-          background: bgColor ?? 'transparent',
-          borderRadius: bgColor ? 6 : 0,
-          textAlign: 'center',
-          lineHeight: 1.2,
-          // Re-enable pointer events on the TEXT area only (outer overlay
-          // still passes clicks through to the video for play/pause).
-          pointerEvents: onSubtitleClick ? 'auto' : 'none',
-          cursor: onSubtitleClick ? 'pointer' : 'default',
+        onPointerDown={(e) => {
+          if (isEditing && e.button === 0) startDrag('move', e);
         }}
-        title={onSubtitleClick ? '点字幕 → 右侧字幕 tab 编辑这段' : undefined}
+        style={textContainerStyle}
+        title={
+          isEditing
+            ? '拖动移动 · 拖角缩放 · 拖顶旋转 · 点外面退出'
+            : onEnterEdit
+              ? '点字幕 → 拖动编辑'
+              : undefined
+        }
       >
         {tokens.map((tok, i) => {
           const eff = effectByIdx.get(i);
           const tokColor = eff?.highlight ?? color;
-          // Scale per-word effect sizes the same way as the base size.
           const tokSize = eff?.size
             ? Math.max(8, Math.round(clampSize(eff.size) * scale))
             : orientedSize;
@@ -281,7 +406,89 @@ export function PackagingSubtitleOverlay({
             </span>
           );
         })}
+
+        {/* Drag handles — only when in edit mode. Positioned relative
+            to the text container so they hug the actual content. */}
+        {isEditing && onTransformChange && (
+          <>
+            <ScaleHandle pos="tl" onPointerDown={(e) => startDrag('scale', e)} />
+            <ScaleHandle pos="tr" onPointerDown={(e) => startDrag('scale', e)} />
+            <ScaleHandle pos="bl" onPointerDown={(e) => startDrag('scale', e)} />
+            <ScaleHandle pos="br" onPointerDown={(e) => startDrag('scale', e)} />
+            <RotateHandle onPointerDown={(e) => startDrag('rotate', e)} />
+          </>
+        )}
       </div>
+    </div>
+  );
+}
+
+// --- Handle subcomponents ----------------------------------------------
+
+const HANDLE_SIZE = 12;
+
+function ScaleHandle({
+  pos,
+  onPointerDown,
+}: {
+  pos: 'tl' | 'tr' | 'bl' | 'br';
+  onPointerDown: (e: React.PointerEvent) => void;
+}): JSX.Element {
+  const top = pos.startsWith('t') ? -HANDLE_SIZE / 2 : undefined;
+  const bottom = pos.startsWith('b') ? -HANDLE_SIZE / 2 : undefined;
+  const left = pos.endsWith('l') ? -HANDLE_SIZE / 2 : undefined;
+  const right = pos.endsWith('r') ? -HANDLE_SIZE / 2 : undefined;
+  const cursor =
+    pos === 'tl' || pos === 'br' ? 'nwse-resize' : 'nesw-resize';
+  return (
+    <div
+      onPointerDown={onPointerDown}
+      style={{
+        position: 'absolute',
+        top, bottom, left, right,
+        width: HANDLE_SIZE,
+        height: HANDLE_SIZE,
+        background: '#fff',
+        border: '2px solid #7aa2f7',
+        borderRadius: '50%',
+        cursor,
+        pointerEvents: 'auto',
+        boxShadow: '0 1px 3px rgba(0,0,0,0.4)',
+      }}
+    />
+  );
+}
+
+function RotateHandle({
+  onPointerDown,
+}: {
+  onPointerDown: (e: React.PointerEvent) => void;
+}): JSX.Element {
+  return (
+    <div
+      onPointerDown={onPointerDown}
+      style={{
+        position: 'absolute',
+        top: -28,
+        left: '50%',
+        transform: 'translateX(-50%)',
+        width: 20,
+        height: 20,
+        background: '#7aa2f7',
+        borderRadius: '50%',
+        cursor: 'grab',
+        pointerEvents: 'auto',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        fontSize: 12,
+        color: '#fff',
+        boxShadow: '0 2px 4px rgba(0,0,0,0.4)',
+        userSelect: 'none',
+      }}
+      title="拖动旋转"
+    >
+      ↻
     </div>
   );
 }
