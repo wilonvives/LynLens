@@ -84,6 +84,80 @@ export function PackagingPanel({ effectiveDuration }: Props): JSX.Element {
     [variants, selectedKey]
   );
 
+  // Variant playback state: when user picks a variant we play ONLY
+  // that variant's segments back-to-back (jumping past the gaps in the
+  // source video). Ref instead of state so the time-update handler
+  // doesn't churn re-renders 4x/second.
+  const playingSegIdxRef = useRef(0);
+
+  // When user picks a variant: seek to its first segment + reset
+  // playing-segment index so jump logic starts fresh. When user picks
+  // 整片: leave currentTime alone (user might be mid-watch).
+  useEffect(() => {
+    const v = videoRef.current;
+    if (!v) return;
+    if (selectedVariant && selectedVariant.segments.length > 0) {
+      v.currentTime = selectedVariant.segments[0].start;
+      playingSegIdxRef.current = 0;
+    }
+  }, [selectedKey, selectedVariant]);
+
+  // Time-update handler: also implements variant-segment jumping so
+  // the SLAPP variant plays as a continuous 172s reel instead of the
+  // raw 12:10 source. When playhead crosses the current segment's
+  // end → seek to the next segment's start. End of last segment →
+  // pause. Outside the current segment (user scrubbed back) → snap
+  // forward to keep playback inside the variant.
+  function handleTimeUpdate(e: React.SyntheticEvent<HTMLVideoElement>): void {
+    const v = e.currentTarget;
+    const cur = v.currentTime;
+    setCurrentTimeSec(cur);
+    if (!selectedVariant || selectedVariant.segments.length === 0) return;
+    const idx = playingSegIdxRef.current;
+    const seg = selectedVariant.segments[idx];
+    if (!seg) return;
+    if (cur >= seg.end - 0.02) {
+      const nextIdx = idx + 1;
+      if (nextIdx < selectedVariant.segments.length) {
+        playingSegIdxRef.current = nextIdx;
+        v.currentTime = selectedVariant.segments[nextIdx].start;
+      } else {
+        v.pause();
+      }
+    } else if (cur < seg.start - 0.1) {
+      v.currentTime = seg.start;
+    }
+  }
+
+  // User scrubbed manually — re-establish which variant segment they
+  // landed in so subsequent time updates know where to jump from.
+  // Outside any segment: snap to the nearest segment start.
+  function handleSeeked(e: React.SyntheticEvent<HTMLVideoElement>): void {
+    const v = e.currentTarget;
+    setCurrentTimeSec(v.currentTime);
+    if (!selectedVariant) return;
+    const cur = v.currentTime;
+    for (let i = 0; i < selectedVariant.segments.length; i++) {
+      const s = selectedVariant.segments[i];
+      if (cur >= s.start && cur < s.end) {
+        playingSegIdxRef.current = i;
+        return;
+      }
+    }
+    let bestIdx = 0;
+    let bestDelta = Infinity;
+    for (let i = 0; i < selectedVariant.segments.length; i++) {
+      const s = selectedVariant.segments[i];
+      const delta = Math.abs(cur - s.start);
+      if (delta < bestDelta) {
+        bestDelta = delta;
+        bestIdx = i;
+      }
+    }
+    playingSegIdxRef.current = bestIdx;
+    v.currentTime = selectedVariant.segments[bestIdx].start;
+  }
+
   // Hydrate variants so the source selector has options.
   useEffect(() => {
     if (!projectId) return;
@@ -264,11 +338,31 @@ export function PackagingPanel({ effectiveDuration }: Props): JSX.Element {
           ))}
         </div>
 
+        {/* Variant context label — tells the user that with a variant
+            selected, playback is jumping between THAT variant's source
+            ranges only (not the whole video). 整片 mode = no label. */}
+        {selectedVariant && (
+          <div
+            style={{
+              padding: '4px 12px',
+              fontSize: 11,
+              color: 'var(--text2)',
+              background: 'rgba(243, 156, 18, 0.08)',
+              border: '1px solid rgba(243, 156, 18, 0.3)',
+              borderRadius: 4,
+            }}
+          >
+            🎬 正在播放变体「{selectedVariant.title}」 ·{' '}
+            {selectedVariant.segments.length} 段 ·{' '}
+            {selectedVariant.durationSeconds.toFixed(1)}s ·
+            播放器会自动跳过变体外的内容
+          </div>
+        )}
+
         {/* Preview area — native <video> (same path the precision tab
             uses, lynlens-media:// protocol) with HTML subtitle overlay
-            on top. The video player is the user's standard playback;
-            the overlay reads currentTime + plan to render styled
-            subtitle. No Remotion, no canvas, no fancy sync. */}
+            on top. Variant playback (segment-jumping) is handled by
+            handleTimeUpdate; for 整片 it's just normal playback. */}
         <div
           style={{
             flex: 1,
@@ -308,16 +402,8 @@ export function PackagingPanel({ effectiveDuration }: Props): JSX.Element {
                 ref={videoRef}
                 src={videoUrl}
                 controls
-                onTimeUpdate={(e) =>
-                  setCurrentTimeSec(
-                    (e.currentTarget as HTMLVideoElement).currentTime
-                  )
-                }
-                onSeeked={(e) =>
-                  setCurrentTimeSec(
-                    (e.currentTarget as HTMLVideoElement).currentTime
-                  )
-                }
+                onTimeUpdate={handleTimeUpdate}
+                onSeeked={handleSeeked}
                 style={{
                   width: '100%',
                   height: '100%',
