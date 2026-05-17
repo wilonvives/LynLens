@@ -1,0 +1,39 @@
+{
+  "$schema": "lynpack@1.0.0",
+  "id": "default",
+  "name": "通用",
+  "description": "白字黑边, 关键词金色高亮, 适合大部分内容 (科普 / 访谈 / 教程 / 短视频)",
+  "version": "1.0.0",
+  "author": {
+    "name": "lynlens",
+    "url": "https://lynlens.app"
+  },
+  "tags": ["通用", "baseline", "可读性优先"],
+
+  "preview": {
+    "thumbnail": "preview/thumbnail.png"
+  },
+
+  "subtitle": {
+    "defaults": {
+      "font": "PingFang SC Heavy",
+      "size": 56,
+      "color": "#ffffff",
+      "outline": { "color": "#000000", "width": 3 },
+      "position": "bottom"
+    },
+    "keywords": {
+      "palette": ["#ffd700"],
+      "sizeBoost": 1.2,
+      "perSegment": { "min": 0, "max": 2 },
+      "categoriesByPriority": [
+        "数字",
+        "品牌 / 人名 / 专有名词",
+        "情绪强词",
+        "动词高潮"
+      ]
+    }
+  },
+
+  "instructions": "prompt.md"
+}
