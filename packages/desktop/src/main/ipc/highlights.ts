@@ -13,12 +13,18 @@ import {
   buildHighlightUserPrompt,
   buildPackagingSystemPrompt,
   buildPackagingUserPrompt,
+  buildPreviewPlaylist,
   parseHighlightResponse,
   parsePackagingPlanResponse,
+  previewCacheKey,
+  probeColorMeta,
+  renderPackagingPreview,
   transcriptToPromptSegments,
   type HighlightStyle,
   type PackagingPlan,
   type PackagingVibe,
+  type PreviewPlaylistEntry,
+  type Range,
 } from '@lynlens/core';
 import { runOneShotViaCurrentProvider } from '../agent-dispatcher';
 // NOTE: renderPackagingPlan (Remotion-based export) is staged for v0.6+
@@ -308,6 +314,86 @@ export function registerHighlightsIpc(ctx: IpcContext): void {
         await engine.projects.saveProject(projectId).catch(() => {});
       }
       return ok;
+    }
+  );
+
+  /**
+   * Render a continuous preview mp4 of a variant (or the whole source for
+   * "整片"), cached by content hash. The 包装 tab plays this mp4 so the
+   * timeline is the VARIANT's timeline (no seek-flicker between segments).
+   *
+   * Returns:
+   *   - outputPath: absolute path of the cached preview mp4
+   *   - playlist:   source↔preview time mapping so the subtitle overlay
+   *                 can look up the right transcript segment by source time
+   *   - durationSeconds: total preview duration
+   *
+   * First call for a new variant takes a few seconds (hardware-accelerated
+   * h264_videotoolbox on macOS). Subsequent calls are instant (cache hit).
+   * For 整片 with no cuts, this just returns the source path with a single
+   * 1:1 playlist entry — no rendering needed.
+   */
+  ipcMain.handle(
+    'prepare-packaging-preview',
+    async (
+      _ev,
+      projectId: string,
+      variantId: string | null
+    ): Promise<{
+      outputPath: string;
+      playlist: PreviewPlaylistEntry[];
+      durationSeconds: number;
+      cached: boolean;
+    }> => {
+      const project = engine.projects.get(projectId);
+      const videoPath = project.videoPath;
+      const videoMeta = project.videoMeta;
+
+      // Determine the keep ranges. Variant → its segments in playback
+      // order. 整片 → no rendering needed, return the source as-is with
+      // a 1:1 playlist (subtitle overlay treats currentTime as source
+      // time directly).
+      let ranges: Range[];
+      if (variantId) {
+        const variant = project.findHighlightVariant(variantId);
+        if (!variant) throw new Error(`找不到高光变体: ${variantId}`);
+        if (variant.segments.length === 0) {
+          throw new Error('变体没有片段,无法生成预览');
+        }
+        ranges = variant.segments.map((s) => ({ start: s.start, end: s.end }));
+      } else {
+        // 整片 mode — skip the render, point the player at the source.
+        return {
+          outputPath: videoPath,
+          playlist: [
+            {
+              srcStart: 0,
+              srcEnd: videoMeta.duration,
+              variantStart: 0,
+              variantEnd: videoMeta.duration,
+            },
+          ],
+          durationSeconds: videoMeta.duration,
+          cached: true,
+        };
+      }
+
+      const cacheKey = previewCacheKey(videoPath, ranges);
+      const colorMeta = await probeColorMeta(videoPath, engine.ffmpegPaths);
+      const result = await renderPackagingPreview({
+        videoPath,
+        ranges,
+        cacheKey,
+        rotation: videoMeta.rotation ?? 0,
+        colorMeta,
+        ffmpegPaths: engine.ffmpegPaths,
+      });
+      return {
+        outputPath: result.outputPath,
+        playlist: buildPreviewPlaylist(ranges),
+        durationSeconds: result.durationSeconds,
+        cached: result.cached,
+      };
     }
   );
 

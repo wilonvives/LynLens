@@ -2,30 +2,31 @@
  * 包装 tab — AI-driven 一键包装 (v0.5 MVP, scope: subtitle 花字 only).
  *
  * **Deliberately minimal**: the user explicitly said "不要做那么多效果先",
- * so this tab does ONE thing — render the user's video with a styled
- * subtitle overlay (per-segment color + per-word highlight). No camera
- * zoom. No transitions. No Remotion player. No export pipeline. Those
- * land in v0.6+ once the simple version is solid.
+ * so this tab does ONE thing — play the variant as a continuous reel
+ * with a styled subtitle overlay (per-segment color + per-word highlight).
+ * No camera zoom. No transitions. No export pipeline (variants still
+ * export through the existing ffmpeg path).
  *
  * Architecture:
- *   - Native `<video>` element (same as precision tab's MediaPlayer)
- *     plays the source via `lynlens-media://` protocol.
- *   - `PackagingSubtitleOverlay` reads `video.currentTime` and renders
- *     the right subtitle styled by the PackagingPlan.
- *   - **Custom playbar** (NOT native controls) — when a variant is
- *     selected, the visible timeline is the VARIANT timeline (e.g. 0 to
- *     172s for SLAPP), not the source timeline (0 to 12:10). Otherwise
- *     users see source duration and think the variant selector didn't
- *     work. Source ↔ variant time is mapped via a pre-computed playlist.
- *   - During playback we detect when the source playhead crosses a
- *     variant segment's end → seek to the next segment's start. End of
- *     last → pause. This makes the variant play as a continuous reel.
+ *   - **Pre-rendered preview mp4** per variant via `preparePackagingPreview`
+ *     IPC. The first selection of a variant takes a few seconds (hardware-
+ *     encoded h264_videotoolbox). Subsequent selections are instant (cache
+ *     hit). For 整片, the IPC just returns the source path.
+ *   - `<video>` plays the preview mp4 directly. `video.currentTime` is
+ *     VARIANT time (0..variantDuration), not source time. No seek-flicker
+ *     between segments — the segments are already concatenated.
+ *   - `PackagingSubtitleOverlay` gets a `playlist` prop that maps variant
+ *     time → source time, so it can still look up the right transcript
+ *     segment (subtitles are stored in source time).
+ *   - Custom playbar (▶/⏸ + time + scrubber) since native controls don't
+ *     give us styling control and don't look great with the overlay.
  */
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type {
   HighlightVariant,
   PackagingPlan,
   PackagingVibe,
+  PreviewPlaylistEntry,
 } from '@lynlens/core';
 import { PackagingSubtitleOverlay } from './components/PackagingSubtitleOverlay';
 import { PackagingMicroEditor } from './components/PackagingMicroEditor';
@@ -41,22 +42,23 @@ interface Props {
 /** Sentinel = "整片", distinct from any variant id. */
 const ROOT_KEY = '__root__';
 
-/**
- * One playlist entry maps a source-time range to a variant-time range.
- * Variant time is the "concatenated" timeline the user sees — e.g.
- * variant segments [60..66] + [120..125] become variant time [0..6] +
- * [6..11], total 11s, even though source spans 65s of real video.
- */
-interface PlaylistEntry {
-  srcStart: number;
-  srcEnd: number;
-  variantStart: number;
-  variantEnd: number;
+/** Build the lynlens-media:// URL the same way the main IPC does. */
+function toMediaUrl(absPath: string): string {
+  return `lynlens-media:///f/${encodeURIComponent(absPath)}`;
+}
+
+interface PreviewState {
+  /** lynlens-media URL for the <video> element. */
+  videoUrl: string;
+  /** Variant↔source time mapping for the subtitle overlay. */
+  playlist: PreviewPlaylistEntry[];
+  /** Total duration of the preview (variant total OR full source). */
+  durationSeconds: number;
 }
 
 export function PackagingPanel({ effectiveDuration }: Props): JSX.Element {
   const projectId = useStore((s) => s.projectId);
-  const videoUrl = useStore((s) => s.videoUrl);
+  const sourceVideoUrl = useStore((s) => s.videoUrl);
   const videoMeta = useStore((s) => s.videoMeta);
   const transcript = useStore((s) => s.transcript);
 
@@ -66,18 +68,23 @@ export function PackagingPanel({ effectiveDuration }: Props): JSX.Element {
   const [generating, setGenerating] = useState(false);
   const [vibe, setVibe] = useState<PackagingVibe>('default');
   const [showMicroEditor, setShowMicroEditor] = useState(false);
-  /** Live playhead in source seconds — drives the subtitle overlay. */
-  const [currentSrcTime, setCurrentSrcTime] = useState(0);
-  /** Whether the <video> element is currently playing — drives ▶/⏸ icon. */
+
+  // Preview render state.
+  const [preview, setPreview] = useState<PreviewState | null>(null);
+  /** Loading state while ffmpeg renders a fresh preview. */
+  const [preparingPreview, setPreparingPreview] = useState(false);
+  const [previewError, setPreviewError] = useState<string | null>(null);
+
+  /** Live playhead in PREVIEW seconds — drives the subtitle overlay. */
+  const [currentTimeSec, setCurrentTimeSec] = useState(0);
+  /** Whether the <video> is currently playing — drives ▶/⏸ icon. */
   const [isPlaying, setIsPlaying] = useState(false);
 
   const videoRef = useRef<HTMLVideoElement>(null);
   /**
    * Wrap-div ref + size — the wrap has aspectRatio matching the source
-   * video so it letterboxes the same way as the video element. We
-   * measure its rendered size so PackagingSubtitleOverlay can scale
-   * font sizes proportionally (AI returns sizes calibrated for source
-   * resolution; we rescale to the actual displayed pixels).
+   * video so it letterboxes the same way as the video element. Subtitle
+   * overlay reads displayHeight to scale font sizes.
    */
   const videoWrapRef = useRef<HTMLDivElement | null>(null);
   const [wrapSize, setWrapSize] = useState({ w: 0, h: 0 });
@@ -96,208 +103,6 @@ export function PackagingPanel({ effectiveDuration }: Props): JSX.Element {
     () => variants.find((v) => v.id === selectedKey),
     [variants, selectedKey]
   );
-
-  /**
-   * Build the playlist (source↔variant time mapping). For a variant,
-   * one entry per variant segment; for 整片 mode, one virtual entry
-   * spanning the whole source. The mapping is what lets us show
-   * variant-time (0 / 2:52) in the scrubber instead of misleading
-   * source-time (1:06 / 12:10).
-   */
-  const playlist = useMemo<PlaylistEntry[]>(() => {
-    if (selectedVariant && selectedVariant.segments.length > 0) {
-      let acc = 0;
-      return selectedVariant.segments.map((s) => {
-        const dur = Math.max(0, s.end - s.start);
-        const entry: PlaylistEntry = {
-          srcStart: s.start,
-          srcEnd: s.end,
-          variantStart: acc,
-          variantEnd: acc + dur,
-        };
-        acc += dur;
-        return entry;
-      });
-    }
-    if (videoMeta) {
-      return [
-        {
-          srcStart: 0,
-          srcEnd: videoMeta.duration,
-          variantStart: 0,
-          variantEnd: videoMeta.duration,
-        },
-      ];
-    }
-    return [];
-  }, [selectedVariant, videoMeta]);
-
-  const totalVariantDuration =
-    playlist.length > 0 ? playlist[playlist.length - 1].variantEnd : 0;
-
-  /** Map source seconds → variant seconds. null = src is between ranges. */
-  function srcToVariant(srcSec: number): number | null {
-    for (const e of playlist) {
-      if (srcSec >= e.srcStart && srcSec < e.srcEnd) {
-        return e.variantStart + (srcSec - e.srcStart);
-      }
-    }
-    return null;
-  }
-
-  /** Map variant seconds → source seconds + playlist index. */
-  function variantToSrc(varSec: number): { src: number; idx: number } {
-    if (playlist.length === 0) return { src: 0, idx: -1 };
-    for (let i = 0; i < playlist.length; i++) {
-      const e = playlist[i];
-      if (varSec >= e.variantStart && varSec < e.variantEnd) {
-        return { src: e.srcStart + (varSec - e.variantStart), idx: i };
-      }
-    }
-    const last = playlist[playlist.length - 1];
-    return { src: last.srcEnd, idx: playlist.length - 1 };
-  }
-
-  /** Which playlist segment is currently playing (for jump logic). */
-  const playingIdxRef = useRef(0);
-  /**
-   * When selectedKey changes BEFORE the video is loaded, store the seek
-   * target here. The loadedmetadata handler reads + clears it once the
-   * video is actually ready to seek (setting currentTime before metadata
-   * loads is silently ignored — that was the root cause of "stuck at
-   * 1:06": the seek to segments[0].start never happened and the user
-   * pressed play from 0, which then snap-forwarded weirdly).
-   */
-  const pendingSeekRef = useRef<number | null>(null);
-
-  /**
-   * When user picks a variant: reset playback to its first segment.
-   * Always uses pendingSeekRef so it works whether the video is ready
-   * yet or not (the loadedmetadata handler applies pending seeks).
-   */
-  useEffect(() => {
-    playingIdxRef.current = 0;
-    if (playlist.length === 0) return;
-    const target = playlist[0].srcStart;
-    pendingSeekRef.current = target;
-    const v = videoRef.current;
-    if (v && v.readyState >= 1 && Number.isFinite(v.duration)) {
-      try {
-        v.currentTime = target;
-        pendingSeekRef.current = null;
-        setCurrentSrcTime(target);
-      } catch {
-        /* will retry on loadedmetadata */
-      }
-    }
-  }, [selectedKey, playlist]);
-
-  /**
-   * Drive currentSrcTime smoothly via rAF while playing. The native
-   * `timeupdate` event fires only ~4Hz which makes the scrubber jerky;
-   * rAF gives us 60Hz and a responsive scrub bar. We still use
-   * timeupdate for the segment-jump logic (cheaper, fires often enough).
-   */
-  useEffect(() => {
-    if (!isPlaying) return;
-    let raf = 0;
-    const tick = (): void => {
-      const v = videoRef.current;
-      if (v && !v.paused) {
-        setCurrentSrcTime(v.currentTime);
-      }
-      raf = requestAnimationFrame(tick);
-    };
-    raf = requestAnimationFrame(tick);
-    return () => cancelAnimationFrame(raf);
-  }, [isPlaying]);
-
-  /**
-   * Segment-jump logic — runs on timeupdate. When the source playhead
-   * crosses the current segment's end, jump to the next segment's
-   * start. End of last segment: pause. Only meaningful when a variant
-   * is selected (整片 has one segment that covers everything, so this
-   * is a no-op there).
-   */
-  function handleTimeUpdate(e: React.SyntheticEvent<HTMLVideoElement>): void {
-    const v = e.currentTarget;
-    const cur = v.currentTime;
-    setCurrentSrcTime(cur);
-    if (!selectedVariant || playlist.length === 0) return;
-    const idx = playingIdxRef.current;
-    const seg = playlist[idx];
-    if (!seg) return;
-    if (cur >= seg.srcEnd - 0.02) {
-      const nextIdx = idx + 1;
-      if (nextIdx < playlist.length) {
-        playingIdxRef.current = nextIdx;
-        try {
-          v.currentTime = playlist[nextIdx].srcStart;
-        } catch {
-          /* ignore */
-        }
-      } else {
-        v.pause();
-      }
-    }
-  }
-
-  /**
-   * Initial seek when metadata becomes available (handles the race
-   * where useEffect fires before the video has loaded enough to accept
-   * a currentTime write).
-   */
-  function handleLoadedMetadata(e: React.SyntheticEvent<HTMLVideoElement>): void {
-    const v = e.currentTarget;
-    const pending = pendingSeekRef.current;
-    if (pending !== null && Number.isFinite(pending)) {
-      try {
-        v.currentTime = pending;
-        setCurrentSrcTime(pending);
-      } catch {
-        /* defensive — shouldn't happen with valid number */
-      }
-      pendingSeekRef.current = null;
-    }
-  }
-
-  /** Custom play/pause toggle — variant scrubber uses this. */
-  async function togglePlay(): Promise<void> {
-    const v = videoRef.current;
-    if (!v) return;
-    if (v.paused) {
-      // If at end of variant, restart from beginning.
-      if (selectedVariant && playingIdxRef.current >= playlist.length - 1) {
-        const lastSeg = playlist[playlist.length - 1];
-        if (v.currentTime >= lastSeg.srcEnd - 0.05) {
-          playingIdxRef.current = 0;
-          v.currentTime = playlist[0].srcStart;
-        }
-      }
-      try {
-        await v.play();
-      } catch {
-        /* user-gesture failures, autoplay blocks — ignore */
-      }
-    } else {
-      v.pause();
-    }
-  }
-
-  /** Variant-time scrubber drag handler. */
-  function onScrubChange(e: React.ChangeEvent<HTMLInputElement>): void {
-    const varSec = Number(e.target.value);
-    const { src, idx } = variantToSrc(varSec);
-    const v = videoRef.current;
-    if (!v) return;
-    playingIdxRef.current = idx;
-    try {
-      v.currentTime = src;
-      setCurrentSrcTime(src);
-    } catch {
-      /* defensive */
-    }
-  }
 
   // Hydrate variants so the source selector has options.
   useEffect(() => {
@@ -327,6 +132,97 @@ export function PackagingPanel({ effectiveDuration }: Props): JSX.Element {
       cancelled = true;
     };
   }, [projectId, selectedVariantId]);
+
+  /**
+   * Prepare the preview mp4 whenever variant selection changes. For 整片
+   * the IPC just returns the source path so this is fast (no render).
+   * For a variant, first call may take a few seconds (hardware-encoded
+   * trim + concat); subsequent calls are instant (cache hit).
+   */
+  useEffect(() => {
+    if (!projectId) {
+      setPreview(null);
+      return;
+    }
+    let cancelled = false;
+    setPreparingPreview(true);
+    setPreviewError(null);
+    void window.lynlens
+      .preparePackagingPreview(projectId, selectedVariantId)
+      .then((result) => {
+        if (cancelled) return;
+        setPreview({
+          videoUrl: toMediaUrl(result.outputPath),
+          playlist: result.playlist,
+          durationSeconds: result.durationSeconds,
+        });
+        // Reset playhead to start. Don't seek the <video> directly —
+        // src will change and trigger a fresh load.
+        setCurrentTimeSec(0);
+      })
+      .catch((err: Error) => {
+        if (cancelled) return;
+        setPreviewError(err.message);
+        setPreview(null);
+      })
+      .finally(() => {
+        if (!cancelled) setPreparingPreview(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [projectId, selectedVariantId]);
+
+  /**
+   * Drive currentTimeSec smoothly via rAF while playing. The native
+   * `timeupdate` event fires only ~4Hz which makes the scrubber jerky;
+   * rAF gives us 60Hz and a responsive scrub bar.
+   */
+  useEffect(() => {
+    if (!isPlaying) return;
+    let raf = 0;
+    const tick = (): void => {
+      const v = videoRef.current;
+      if (v && !v.paused) {
+        setCurrentTimeSec(v.currentTime);
+      }
+      raf = requestAnimationFrame(tick);
+    };
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  }, [isPlaying]);
+
+  /** Custom play/pause toggle. */
+  async function togglePlay(): Promise<void> {
+    const v = videoRef.current;
+    if (!v) return;
+    if (v.paused) {
+      // Restart from beginning if we're at the end.
+      if (preview && v.currentTime >= preview.durationSeconds - 0.05) {
+        v.currentTime = 0;
+      }
+      try {
+        await v.play();
+      } catch {
+        /* user-gesture failures / autoplay blocks — ignore */
+      }
+    } else {
+      v.pause();
+    }
+  }
+
+  /** Scrubber drag handler. value is preview/variant seconds. */
+  function onScrubChange(e: React.ChangeEvent<HTMLInputElement>): void {
+    const t = Number(e.target.value);
+    const v = videoRef.current;
+    if (!v) return;
+    try {
+      v.currentTime = t;
+      setCurrentTimeSec(t);
+    } catch {
+      /* defensive */
+    }
+  }
 
   if (!projectId) {
     return (
@@ -360,13 +256,7 @@ export function PackagingPanel({ effectiveDuration }: Props): JSX.Element {
         : 'portrait'
       : 'unknown';
 
-  // Current variant-time for the scrubber. If src is between ranges
-  // (e.g. mid-seek), fall back to the playing segment's variantStart.
-  const variantTimeFromSrc = srcToVariant(currentSrcTime);
-  const currentVariantTime =
-    variantTimeFromSrc !== null
-      ? variantTimeFromSrc
-      : playlist[playingIdxRef.current]?.variantStart ?? 0;
+  const previewDuration = preview?.durationSeconds ?? 0;
 
   return (
     <div className="highlight-panel">
@@ -444,9 +334,7 @@ export function PackagingPanel({ effectiveDuration }: Props): JSX.Element {
 
       <div className="highlight-body" style={{ flexDirection: 'column', gap: 12 }}>
         {/* Source selector — pick "整片" or any variant as the AI's
-            packaging target. Selecting a variant also restricts playback
-            (custom playbar shows variant duration, segment-jumping skips
-            the source gaps). */}
+            packaging target. Selecting also (re)renders the preview mp4. */}
         <div
           style={{
             display: 'flex',
@@ -488,8 +376,7 @@ export function PackagingPanel({ effectiveDuration }: Props): JSX.Element {
           ))}
         </div>
 
-        {/* Variant context label — confirms playback is restricted to
-            this variant only. */}
+        {/* Variant context label. */}
         {selectedVariant && (
           <div
             style={{
@@ -501,17 +388,30 @@ export function PackagingPanel({ effectiveDuration }: Props): JSX.Element {
               borderRadius: 4,
             }}
           >
-            🎬 正在播放变体「{selectedVariant.title}」 ·{' '}
-            {selectedVariant.segments.length} 段 ·{' '}
-            {formatTime(selectedVariant.durationSeconds)} · 跳过变体外的内容
+            🎬 正在播放变体「{selectedVariant.title}」 · {selectedVariant.segments.length} 段 ·{' '}
+            {formatTime(selectedVariant.durationSeconds)} · 预渲染为连续片段
           </div>
         )}
 
-        {/* Preview area — native <video> (lynlens-media:// protocol) with
-            HTML subtitle overlay. Native controls intentionally HIDDEN —
-            they show source duration (12:10), which is misleading when
-            playing a variant (172s). Our custom playbar below uses
-            variant-time. */}
+        {previewError && (
+          <div
+            style={{
+              padding: '8px 12px',
+              fontSize: 12,
+              color: '#ff6b6b',
+              background: 'rgba(255,107,107,0.08)',
+              border: '1px solid rgba(255,107,107,0.3)',
+              borderRadius: 4,
+            }}
+          >
+            预览生成失败: {previewError}
+          </div>
+        )}
+
+        {/* Preview area. Video src is the PRE-RENDERED variant mp4 (or
+            source mp4 for 整片). currentTime here is variant-time (the
+            preview mp4's own timeline), so the scrubber doesn't lie and
+            there's no seek-flicker between segments. */}
         <div
           style={{
             flex: 1,
@@ -526,9 +426,7 @@ export function PackagingPanel({ effectiveDuration }: Props): JSX.Element {
             overflow: 'hidden',
           }}
         >
-          {videoUrl && videoMeta ? (
-            // Aspect-ratio wrap so subtitles position against the actual
-            // visible video frame (not the surrounding letterbox area).
+          {preview && videoMeta ? (
             <div
               ref={videoWrapRef}
               style={{
@@ -543,11 +441,11 @@ export function PackagingPanel({ effectiveDuration }: Props): JSX.Element {
             >
               <video
                 ref={videoRef}
-                src={videoUrl}
-                onTimeUpdate={handleTimeUpdate}
-                onLoadedMetadata={handleLoadedMetadata}
+                src={preview.videoUrl}
+                onTimeUpdate={(e) => setCurrentTimeSec(e.currentTarget.currentTime)}
                 onPlay={() => setIsPlaying(true)}
                 onPause={() => setIsPlaying(false)}
+                onEnded={() => setIsPlaying(false)}
                 onClick={() => void togglePlay()}
                 style={{
                   width: '100%',
@@ -559,17 +457,22 @@ export function PackagingPanel({ effectiveDuration }: Props): JSX.Element {
               <PackagingSubtitleOverlay
                 transcript={transcript}
                 plan={plan}
-                currentTimeSec={currentSrcTime}
+                currentTimeSec={currentTimeSec}
+                playlist={preview.playlist}
                 orientation={orientation}
                 sourceHeight={videoMeta.height}
                 displayHeight={wrapSize.h}
               />
             </div>
+          ) : sourceVideoUrl ? (
+            <div style={{ color: 'var(--text3)' }}>
+              {preparingPreview ? '准备预览中...' : '请选择包装对象'}
+            </div>
           ) : (
             <div style={{ color: 'var(--text3)' }}>视频未加载</div>
           )}
 
-          {/* Loading overlay — always on top while AI is generating. */}
+          {/* Loading overlay — AI generation. */}
           {generating && (
             <div
               style={{
@@ -603,13 +506,48 @@ export function PackagingPanel({ effectiveDuration }: Props): JSX.Element {
               </div>
             </div>
           )}
+
+          {/* Loading overlay — preview render (variants only; 整片 returns
+              instantly so this doesn't flash). */}
+          {preparingPreview && !generating && selectedVariantId && (
+            <div
+              style={{
+                position: 'absolute',
+                inset: 0,
+                background: 'rgba(0, 0, 0, 0.75)',
+                display: 'flex',
+                flexDirection: 'column',
+                alignItems: 'center',
+                justifyContent: 'center',
+                gap: 12,
+                zIndex: 9,
+                color: '#fff',
+              }}
+            >
+              <div
+                style={{
+                  width: 40,
+                  height: 40,
+                  border: '3px solid rgba(255,255,255,0.2)',
+                  borderTopColor: '#7aa2f7',
+                  borderRadius: '50%',
+                  animation: 'lynlens-spin 1s linear infinite',
+                }}
+              />
+              <div style={{ fontSize: 14, fontWeight: 500 }}>
+                🎬 准备预览中...
+              </div>
+              <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.6)' }}>
+                把变体拼成一段连续片段(首次几秒,之后秒开)
+              </div>
+            </div>
+          )}
         </div>
 
-        {/* Custom variant-time playbar. Replaces native controls so the
-            timeline reads 0:00 / 2:52 (variant) not 1:06 / 12:10
-            (source). Scrubbing maps variant-time → source-time and
-            updates the playing-segment index. */}
-        {videoUrl && videoMeta && (
+        {/* Custom variant-time playbar. video.currentTime IS variant time
+            now (preview mp4 already contains only the variant), so the
+            scrubber maps 1:1 — no source↔variant math here. */}
+        {preview && videoMeta && (
           <div
             style={{
               display: 'flex',
@@ -623,15 +561,16 @@ export function PackagingPanel({ effectiveDuration }: Props): JSX.Element {
           >
             <button
               onClick={() => void togglePlay()}
+              disabled={preparingPreview}
               style={{
                 width: 36,
                 height: 36,
                 borderRadius: 18,
                 border: 'none',
-                background: 'var(--accent)',
+                background: preparingPreview ? '#444' : 'var(--accent)',
                 color: '#fff',
                 fontSize: 14,
-                cursor: 'pointer',
+                cursor: preparingPreview ? 'not-allowed' : 'pointer',
                 display: 'flex',
                 alignItems: 'center',
                 justifyContent: 'center',
@@ -648,15 +587,16 @@ export function PackagingPanel({ effectiveDuration }: Props): JSX.Element {
                 minWidth: 100,
               }}
             >
-              {formatTime(currentVariantTime)} / {formatTime(totalVariantDuration)}
+              {formatTime(currentTimeSec)} / {formatTime(previewDuration)}
             </span>
             <input
               type="range"
               min={0}
-              max={totalVariantDuration || 0.0001}
+              max={previewDuration || 0.0001}
               step={0.01}
-              value={Math.min(currentVariantTime, totalVariantDuration)}
+              value={Math.min(currentTimeSec, previewDuration)}
               onChange={onScrubChange}
+              disabled={preparingPreview}
               style={{ flex: 1, accentColor: 'var(--accent)' }}
             />
           </div>

@@ -9,22 +9,24 @@
  * No Remotion. No camera zoom. No transitions. Just text overlay.
  *
  * How it picks the current subtitle:
- *   - Caller passes `currentTimeSec` (read from the same <video> element
- *     it's overlaying — usually via an `onTimeUpdate` handler).
- *   - We find the transcript segment whose source-time range contains
- *     that time; that's the "current line".
+ *   - Caller passes `currentTimeSec` — the playhead position in the
+ *     CURRENTLY-LOADED video file's timeline.
+ *   - When `playlist` is provided (variant preview), this is preview/
+ *     variant time. We map it back to source time via the playlist so
+ *     transcript lookup (which is in source time) works.
+ *   - When `playlist` is missing or empty, currentTimeSec is treated as
+ *     source time directly (整片 fallback).
+ *   - Find the transcript segment whose source-time range contains the
+ *     mapped time; that's the "current line".
  *   - Look up that segment's index in the plan's segments[] to get the
  *     subtitle style + wordEffects.
  *   - Render the tokens with default style; override the highlighted
  *     ones with their color/size.
- *
- * Variant playback (player jumps between non-contiguous source ranges)
- * is fine — `currentTimeSec` is still source time, the lookup still
- * works the same way.
  */
 import { useMemo } from 'react';
 import type {
   PackagingPlan,
+  PreviewPlaylistEntry,
   SubtitleStyle,
   Transcript,
   WordEffect,
@@ -35,8 +37,19 @@ interface Props {
   transcript: Transcript;
   /** AI-generated styling plan. null → no decoration, plain default. */
   plan: PackagingPlan | null;
-  /** Current playback position in SOURCE seconds. */
+  /**
+   * Current playback position. In VARIANT seconds when `playlist` is set
+   * (preview mp4 playback); in SOURCE seconds when `playlist` is empty
+   * (整片). The component reduces this to source time internally via the
+   * playlist before looking up the transcript segment.
+   */
   currentTimeSec: number;
+  /**
+   * Optional source↔variant time mapping. One entry per variant segment
+   * (or a single 1:1 entry for 整片). When empty/undefined, currentTimeSec
+   * is treated as source time directly.
+   */
+  playlist?: PreviewPlaylistEntry[];
   /** Display orientation hint (affects default sizes). */
   orientation?: 'portrait' | 'landscape' | 'unknown';
   /**
@@ -65,22 +78,43 @@ export function PackagingSubtitleOverlay({
   transcript,
   plan,
   currentTimeSec,
+  playlist,
   orientation,
   sourceHeight,
   displayHeight,
 }: Props): JSX.Element | null {
+  // Map variant time → source time using the playlist. If currentTimeSec
+  // falls between variant entries (mid-seek / outside any entry), the
+  // lookup returns null and we render no subtitle (correct — there's no
+  // source position to look up). With no playlist, treat the input as
+  // source time directly.
+  const sourceTimeSec = useMemo<number | null>(() => {
+    if (!playlist || playlist.length === 0) return currentTimeSec;
+    for (const e of playlist) {
+      if (currentTimeSec >= e.variantStart && currentTimeSec < e.variantEnd) {
+        return e.srcStart + (currentTimeSec - e.variantStart);
+      }
+    }
+    // Past the end: clamp to the last entry's srcEnd so the final
+    // subtitle keeps showing until the video ends.
+    const last = playlist[playlist.length - 1];
+    if (currentTimeSec >= last.variantEnd) return last.srcEnd - 0.001;
+    return null;
+  }, [playlist, currentTimeSec]);
+
   // Locate the active transcript segment for the current playhead.
   // Linear scan is fine — transcript segments are small (hundreds, not
   // millions) and this runs at most every onTimeUpdate fire (~4 Hz).
   const { activeSeg, activeIdx } = useMemo(() => {
+    if (sourceTimeSec === null) return { activeSeg: null, activeIdx: -1 };
     for (let i = 0; i < transcript.segments.length; i++) {
       const s = transcript.segments[i];
-      if (currentTimeSec >= s.start && currentTimeSec < s.end) {
+      if (sourceTimeSec >= s.start && sourceTimeSec < s.end) {
         return { activeSeg: s, activeIdx: i };
       }
     }
     return { activeSeg: null, activeIdx: -1 };
-  }, [transcript.segments, currentTimeSec]);
+  }, [transcript.segments, sourceTimeSec]);
 
   if (!activeSeg) return null;
 

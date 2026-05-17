@@ -6,6 +6,7 @@ import type {
   LynLensEvent,
   PackagingPlan,
   PackagingVibe,
+  PreviewPlaylistEntry,
   QcpProject,
   Segment,
   SocialCopySetData,
@@ -216,6 +217,22 @@ export interface IpcApi {
     projectId: string,
     variantId: string | null
   ): Promise<boolean>;
+  /**
+   * Render (or fetch cached) preview mp4 for a variant (or pass null for
+   * 整片, which returns the source mp4 path with a 1:1 playlist). Returns
+   * the absolute mp4 path + the variant↔source time mapping used by the
+   * subtitle overlay. First call for a fresh variant: a few seconds of
+   * hardware-encoded transcode. Subsequent calls: instant cache hit.
+   */
+  preparePackagingPreview(
+    projectId: string,
+    variantId: string | null
+  ): Promise<{
+    outputPath: string;
+    playlist: PreviewPlaylistEntry[];
+    durationSeconds: number;
+    cached: boolean;
+  }>;
   /**
    * Remove one segment from a variant. Refuses to delete the last remaining
    * segment (variant would be empty). Returns false on refusal / failure.

@@ -9,7 +9,17 @@ export {
   type ExportOptions,
   type ExportQuality,
   type ExportResult,
+  type HdrToSdrTags,
 } from './export-service';
+export {
+  buildPreviewPlaylist,
+  cleanupStalePreviewCache,
+  previewCacheKey,
+  renderPackagingPreview,
+  type PreviewPlaylistEntry,
+  type PreviewRenderOptions,
+  type PreviewRenderResult,
+} from './preview-render';
 export {
   extractWaveform,
   probeVideo,

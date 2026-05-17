@@ -51,6 +51,8 @@ const api: IpcApi = {
     ipcRenderer.invoke('set-packaging-plan', pid, plan),
   clearPackagingPlan: (pid, variantId) =>
     ipcRenderer.invoke('clear-packaging-plan', pid, variantId),
+  preparePackagingPreview: (pid, variantId) =>
+    ipcRenderer.invoke('prepare-packaging-preview', pid, variantId),
   deleteHighlightVariantSegment: (pid, vid, idx) =>
     ipcRenderer.invoke('delete-highlight-variant-segment', pid, vid, idx),
   exportHighlight: (pid, vid, outputPath, mode, quality) =>
