@@ -194,6 +194,12 @@ export function buildPackagingSystemPrompt(): string {
    - 金句 / 钩子 80-100 (大强调),
    - **永远不要超过 120**。超出会被自动 clamp,而且会丑。
    想要"更突出"应该是换颜色 / 加描边,不是单纯放大字号。
+5. **段级别 subtitle 只允许 wordEffects 字段** — 不要给某段单独设
+   color / position / size / font / outline / bgColor,
+   不同段用不同色/位会让整体很乱(已被用户反馈"乱飞")。
+   全行风格统一在 defaults.subtitle 里设一次;段级别的差异化只通
+   过 wordEffects 体现(关键词变色/放大)。
+   段级别非 wordEffects 字段会被自动丢弃。
 
 JSON 输出格式硬性要求(违反会解析失败):
 A. 只输出 JSON 对象,前后不要任何文字,不要 \`\`\`json 代码块围栏
@@ -366,11 +372,32 @@ function sanitiseSubtitleStyle(input: unknown): SubtitleStyle | null {
   return Object.keys(out).length > 0 ? out : null;
 }
 
+/**
+ * Segment-level subtitle sanitiser.
+ *
+ * IMPORTANT design decision: at the SEGMENT level we ONLY keep
+ * wordEffects — drop any whole-line color/size/position/font/outline
+ * overrides Claude might emit. Rationale:
+ *
+ *   - Default style is the project-wide look (set in defaults.subtitle).
+ *     A consistent baseline is what makes packaged videos look polished.
+ *   - Per-segment whole-line overrides used to make different lines
+ *     render at different positions (some center, some bottom) and
+ *     different colors (some red, some white). Preview looked chaotic
+ *     even though export was the same — user feedback "乱飞".
+ *   - The user can still manually override per-segment colour via the
+ *     字幕 tab's color picker — that's an explicit choice, not AI
+ *     surprise. Word-level花字 (the actual emphasis feature) lives
+ *     in wordEffects and is preserved.
+ *
+ * If the schema ever needs to expose AI-driven whole-line styling
+ * again, gate it behind an explicit vibe option (e.g. "鬼畜变色"),
+ * not the default flow.
+ */
 function sanitiseSubtitleWithWordEffects(
   input: unknown
 ): (SubtitleStyle & { wordEffects?: WordEffect[] }) | null {
   if (typeof input !== 'object' || input === null) return null;
-  const base = sanitiseSubtitleStyle(input) ?? {};
   const v = input as Record<string, unknown>;
   const wordEffects: WordEffect[] = [];
   if (Array.isArray(v.wordEffects)) {
@@ -393,10 +420,8 @@ function sanitiseSubtitleWithWordEffects(
       if (effect.highlight || effect.size || effect.effect) wordEffects.push(effect);
     }
   }
-  if (wordEffects.length > 0) {
-    return { ...base, wordEffects };
-  }
-  return Object.keys(base).length > 0 ? base : null;
+  if (wordEffects.length > 0) return { wordEffects };
+  return null;
 }
 
 function sanitiseCamera(input: unknown): CameraMove | null {

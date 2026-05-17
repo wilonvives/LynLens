@@ -167,28 +167,69 @@ describe('parsePackagingPlanResponse', () => {
     expect(plan.segments[0].segmentIdx).toBe(1);
   });
 
-  it('clamps oversized subtitle font-sizes to 120 (preview-blowup guard)', () => {
+  it('clamps oversized defaults.subtitle size to 120 (preview-blowup guard)', () => {
     // Real-world Claude failure: returning size:200/300 made one
     // character fill the whole video frame in preview AND export.
-    // Parser must now clamp anything above 120.
+    // Parser must now clamp anything above 120 in defaults.subtitle.
     const raw = JSON.stringify({
-      defaults: { subtitle: { size: 280 } }, // way too big
+      defaults: { subtitle: { size: 280 } },
+      segments: [],
+    });
+    const plan = parsePackagingPlanResponse(raw, null, 0);
+    expect(plan.defaults.subtitle?.size).toBe(120);
+  });
+
+  it('drops segment-level subtitle overrides except wordEffects', () => {
+    // User feedback "乱飞" — AI was returning per-segment color/position/
+    // size overrides that made adjacent lines render in different colors
+    // / positions, looking chaotic. Parser now keeps only wordEffects at
+    // the segment level; whole-line styling stays in defaults.subtitle.
+    const raw = JSON.stringify({
+      defaults: { subtitle: { color: '#ffffff' } },
       segments: [
         {
           segmentIdx: 0,
           subtitle: {
-            size: 300, // also way too big
+            color: '#ff0000', // dropped
+            position: 'center', // dropped
+            size: 80, // dropped
+            font: 'Comic Sans', // dropped
+            outline: { color: '#ffff00', width: 8 }, // dropped
             wordEffects: [
-              { wordIdx: 0, highlight: '#ffd700', size: 240 }, // per-word too
-              { wordIdx: 1, highlight: '#ffd700', size: 80 }, // in range, kept
+              { wordIdx: 0, highlight: '#ffd700', size: 80 }, // kept
             ],
           },
         },
       ],
     });
     const plan = parsePackagingPlanResponse(raw, null, 1);
-    expect(plan.defaults.subtitle?.size).toBe(120);
-    expect(plan.segments[0].subtitle?.size).toBe(120);
+    expect(plan.defaults.subtitle?.color).toBe('#ffffff');
+    expect(plan.segments).toHaveLength(1);
+    const seg = plan.segments[0].subtitle;
+    expect(seg?.wordEffects).toHaveLength(1);
+    expect(seg?.color).toBeUndefined();
+    expect(seg?.position).toBeUndefined();
+    expect(seg?.size).toBeUndefined();
+    expect(seg?.font).toBeUndefined();
+    expect(seg?.outline).toBeUndefined();
+  });
+
+  it('clamps oversized per-word sizes to 120', () => {
+    const raw = JSON.stringify({
+      defaults: {},
+      segments: [
+        {
+          segmentIdx: 0,
+          subtitle: {
+            wordEffects: [
+              { wordIdx: 0, highlight: '#ffd700', size: 240 },
+              { wordIdx: 1, highlight: '#ffd700', size: 80 },
+            ],
+          },
+        },
+      ],
+    });
+    const plan = parsePackagingPlanResponse(raw, null, 1);
     expect(plan.segments[0].subtitle?.wordEffects?.[0].size).toBe(120);
     expect(plan.segments[0].subtitle?.wordEffects?.[1].size).toBe(80);
   });

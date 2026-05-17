@@ -247,19 +247,7 @@ export function PackagingPanel({ effectiveDuration }: Props): JSX.Element {
     }
   }
 
-  function onScrubChange(e: React.ChangeEvent<HTMLInputElement>): void {
-    const t = Number(e.target.value);
-    const v = videoRef.current;
-    if (!v) return;
-    try {
-      v.currentTime = t;
-      setCurrentTimeSec(t);
-    } catch {
-      /* defensive */
-    }
-  }
-
-  /** Imperative seek used by the subtitles tab when user clicks a row. */
+  /** Imperative seek used by the subtitles tab + timeline strip. */
   const seekTo = useCallback((variantSec: number) => {
     const v = videoRef.current;
     if (!v) return;
@@ -335,8 +323,6 @@ export function PackagingPanel({ effectiveDuration }: Props): JSX.Element {
         ? 'landscape'
         : 'portrait'
       : 'unknown';
-
-  const previewDuration = preview?.durationSeconds ?? 0;
 
   return (
     <div className="highlight-panel">
@@ -655,70 +641,19 @@ export function PackagingPanel({ effectiveDuration }: Props): JSX.Element {
               )}
             </div>
 
-            {/* Playbar — under the video, in the left column */}
-            {preview && videoMeta && (
-              <div
-                style={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: 10,
-                  padding: '8px 12px',
-                  background: '#181820',
-                  border: '1px solid #2a2a2a',
-                  borderRadius: 6,
-                }}
-              >
-                <button
-                  onClick={() => void togglePlay()}
-                  disabled={preparingPreview}
-                  style={{
-                    width: 36,
-                    height: 36,
-                    borderRadius: 18,
-                    border: 'none',
-                    background: preparingPreview ? '#444' : 'var(--accent)',
-                    color: '#fff',
-                    fontSize: 14,
-                    cursor: preparingPreview ? 'not-allowed' : 'pointer',
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                  }}
-                  title={isPlaying ? '暂停' : '播放'}
-                >
-                  {isPlaying ? '⏸' : '▶'}
-                </button>
-                <span
-                  style={{
-                    fontSize: 12,
-                    color: 'var(--text2)',
-                    fontVariantNumeric: 'tabular-nums',
-                    minWidth: 100,
-                  }}
-                >
-                  {formatTime(currentTimeSec)} / {formatTime(previewDuration)}
-                </span>
-                <input
-                  type="range"
-                  min={0}
-                  max={previewDuration || 0.0001}
-                  step={0.01}
-                  value={Math.min(currentTimeSec, previewDuration)}
-                  onChange={onScrubChange}
-                  disabled={preparingPreview}
-                  style={{ flex: 1, accentColor: 'var(--accent)' }}
-                />
-              </div>
-            )}
-
-            {/* Bottom frame-thumbnail timeline — visual scrubber. Click
-                anywhere on the strip to seek. */}
+            {/* Combined playback controls + visual scrubber. The previous
+                row-style playbar + separate thumbnail strip were redundant
+                (user feedback); now one bar shows ▶/⏸ + time + frame
+                thumbs + playhead all in a single 56px row. */}
             {preview && (
               <PackagingTimelineBar
                 thumbnails={preview.thumbnails}
                 durationSeconds={preview.durationSeconds}
                 currentTimeSec={currentTimeSec}
+                isPlaying={isPlaying}
+                disabled={preparingPreview}
                 onSeek={seekTo}
+                onTogglePlay={() => void togglePlay()}
               />
             )}
           </div>
