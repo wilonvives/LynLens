@@ -19,11 +19,21 @@
  * and `@remotion/renderer` (export). Identical React render path =
  * pixel-level WYSIWYG by construction.
  */
-import { AbsoluteFill, OffthreadVideo, Sequence } from 'remotion';
+import { AbsoluteFill, Sequence, Video } from 'remotion';
 import type { PackagingPlan } from '@lynlens/core';
 import { Subtitle } from './components/Subtitle';
 import { CameraZoom } from './components/CameraZoom';
 import { Watermark } from './components/Watermark';
+
+// Note on Video vs OffthreadVideo:
+// `<OffthreadVideo>` extracts frames via ffmpeg (preferred for export
+// because it handles every codec ffmpeg supports), but in Player mode
+// it can fail silently with custom protocols like LynLens's
+// `lynlens-media://`. `<Video>` uses the native browser <video> tag —
+// same path the precision tab uses — and works with our protocol
+// handler's Range-aware responses. Slower for renderMedia exports but
+// reliable for both preview AND export in this codebase. Revisit
+// OffthreadVideo in v0.6+ if exports become a perf bottleneck.
 
 export interface PackagingCompositionProps {
   videoPath: string;
@@ -85,10 +95,10 @@ export function PackagingComposition({
             durationInFrames={durFrames}
           >
             <CameraZoom zoom={cameraZoom} focus={cameraFocus}>
-              <OffthreadVideo
+              <Video
                 src={videoPath}
-                // Trim the OffthreadVideo to JUST this segment's source time.
-                // startFrom + endAt are in frames (relative to the source video).
+                // Trim to JUST this segment's source time. Video's
+                // startFrom + endAt are in frames (relative to source).
                 startFrom={Math.round(seg.start * fps)}
                 endAt={Math.round(seg.end * fps)}
                 style={{
