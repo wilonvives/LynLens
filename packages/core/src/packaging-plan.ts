@@ -159,46 +159,48 @@ export function emptyPackagingPlan(variantId: string | null): PackagingPlan {
 
 const VIBE_DESC: Record<PackagingVibe, string> = {
   default:
-    '通用风格,情绪适中,关键词高亮 + 金句段适度 zoom。适合大多数内容。',
+    '通用风格 — 每段最多挑 1-2 个关键词加黄色高亮,字号 +20%。',
   energetic:
-    '高能风格,关键词更密集高亮,情绪段大胆 zoom (1.5x),节奏紧凑。适合钩子段、热点话题、爆点视频。',
+    '高能风格 — 关键词更密集 (2-3 个/段),颜色更鲜艳 (#ff3333 / #ffd700 轮换),字号 +30%。适合钩子段、热点、爆点。',
   calm:
-    '冷静风格,关键词少而精,zoom 克制(最多 1.3x),让画面呼吸。适合科普、深度内容、长解释。',
+    '冷静风格 — 关键词稀疏 (0-1 个/段),颜色克制 (#ffcc00),字号 +10%。适合科普、深度内容。',
 };
 
 /**
- * System prompt — defines Claude's role, the schema, and strict output
- * format rules. Mirrors highlight-prompts.ts's pattern.
+ * System prompt — v0.5 narrow scope: ONLY 字幕花字 (per-word colour +
+ * size highlights). Camera zoom + transitions + watermark are in the
+ * schema for v0.6+ but Claude is explicitly told to ignore them.
+ *
+ * Why? The user tried earlier versions with zoom and it caused playback
+ * jitter + black-frame flicker before we had the right render pipeline.
+ * The MVP nails one thing first.
  */
 export function buildPackagingSystemPrompt(): string {
-  return `你是短视频包装设计师,类似开拍 Kaipai 的自动包装功能。
+  return `你是短视频字幕花字设计师。
 
-你会看到一份字幕(每段有 idx/start/end/text)和视频元数据。你的任务:**为每段判断字幕怎么呈现 + 画面怎么放大聚焦**,输出 PackagingPlan JSON。
+你会看到一份字幕(每段有 idx/start/end/text)。你的任务:**给某些段挑出 1-2 个关键词做花字效果**(变颜色 + 字号放大)。其他什么都不要做。
 
 判断原则:
-1. **情绪曲线分析** — 开场 hook? 中段铺垫? 高潮金句? 收尾?
-2. **关键词挑选** — 每段最多挑 1-2 个最该被强调的词(数字 / 人名 / 情绪词 / 动词)。不是所有段都要高亮,平铺直叙段就不挑。
-3. **画面动作判断** — 默认 zoom 1.0,情绪铺垫段 1.3,金句段 1.5。focus 默认 0.5/0.5,如果是说话人头部强调可以 0.5/0.4。
-4. **节奏把控** — 开场前 3-5 秒不 zoom(让用户先看清场景),中段慢起,金句段拉近。
-
-**只对需要特殊处理的段输出 segments 条目**。不需要 zoom 也没关键词的段,不要列进 segments,会自动用 defaults。这样输出更精简。
+1. **关键词挑选** — 每段最多挑 1-2 个最该被强调的词:
+   - 数字 (3 个、10 万、第一)
+   - 人名 / 品牌 / 专有名词
+   - 情绪词 (噩梦、可怕、惨、爽)
+   - 动词高潮 (爆、崩、炸)
+2. **不是所有段都要高亮** — 平铺直叙的解释段、过渡段就不要挑,只给 punchline / 金句 / 钩子加。
+3. **只对需要花字的段输出 segments 条目** — 不要列出"无修改"的段,会自动用 defaults。
 
 JSON 输出格式硬性要求(违反会解析失败):
 A. 只输出 JSON 对象,前后不要任何文字,不要 \`\`\`json 代码块围栏
-B. 字符串分隔符必须是 ASCII 双引号 "(不是中文引号 " " 或 ' ')
+B. 字符串分隔符必须是 ASCII 双引号 "
 C. 字符串内部如果出现双引号,必须用反斜杠转义: \\"
-D. 不要尾逗号: 最后一个数组元素 / 对象属性后面不加逗号
-E. 不要 JSON 注释 (// 或 /* */)
+D. 不要尾逗号
+E. 不要 JSON 注释
 
 输出格式(严格照搬,只改值。\`wordIdx\` 是从 0 开始的词索引,词之间用空格分割):
 {
   "defaults": {
     "subtitle": {
-      "font": "PingFang SC Heavy",
-      "size": 56,
-      "color": "#ffffff",
-      "outline": { "color": "#000000", "width": 3 },
-      "position": "bottom"
+      "color": "#ffffff"
     }
   },
   "segments": [
@@ -208,21 +210,21 @@ E. 不要 JSON 注释 (// 或 /* */)
         "wordEffects": [
           { "wordIdx": 1, "highlight": "#ffd700", "size": 68 }
         ]
-      },
-      "camera": { "zoom": 1.3 }
+      }
     },
     {
       "segmentIdx": 12,
       "subtitle": {
         "wordEffects": [
-          { "wordIdx": 1, "highlight": "#ffd700", "size": 72 },
-          { "wordIdx": 2, "highlight": "#ffd700", "size": 72 }
+          { "wordIdx": 1, "highlight": "#ff3333", "size": 72 },
+          { "wordIdx": 2, "highlight": "#ff3333", "size": 72 }
         ]
-      },
-      "camera": { "zoom": 1.5, "focus": { "x": 0.5, "y": 0.4 } }
+      }
     }
   ]
-}`;
+}
+
+**不要输出 camera / transitionToNext / textOverlay / brandWatermark 字段** — v0.5 不渲染它们。专注花字。`;
 }
 
 /**

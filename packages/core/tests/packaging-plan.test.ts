@@ -47,12 +47,14 @@ describe('buildPackagingSystemPrompt', () => {
     expect(prompt).toContain('不要尾逗号');
   });
 
-  it('shows the schema fields the renderer expects', () => {
+  it('shows the schema fields the v0.5 renderer expects (subtitle/wordEffects only)', () => {
     const prompt = buildPackagingSystemPrompt();
     expect(prompt).toContain('defaults');
     expect(prompt).toContain('wordEffects');
-    expect(prompt).toContain('camera');
-    expect(prompt).toContain('zoom');
+    expect(prompt).toContain('highlight');
+    expect(prompt).toContain('size');
+    // v0.5 explicitly tells Claude NOT to use camera / transition fields.
+    expect(prompt).toContain('不要输出 camera');
   });
 });
 

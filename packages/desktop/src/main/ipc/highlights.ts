@@ -21,7 +21,10 @@ import {
   type PackagingVibe,
 } from '@lynlens/core';
 import { runOneShotViaCurrentProvider } from '../agent-dispatcher';
-import { renderPackagingPlan } from '../render/remotion-render';
+// NOTE: renderPackagingPlan (Remotion-based export) is staged for v0.6+
+// but disabled in v0.5 — preview is pure HTML overlay, export reverts
+// to the ffmpeg pipeline (no packaged visuals baked in yet). Keeping
+// the file + import path live so v0.6 can re-enable with one line.
 import type { IpcContext } from './_context';
 
 export function registerHighlightsIpc(ctx: IpcContext): void {
@@ -330,90 +333,12 @@ export function registerHighlightsIpc(ctx: IpcContext): void {
       const ac = new AbortController();
       activeExports.set(projectId, ac);
 
-      // Dispatch: does this variant have a packaging plan?
-      //   YES → Remotion path (Player-WYSIWYG render, slower, rich visuals)
-      //   NO  → existing ffmpeg path (fast cut/concat, no visual effects)
-      const plan = project.getPackagingPlan(variantId);
-      const startMs = Date.now();
+      // v0.5: always use the ffmpeg fast path. PackagingPlan-driven
+      // Remotion render is staged for v0.6+ — preview pipeline needs
+      // more work (see NativeVideo discussion in commit ac8fd08).
+      // Variant export drops any packaging visuals for now; they only
+      // show in the live preview tab.
       try {
-        if (plan) {
-          // Stream progress as 'export.progress' events so the existing
-          // ExportDialog progress UI works without changes.
-          engine.eventBus.emit({
-            type: 'export.started',
-            projectId,
-            mode: 'precise',
-            outputPath,
-          });
-          // Flatten to per-transcript-line segments so subtitles change
-          // at the right cadence (one subtitle per sentence, not "all
-          // subtitles in this 35s variant chunk shown at once"). Use the
-          // original transcript indices for `segmentIdx` so the recipe
-          // lookup in PackagingComposition can find each segment's
-          // packaging plan via the transcript-relative index Claude saw.
-          const renderSegments: Array<{
-            start: number;
-            end: number;
-            text: string;
-            segmentIdx: number;
-          }> = [];
-          (project.transcript?.segments ?? []).forEach((t, i) => {
-            for (const v of variant.segments) {
-              if (t.start >= v.start && t.end <= v.end) {
-                renderSegments.push({
-                  start: t.start,
-                  end: t.end,
-                  text: t.text,
-                  segmentIdx: i,
-                });
-                break;
-              }
-            }
-          });
-          await renderPackagingPlan({
-            videoPath: project.videoPath,
-            segments: renderSegments,
-            plan,
-            width: project.videoMeta.width,
-            height: project.videoMeta.height,
-            fps: project.videoMeta.fps,
-            outputPath,
-            quality,
-            signal: ac.signal,
-            onProgress: (frac, stage) => {
-              engine.eventBus.emit({
-                type: 'export.progress',
-                projectId,
-                percent: frac * 100,
-                stage,
-              });
-            },
-          });
-          const { statSync } = await import('node:fs');
-          const sizeBytes = (() => {
-            try {
-              return statSync(outputPath).size;
-            } catch {
-              return 0;
-            }
-          })();
-          engine.eventBus.emit({
-            type: 'export.completed',
-            projectId,
-            outputPath,
-            sizeBytes,
-          });
-          return {
-            outputPath,
-            sizeBytes,
-            durationMs: Date.now() - startMs,
-            mode,
-            quality,
-          };
-        }
-        // No plan → fall back to the proven ffmpeg pipeline (unchanged
-        // from v0.4.x). Same engine call as precision tab's `export` IPC
-        // but with keepOverride for variant segments.
         const keepOverride = variant.segments.map((s) => ({
           start: s.start,
           end: s.end,
