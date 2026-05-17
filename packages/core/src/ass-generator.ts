@@ -62,6 +62,16 @@ const FALLBACK: Required<Pick<SubtitleStyle, 'font' | 'size' | 'color'>> & {
 };
 
 /**
+ * Defensive font-size cap (mirrors packaging-plan.ts parser). Plans
+ * persisted before the parser cap landed still have wild values; clamp
+ * at generation time so libass never burns in screen-filling characters.
+ */
+function clampSize(v: number): number {
+  if (!Number.isFinite(v) || v <= 0) return 56;
+  return Math.min(120, Math.max(16, v));
+}
+
+/**
  * Convert "#RRGGBB" to ASS's "&H00BBGGRR" format. ASS color is little-
  * endian 8-char hex: AABBGGRR with AA=00 (opaque). Returns the fallback
  * white if the input isn't a valid 6-char hex.
@@ -149,11 +159,12 @@ export function renderAssText(
   const effByIdx = new Map<number, WordEffect>();
   for (const w of wordEffects) effByIdx.set(w.wordIdx, w);
 
+  const cappedBase = clampSize(baseSize);
   const parts: string[] = [];
   tokens.forEach((tok, i) => {
     const eff = effByIdx.get(i);
     const overrideColor = eff?.highlight;
-    const overrideSize = eff?.size;
+    const overrideSize = eff?.size ? clampSize(eff.size) : undefined;
     const escaped = escapeAssText(tok);
     if (overrideColor || overrideSize) {
       const tags: string[] = [];
@@ -161,7 +172,7 @@ export function renderAssText(
       if (overrideSize) tags.push(`\\fs${Math.round(overrideSize)}`);
       // After the override, reset back to the dialogue's base style so the
       // next token isn't accidentally styled.
-      parts.push(`{${tags.join('')}}${escaped}{\\fs${Math.round(baseSize)}\\c${hexToAssColor(baseColor)}}`);
+      parts.push(`{${tags.join('')}}${escaped}{\\fs${Math.round(cappedBase)}\\c${hexToAssColor(baseColor)}}`);
     } else {
       parts.push(escaped);
     }
@@ -197,7 +208,7 @@ function styleOverrideBlock(
     tags.push(`\\c${hexToAssColor(segStyle.color)}`);
   }
   if (segStyle.size && segStyle.size !== defaultStyle.size) {
-    tags.push(`\\fs${Math.round(segStyle.size)}`);
+    tags.push(`\\fs${Math.round(clampSize(segStyle.size))}`);
   }
   if (segStyle.outline && segStyle.outline.color !== defaultStyle.outline?.color) {
     tags.push(`\\3c${hexToAssColor(segStyle.outline.color)}`);
@@ -224,7 +235,9 @@ export function generatePackagingAss(opts: AssGeneratorOptions): string {
 
   const defaults = {
     font: plan?.defaults.subtitle?.font ?? FALLBACK.font,
-    size: plan?.defaults.subtitle?.size ?? FALLBACK.size,
+    // Defensive clamp — see clampSize comment. Old persisted plans may
+    // carry pre-cap sizes that would burn in screen-filling chars.
+    size: clampSize(plan?.defaults.subtitle?.size ?? FALLBACK.size),
     color: plan?.defaults.subtitle?.color ?? FALLBACK.color,
     outline: plan?.defaults.subtitle?.outline ?? FALLBACK.outline,
     position: plan?.defaults.subtitle?.position ?? FALLBACK.position,
@@ -266,7 +279,7 @@ export function generatePackagingAss(opts: AssGeneratorOptions): string {
     const segStyle = recipe?.subtitle;
     const wordEffects: WordEffect[] = recipe?.subtitle?.wordEffects ?? [];
 
-    const effectiveSize = segStyle?.size ?? defaults.size;
+    const effectiveSize = clampSize(segStyle?.size ?? defaults.size);
     const effectiveColor = segStyle?.color ?? defaults.color;
 
     const overrideBlock = styleOverrideBlock(segStyle, defaults);

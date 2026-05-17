@@ -111,17 +111,40 @@ export function PackagingPanel({ effectiveDuration }: Props): JSX.Element {
   const [exportTarget, setExportTarget] = useState<ExportTarget | null>(null);
 
   const videoRef = useRef<HTMLVideoElement>(null);
-  const videoWrapRef = useRef<HTMLDivElement | null>(null);
+  /**
+   * Video-wrap size + observer wired via a CALLBACK REF (not
+   * useEffect + mutable ref). The wrap div only mounts AFTER the
+   * preview mp4 loads — a useEffect with [] deps would fire BEFORE
+   * that, see ref.current = null, and never re-run. Result: wrapSize
+   * stayed at {0,0}, scale fell back to 1.0, subtitles rendered at
+   * full source-resolution px (massive). Callback ref runs each time
+   * the element mounts/unmounts, so the observer attaches the instant
+   * the div exists.
+   */
+  const observerRef = useRef<ResizeObserver | null>(null);
   const [wrapSize, setWrapSize] = useState({ w: 0, h: 0 });
-  useEffect(() => {
-    const el = videoWrapRef.current;
-    if (!el) return;
-    const ro = new ResizeObserver(() => {
+  const videoWrapRef = useCallback((el: HTMLDivElement | null) => {
+    if (observerRef.current) {
+      observerRef.current.disconnect();
+      observerRef.current = null;
+    }
+    if (el) {
+      // Seed wrapSize on mount so the FIRST render after mount already
+      // has the correct scale (don't wait for the first RO tick).
       setWrapSize({ w: el.clientWidth, h: el.clientHeight });
-    });
-    ro.observe(el);
-    return () => ro.disconnect();
+      const ro = new ResizeObserver(() => {
+        setWrapSize({ w: el.clientWidth, h: el.clientHeight });
+      });
+      ro.observe(el);
+      observerRef.current = ro;
+    }
   }, []);
+  useEffect(
+    () => () => {
+      if (observerRef.current) observerRef.current.disconnect();
+    },
+    []
+  );
 
   const selectedVariantId = selectedKey === ROOT_KEY ? null : selectedKey;
   const selectedVariant = useMemo(
@@ -326,6 +349,33 @@ export function PackagingPanel({ effectiveDuration }: Props): JSX.Element {
           </div>
         </div>
         <div className="spacer" />
+        {/* Variant selector as a dropdown — collapses what used to be a
+            wide button row, scales to N variants without wrapping. */}
+        <label
+          style={{
+            fontSize: 12,
+            color: 'var(--text2)',
+            display: 'flex',
+            alignItems: 'center',
+            gap: 6,
+          }}
+        >
+          包装对象
+          <select
+            value={selectedKey}
+            onChange={(e) => setSelectedKey(e.target.value)}
+            disabled={generating || exportState.active}
+            style={{ maxWidth: 220 }}
+          >
+            <option value={ROOT_KEY}>整片</option>
+            {variants.map((v) => (
+              <option key={v.id} value={v.id}>
+                {v.pinned ? '📌 ' : ''}
+                {v.title} · {v.durationSeconds.toFixed(1)}s
+              </option>
+            ))}
+          </select>
+        </label>
         {plan && (
           <>
             <button
@@ -369,47 +419,20 @@ export function PackagingPanel({ effectiveDuration }: Props): JSX.Element {
       </div>
 
       <div className="highlight-body" style={{ flexDirection: 'column', gap: 12 }}>
-        {/* Variant selector — full width across the top */}
-        <div
-          style={{
-            display: 'flex',
-            gap: 8,
-            flexWrap: 'wrap',
-            padding: '8px 12px',
-            background: '#181820',
-            border: '1px solid #2a2a2a',
-            borderRadius: 6,
-          }}
-        >
-          <span style={{ fontSize: 11, color: 'var(--text2)', alignSelf: 'center' }}>
-            包装对象:
-          </span>
-          <button
-            className={`work-mode-tab${selectedKey === ROOT_KEY ? ' active' : ''}`}
-            onClick={() => setSelectedKey(ROOT_KEY)}
-            style={{ fontSize: 12, padding: '4px 10px' }}
-            title="整个粗剪后的视频"
+        {variants.length === 0 && (
+          <div
+            style={{
+              padding: '6px 12px',
+              fontSize: 11,
+              color: 'var(--text3)',
+              background: '#181820',
+              border: '1px solid #2a2a2a',
+              borderRadius: 4,
+            }}
           >
-            整片
-          </button>
-          {variants.length === 0 && (
-            <span style={{ fontSize: 11, color: 'var(--text3)', alignSelf: 'center' }}>
-              (没有高光变体 — 想包装单个变体,先去「高光」tab 生成)
-            </span>
-          )}
-          {variants.map((v) => (
-            <button
-              key={v.id}
-              className={`work-mode-tab${selectedKey === v.id ? ' active' : ''}`}
-              onClick={() => setSelectedKey(v.id)}
-              style={{ fontSize: 12, padding: '4px 10px' }}
-              title={`${v.durationSeconds.toFixed(1)}s · ${v.segments.length} 段`}
-            >
-              {v.pinned && '📌 '}
-              {v.title}
-            </button>
-          ))}
-        </div>
+            没有高光变体 — 想包装单个变体,先去「高光」tab 生成。
+          </div>
+        )}
 
         {/* Variant context label. */}
         {selectedVariant && (

@@ -74,6 +74,17 @@ const FALLBACK_STYLE: SubtitleStyle = {
   position: 'bottom',
 };
 
+/**
+ * Defensive font-size cap (matches packaging-plan.ts parser). Old plans
+ * stored in .qcp before the parser cap landed still have wild sizes; we
+ * clamp at render time so preview can't blow up regardless of where the
+ * plan came from.
+ */
+function clampSize(v: number): number {
+  if (!Number.isFinite(v) || v <= 0) return 56;
+  return Math.min(120, Math.max(16, v));
+}
+
 export function PackagingSubtitleOverlay({
   transcript,
   plan,
@@ -130,7 +141,10 @@ export function PackagingSubtitleOverlay({
   const wordEffects: WordEffect[] = recipe?.subtitle?.wordEffects ?? [];
 
   const font = merged.font ?? FALLBACK_STYLE.font!;
-  const baseSize = merged.size ?? FALLBACK_STYLE.size!;
+  // Render-time defensive cap. The parser also clamps but plans saved
+  // before the cap landed (or hand-edited .qcp files) can still carry
+  // wild sizes; cap here so the preview never explodes.
+  const baseSize = clampSize(merged.size ?? FALLBACK_STYLE.size!);
   const color = merged.color ?? FALLBACK_STYLE.color!;
   const baseOutline = merged.outline ?? FALLBACK_STYLE.outline!;
   const bgColor = merged.bgColor;
@@ -210,7 +224,7 @@ export function PackagingSubtitleOverlay({
           const tokColor = eff?.highlight ?? color;
           // Scale per-word effect sizes the same way as the base size.
           const tokSize = eff?.size
-            ? Math.max(8, Math.round(eff.size * scale))
+            ? Math.max(8, Math.round(clampSize(eff.size) * scale))
             : orientedSize;
           return (
             <span
