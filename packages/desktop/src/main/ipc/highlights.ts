@@ -7,6 +7,9 @@
  * `export.ts`.
  */
 
+import { promises as fs } from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { ipcMain } from 'electron';
 import {
   buildHighlightSystemPrompt,
@@ -14,19 +17,36 @@ import {
   buildPackagingSystemPrompt,
   buildPackagingUserPrompt,
   buildPreviewPlaylist,
+  computeKeepIntervals,
+  generatePackagingAss,
   parseHighlightResponse,
   parsePackagingPlanResponse,
   previewCacheKey,
   probeColorMeta,
   renderPackagingPreview,
   transcriptToPromptSegments,
+  type AssPlaylistEntry,
+  type ExportQuality,
+  type ExportResult,
   type HighlightStyle,
   type PackagingPlan,
   type PackagingVibe,
   type PreviewPlaylistEntry,
   type Range,
+  type VideoMeta,
 } from '@lynlens/core';
 import { runOneShotViaCurrentProvider } from '../agent-dispatcher';
+
+/**
+ * The encoded mp4's dimensions after the rotation filter in
+ * export-service is applied. ASS PlayResX/Y must match these so
+ * font sizes + positions land on the actual visible frame.
+ */
+function outputDimensions(meta: VideoMeta): { w: number; h: number } {
+  const r = ((Math.round(meta.rotation ?? 0) % 360) + 360) % 360;
+  if (r === 90 || r === 270) return { w: meta.height, h: meta.width };
+  return { w: meta.width, h: meta.height };
+}
 // NOTE: renderPackagingPlan (Remotion-based export) is staged for v0.6+
 // but disabled in v0.5 — preview is pure HTML overlay, export reverts
 // to the ffmpeg pipeline (no packaged visuals baked in yet). Keeping
@@ -394,6 +414,121 @@ export function registerHighlightsIpc(ctx: IpcContext): void {
         durationSeconds: result.durationSeconds,
         cached: result.cached,
       };
+    }
+  );
+
+  /**
+   * Final export of a packaged variant (or 整片) with花字 burned into the
+   * frames. The flow:
+   *
+   *   1. Resolve keep ranges. variantId set → variant.segments (user
+   *      order, repeats allowed). null → rippled-timeline keeps
+   *      (computeKeepIntervals over approved deletes + cut ranges).
+   *   2. Build a source↔output time playlist from those keeps so the
+   *      ASS dialogue events line up with the OUTPUT video's timeline.
+   *   3. Render the ASS subtitle file (transcript timings + plan
+   *      styling) and write to a temp file ffmpeg can read.
+   *   4. Call ExportService.export with both `keepOverride` and
+   *      `subtitleBurnIn`; the precise encoder bakes everything into
+   *      one final mp4 — preview ↔ export pixel-equivalent.
+   *
+   * Requires a PackagingPlan for the (project, variantId) — if none
+   * exists, throws so the UI can prompt the user to generate one.
+   */
+  ipcMain.handle(
+    'export-packaged',
+    async (
+      _ev,
+      projectId: string,
+      variantId: string | null,
+      outputPath: string,
+      quality: ExportQuality = 'original'
+    ): Promise<ExportResult> => {
+      const project = engine.projects.get(projectId);
+      if (!project.transcript || project.transcript.segments.length === 0) {
+        throw new Error('请先生成字幕,然后才能导出带花字的成品');
+      }
+      const plan = project.getPackagingPlan(variantId);
+      if (!plan) {
+        throw new Error('当前对象没有包装方案。请在包装 tab 点「一键包装」生成。');
+      }
+
+      // Build keep ranges. Variant: user-ordered segments (preserves
+      // repeats/overlaps). 整片: computed from approved deletes + cuts.
+      let ranges: Range[];
+      if (variantId) {
+        const variant = project.findHighlightVariant(variantId);
+        if (!variant) throw new Error(`找不到高光变体: ${variantId}`);
+        if (variant.segments.length === 0) {
+          throw new Error('变体没有片段,无法导出');
+        }
+        ranges = variant.segments.map((s) => ({ start: s.start, end: s.end }));
+      } else {
+        ranges = computeKeepIntervals(
+          project.videoMeta.duration,
+          project.segments.getApprovedSegments().map((s) => ({
+            start: s.start,
+            end: s.end,
+          })),
+          project.cutRanges
+        );
+        if (ranges.length === 0) {
+          throw new Error('整片没有可导出的内容(全部被剪掉了)');
+        }
+      }
+
+      // Build the source→output playlist for ASS time mapping.
+      let acc = 0;
+      const playlist: AssPlaylistEntry[] = ranges.map((r) => {
+        const dur = Math.max(0, r.end - r.start);
+        const entry: AssPlaylistEntry = {
+          srcStart: r.start,
+          srcEnd: r.end,
+          outStart: acc,
+          outEnd: acc + dur,
+        };
+        acc += dur;
+        return entry;
+      });
+
+      // Render the ASS using OUTPUT (post-rotation) dimensions so font
+      // sizes / positions match the encoded frame.
+      const dims = outputDimensions(project.videoMeta);
+      const assContent = generatePackagingAss({
+        transcript: project.transcript,
+        plan,
+        playlist,
+        videoWidth: dims.w,
+        videoHeight: dims.h,
+      });
+      const assDir = path.join(os.tmpdir(), 'lynlens-packaging-ass');
+      await fs.mkdir(assDir, { recursive: true });
+      // Cache key includes plan id + ranges hash → re-export with same
+      // plan reuses the file, regenerated each call to pick up edits.
+      const assPath = path.join(
+        assDir,
+        `${plan.id}-${variantId ?? 'root'}.ass`
+      );
+      await fs.writeFile(assPath, assContent, 'utf-8');
+
+      // Drive the existing precise export pipeline with both overrides.
+      const existing = activeExports.get(projectId);
+      if (existing) existing.abort();
+      const ac = new AbortController();
+      activeExports.set(projectId, ac);
+      try {
+        return await engine.exports.export(project, {
+          outputPath,
+          mode: 'precise',
+          quality,
+          signal: ac.signal,
+          ffmpegPaths: engine.ffmpegPaths,
+          keepOverride: ranges,
+          subtitleBurnIn: { path: assPath },
+        });
+      } finally {
+        activeExports.delete(projectId);
+      }
     }
   );
 

@@ -255,6 +255,19 @@ export interface IpcApi {
     mode?: 'precise',
     quality?: 'original' | 'high' | 'medium' | 'low'
   ): Promise<ExportResultDto>;
+  /**
+   * Export a variant (or 整片 when variantId is null) with the current
+   * PackagingPlan's花字 burned into the frames via libass. Throws when
+   * no plan exists for the target — UI should prompt to "✨ 一键包装"
+   * first. Slower than exportHighlight (precise transcode + subtitles
+   * filter) but produces the WYSIWYG final video.
+   */
+  exportPackaged(
+    projectId: string,
+    variantId: string | null,
+    outputPath: string,
+    quality?: 'original' | 'high' | 'medium' | 'low'
+  ): Promise<ExportResultDto>;
 
   /**
    * Generate per-platform copy in parallel. The returned setId is the

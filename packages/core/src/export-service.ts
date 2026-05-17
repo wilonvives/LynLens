@@ -40,6 +40,13 @@ export interface ExportOptions {
    * highlight tab to export one variant's segments as a standalone video.
    */
   keepOverride?: Range[];
+  /**
+   * If set, ffmpeg burns the ASS subtitle file into the output video via
+   * libass. The ASS event times must already match the OUTPUT timeline
+   * (post-concat), not the source video timeline. Used by the 包装 tab
+   * to bake花字 into the final mp4.
+   */
+  subtitleBurnIn?: SubtitleBurnIn;
 }
 
 export interface ExportResult {
@@ -203,8 +210,8 @@ export class ExportService {
     // HDR sources go through the tone-map branch — see method comment.
     // Everything else (incl. 10-bit SDR) preserves bit depth + tags.
     const isHdr = colorMeta.isHdr;
-    const filter = isHdr
-      ? buildConcatFilter(keeps, rotation, {
+    const hdrTags = isHdr
+      ? {
           // Explicit input color tags so zscale doesn't have to guess from
           // frame metadata (which `concat` may have stripped). Without this,
           // the linearize step can mis-interpret HLG as SDR and produce
@@ -212,9 +219,15 @@ export class ExportService {
           inTransfer: colorMeta.colorTransfer === 'unknown' ? 'arib-std-b67' : colorMeta.colorTransfer,
           inMatrix: colorMeta.colorSpace === 'unknown' ? 'bt2020nc' : colorMeta.colorSpace,
           inPrimaries: colorMeta.colorPrimaries === 'unknown' ? 'bt2020' : colorMeta.colorPrimaries,
-          inRange: colorMeta.colorRange === 'unknown' ? 'tv' : colorMeta.colorRange,
-        })
-      : buildConcatFilter(keeps, rotation);
+          inRange: (colorMeta.colorRange === 'unknown' ? 'tv' : colorMeta.colorRange) as 'tv' | 'pc',
+        }
+      : false;
+    const filter = buildConcatFilter(
+      keeps,
+      rotation,
+      hdrTags,
+      options.subtitleBurnIn ?? null
+    );
 
     let encoder: 'libx264' | 'libx265';
     let outPixFmt: string;
@@ -336,10 +349,27 @@ export interface HdrToSdrTags {
   inRange: 'tv' | 'pc';
 }
 
+/**
+ * Optional subtitle burn-in. When `path` is set, the filter chain
+ * appends `subtitles=...` after the trim+concat (+ tonemap) stages so
+ * the ASS subtitle is baked into the output frames. Used by the 包装
+ * tab to export with花字 styling visible in the final mp4.
+ *
+ * `fontsdir` is optional but recommended — without it libass falls back
+ * to the system font search, which on macOS resolves CJK fonts fine but
+ * on Windows/Linux often picks the wrong glyphs. Caller can point at a
+ * dir containing the user's chosen font.
+ */
+export interface SubtitleBurnIn {
+  path: string;
+  fontsdir?: string;
+}
+
 export function buildConcatFilter(
   keeps: Range[],
   rotation = 0,
-  hdrToSdr: HdrToSdrTags | false = false
+  hdrToSdr: HdrToSdrTags | false = false,
+  subtitleBurnIn: SubtitleBurnIn | null = null
 ): string {
   if (keeps.length === 0) throw new Error('keeps is empty');
   const rot = rotationFilter(rotation);
@@ -350,29 +380,56 @@ export function buildConcatFilter(
     parts.push(`[0:a]atrim=start=${k.start}:end=${k.end},asetpts=PTS-STARTPTS[a${i}]`);
     labels.push(`[v${i}][a${i}]`);
   });
-  // When tone-mapping HDR → SDR, route concat output through a tonemap
-  // chain before exposing [outv]. Standard Hable curve, no desaturation,
-  // primaries → BT.709, transfer → BT.709, output in 8-bit yuv420p so
-  // libx264 can encode it. Explicit input tags (tin/min/pin/rin) make
-  // the linearize step deterministic regardless of what concat did to
-  // the frame metadata.
+  // The pipeline produces a video label step-by-step:
+  //   concat → [vConcat]
+  //   (HDR only) tonemap → [vTone]
+  //   (subs only) burn  → [outv]
+  // Pick the final label so we always end in [outv].
+  const hasTone = !!hdrToSdr;
+  const hasSubs = !!subtitleBurnIn;
+  const concatLabel = hasTone || hasSubs ? 'vConcat' : 'outv';
+  parts.push(
+    `${labels.join('')}concat=n=${keeps.length}:v=1:a=1[${concatLabel}][outa]`
+  );
+  let lastLabel = concatLabel;
+  // When tone-mapping HDR → SDR, route through a Hable curve and bake
+  // BT.709 8-bit so the downstream encoder + subs filter operate in a
+  // predictable colorspace.
   if (hdrToSdr) {
-    parts.push(`${labels.join('')}concat=n=${keeps.length}:v=1:a=1[outv_pre][outa]`);
+    const next = hasSubs ? 'vTone' : 'outv';
     const t = hdrToSdr;
     parts.push(
-      '[outv_pre]' +
+      `[${lastLabel}]` +
         `zscale=tin=${t.inTransfer}:min=${t.inMatrix}:pin=${t.inPrimaries}:rin=${t.inRange}:t=linear:npl=100,` +
         'format=gbrpf32le,' +
         'zscale=p=bt709,' +
         'tonemap=tonemap=hable:desat=0,' +
         'zscale=t=bt709:m=bt709:r=tv,' +
         'format=yuv420p' +
-        '[outv]'
+        `[${next}]`
     );
-  } else {
-    parts.push(`${labels.join('')}concat=n=${keeps.length}:v=1:a=1[outv][outa]`);
+    lastLabel = next;
+  }
+  if (subtitleBurnIn) {
+    // libass needs the path escaped: `\` and `:` and `'` are special inside
+    // a filter argument. The ASS file path we write goes under a temp dir
+    // with only alphanumerics so the simpler single-quote form is safe.
+    const pathArg = escapeFilterPath(subtitleBurnIn.path);
+    const fontsArg = subtitleBurnIn.fontsdir
+      ? `:fontsdir='${escapeFilterPath(subtitleBurnIn.fontsdir)}'`
+      : '';
+    parts.push(
+      `[${lastLabel}]subtitles='${pathArg}':charenc=UTF-8${fontsArg}[outv]`
+    );
   }
   return parts.join(';');
+}
+
+/** Escape a path for use inside a ffmpeg filter argument (single-quoted). */
+function escapeFilterPath(p: string): string {
+  // Inside single quotes ffmpeg filter syntax treats `\` as escape, so
+  // we escape backslashes; single quotes themselves need `'\''` style.
+  return p.replace(/\\/g, '\\\\').replace(/'/g, "'\\''");
 }
 
 /**

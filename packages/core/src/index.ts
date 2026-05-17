@@ -10,6 +10,7 @@ export {
   type ExportQuality,
   type ExportResult,
   type HdrToSdrTags,
+  type SubtitleBurnIn,
 } from './export-service';
 export {
   buildPreviewPlaylist,
@@ -20,6 +21,14 @@ export {
   type PreviewRenderOptions,
   type PreviewRenderResult,
 } from './preview-render';
+export {
+  generatePackagingAss,
+  hexToAssColor,
+  renderAssText,
+  secondsToAssTime,
+  type AssGeneratorOptions,
+  type AssPlaylistEntry,
+} from './ass-generator';
 export {
   extractWaveform,
   probeVideo,

@@ -28,6 +28,7 @@ import type {
   PackagingVibe,
   PreviewPlaylistEntry,
 } from '@lynlens/core';
+import { ExportDialog } from './ExportDialog';
 import { PackagingSubtitleOverlay } from './components/PackagingSubtitleOverlay';
 import { PackagingMicroEditor } from './components/PackagingMicroEditor';
 import { useStore } from './store';
@@ -68,6 +69,8 @@ export function PackagingPanel({ effectiveDuration }: Props): JSX.Element {
   const [generating, setGenerating] = useState(false);
   const [vibe, setVibe] = useState<PackagingVibe>('default');
   const [showMicroEditor, setShowMicroEditor] = useState(false);
+  /** True while the export dialog is open (path/quality + progress UI). */
+  const [showExportDialog, setShowExportDialog] = useState(false);
 
   // Preview render state.
   const [preview, setPreview] = useState<PreviewState | null>(null);
@@ -310,6 +313,13 @@ export function PackagingPanel({ effectiveDuration }: Props): JSX.Element {
               title="改字幕颜色 / 关键词花字"
             >
               ⚙ 微调
+            </button>
+            <button
+              className="primary"
+              onClick={() => setShowExportDialog(true)}
+              title="把花字烧进视频,导出成片"
+            >
+              🎬 导出成品
             </button>
             <button
               onClick={async () => {
@@ -631,6 +641,34 @@ export function PackagingPanel({ effectiveDuration }: Props): JSX.Element {
               setShowMicroEditor(false);
             } catch (err) {
               alert(`保存失败: ${(err as Error).message}`);
+            }
+          }}
+        />
+      )}
+
+      {/* Final export with花字 burned in. Same ExportDialog component
+          the other tabs use — for progress display + path picking. */}
+      {showExportDialog && plan && (
+        <ExportDialog
+          title={
+            selectedVariant
+              ? `导出包装成品 — ${selectedVariant.title}`
+              : '导出包装成品 — 整片'
+          }
+          defaultPath={`${selectedVariant?.title ?? '整片'}-包装.mp4`}
+          onClose={() => setShowExportDialog(false)}
+          onConfirm={async ({ outputPath, quality }) => {
+            try {
+              await window.lynlens.exportPackaged(
+                projectId,
+                selectedVariantId,
+                outputPath,
+                quality
+              );
+              setShowExportDialog(false);
+              alert(`导出完成: ${outputPath}`);
+            } catch (err) {
+              alert(`导出失败: ${(err as Error).message}`);
             }
           }}
         />
