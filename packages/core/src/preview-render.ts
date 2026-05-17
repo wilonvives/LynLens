@@ -49,6 +49,12 @@ export interface PreviewRenderResult {
   cached: boolean;
   /** Total preview duration in seconds (sum of range durations). */
   durationSeconds: number;
+  /**
+   * Absolute paths of N thumbnail jpgs evenly spaced across the preview
+   * mp4's timeline. Empty array when extraction fails / is skipped.
+   * Used by the 包装 tab to render a visual scrubber strip.
+   */
+  thumbnails: string[];
 }
 
 /**
@@ -122,7 +128,14 @@ export async function renderPackagingPreview(
   try {
     const stat = await fs.stat(outputPath);
     if (stat.size > 1024) {
-      return { outputPath, cached: true, durationSeconds: totalDuration };
+      const thumbnails = await ensureThumbnails(
+        outputPath,
+        totalDuration,
+        cacheKey,
+        tmpRoot,
+        paths
+      );
+      return { outputPath, cached: true, durationSeconds: totalDuration, thumbnails };
     }
     // Stale empty file — fall through and re-encode.
     await fs.unlink(outputPath).catch(() => {});
@@ -176,7 +189,14 @@ export async function renderPackagingPreview(
       if (stat.size < 1024) {
         throw new Error(`Preview output too small (${stat.size} bytes)`);
       }
-      return { outputPath, cached: false, durationSeconds: totalDuration };
+      const thumbnails = await ensureThumbnails(
+        outputPath,
+        totalDuration,
+        cacheKey,
+        tmpRoot,
+        paths
+      );
+      return { outputPath, cached: false, durationSeconds: totalDuration, thumbnails };
     } catch (err) {
       lastErr = err as Error;
       // Clean up partial file before trying next encoder.
@@ -229,6 +249,100 @@ async function runOneEncode(
     },
   });
   if (onProgress) onProgress(100);
+}
+
+/**
+ * Number of thumbnails per preview clip. 24 gives the 包装 tab's
+ * timeline strip a decent visual density without bloating extraction
+ * time. Caller can change later if needed.
+ */
+const THUMBNAIL_COUNT = 24;
+
+/**
+ * Make sure thumbnails for `videoPath` exist in tmpRoot under the
+ * cache key. Returns absolute paths in chronological order. If
+ * extraction fails for any reason returns [] (caller renders without
+ * the strip — non-essential UX).
+ */
+async function ensureThumbnails(
+  videoPath: string,
+  durationSeconds: number,
+  cacheKey: string,
+  tmpRoot: string,
+  paths: FfmpegPaths
+): Promise<string[]> {
+  if (durationSeconds <= 0) return [];
+  const count = THUMBNAIL_COUNT;
+  const expected: string[] = [];
+  for (let i = 0; i < count; i++) {
+    expected.push(path.join(tmpRoot, `${cacheKey}_thumb_${String(i).padStart(3, '0')}.jpg`));
+  }
+  // Cache hit: every expected thumb exists + non-empty.
+  const allExist = await Promise.all(
+    expected.map(async (p) => {
+      try {
+        const st = await fs.stat(p);
+        return st.size > 256;
+      } catch {
+        return false;
+      }
+    })
+  );
+  if (allExist.every(Boolean)) return expected;
+
+  // Extract using a single ffmpeg pass: fps filter at count/duration
+  // gives us roughly evenly-spaced frames. Output to thumbnail_NNN.jpg.
+  // Scaled to 160px wide preserving aspect (keeps the strip lightweight).
+  try {
+    const fps = count / durationSeconds;
+    const pattern = path.join(tmpRoot, `${cacheKey}_thumb_%03d.jpg`);
+    // Delete any partial leftovers first so the new pass writes the
+    // exact set we expect.
+    await Promise.all(
+      expected.map((p) => fs.unlink(p).catch(() => {}))
+    );
+    await runFfmpeg({
+      ffmpegPath: paths.ffmpeg,
+      args: [
+        '-v', 'error',
+        '-noautorotate',
+        '-i', videoPath,
+        '-vf', `fps=${fps.toFixed(6)},scale=160:-1`,
+        '-frames:v', String(count),
+        '-vsync', '0',
+        '-q:v', '5',
+        '-y',
+        pattern,
+      ],
+    });
+    // ffmpeg uses 1-based numbering with %03d so files are
+    // <key>_thumb_001.jpg .. <key>_thumb_024.jpg. We expected 0-based.
+    // Rename to our 0-based convention so the cache check above matches.
+    for (let i = 0; i < count; i++) {
+      const src = path.join(tmpRoot, `${cacheKey}_thumb_${String(i + 1).padStart(3, '0')}.jpg`);
+      const dst = expected[i];
+      try {
+        await fs.rename(src, dst);
+      } catch {
+        // ffmpeg might have produced fewer frames than expected on
+        // very short clips — return whatever exists.
+      }
+    }
+    const surviving: string[] = [];
+    for (const p of expected) {
+      try {
+        const st = await fs.stat(p);
+        if (st.size > 256) surviving.push(p);
+      } catch {
+        /* missing — skip */
+      }
+    }
+    return surviving;
+  } catch {
+    // Best-effort feature; if extraction fails the strip just shows
+    // an empty placeholder. Don't block preview availability.
+    return [];
+  }
 }
 
 /**

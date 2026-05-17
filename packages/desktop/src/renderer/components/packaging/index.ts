@@ -10,3 +10,4 @@ export { PackagingRightPanel, type PackagingTab } from './PackagingRightPanel';
 export { PackagingSegmentCard } from './PackagingSegmentCard';
 export { PackagingSubtitlesTab } from './PackagingSubtitlesTab';
 export { PackagingTemplatesTab } from './PackagingTemplatesTab';
+export { PackagingTimelineBar } from './PackagingTimelineBar';

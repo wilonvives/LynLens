@@ -232,6 +232,12 @@ export interface IpcApi {
     playlist: PreviewPlaylistEntry[];
     durationSeconds: number;
     cached: boolean;
+    /**
+     * Absolute paths of thumbnail JPGs (~24) evenly spaced across the
+     * preview clip. Empty for 整片 mode or when extraction failed —
+     * UI should gracefully render the timeline without thumbnails.
+     */
+    thumbnails: string[];
   }>;
   /**
    * Remove one segment from a variant. Refuses to delete the last remaining

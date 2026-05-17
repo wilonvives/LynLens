@@ -46,6 +46,7 @@ import {
   PackagingRightPanel,
   PackagingSubtitlesTab,
   PackagingTemplatesTab,
+  PackagingTimelineBar,
   type PackagingTab,
 } from './components/packaging';
 import { useStore } from './store';
@@ -69,6 +70,8 @@ interface PreviewState {
   videoUrl: string;
   playlist: PreviewPlaylistEntry[];
   durationSeconds: number;
+  /** Thumbnail absolute paths (0..24 frames) for the bottom timeline strip. */
+  thumbnails: string[];
 }
 
 export function PackagingPanel({ effectiveDuration }: Props): JSX.Element {
@@ -172,6 +175,7 @@ export function PackagingPanel({ effectiveDuration }: Props): JSX.Element {
           videoUrl: toMediaUrl(result.outputPath),
           playlist: result.playlist,
           durationSeconds: result.durationSeconds,
+          thumbnails: result.thumbnails ?? [],
         });
         setCurrentTimeSec(0);
       })
@@ -682,6 +686,17 @@ export function PackagingPanel({ effectiveDuration }: Props): JSX.Element {
                   style={{ flex: 1, accentColor: 'var(--accent)' }}
                 />
               </div>
+            )}
+
+            {/* Bottom frame-thumbnail timeline — visual scrubber. Click
+                anywhere on the strip to seek. */}
+            {preview && (
+              <PackagingTimelineBar
+                thumbnails={preview.thumbnails}
+                durationSeconds={preview.durationSeconds}
+                currentTimeSec={currentTimeSec}
+                onSeek={seekTo}
+              />
             )}
           </div>
 

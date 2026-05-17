@@ -387,6 +387,7 @@ export function registerHighlightsIpc(ctx: IpcContext): void {
       playlist: PreviewPlaylistEntry[];
       durationSeconds: number;
       cached: boolean;
+      thumbnails: string[];
     }> => {
       const project = engine.projects.get(projectId);
       const videoPath = project.videoPath;
@@ -406,6 +407,8 @@ export function registerHighlightsIpc(ctx: IpcContext): void {
         ranges = variant.segments.map((s) => ({ start: s.start, end: s.end }));
       } else {
         // 整片 mode — skip the render, point the player at the source.
+        // No thumbnails returned for 整片 right now (would require an
+        // extra ffmpeg pass on the source); v0.6+ can add that lazily.
         return {
           outputPath: videoPath,
           playlist: [
@@ -418,6 +421,7 @@ export function registerHighlightsIpc(ctx: IpcContext): void {
           ],
           durationSeconds: videoMeta.duration,
           cached: true,
+          thumbnails: [],
         };
       }
 
@@ -436,6 +440,7 @@ export function registerHighlightsIpc(ctx: IpcContext): void {
         playlist: buildPreviewPlaylist(ranges),
         durationSeconds: result.durationSeconds,
         cached: result.cached,
+        thumbnails: result.thumbnails,
       };
     }
   );
