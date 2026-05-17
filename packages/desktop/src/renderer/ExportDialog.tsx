@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import type { ExportMode, ExportQuality } from '@lynlens/core';
 import { useStore } from './store';
 
@@ -27,6 +27,23 @@ export function ExportDialog({ defaultPath, onClose, onConfirm, title }: Props) 
   const [outputPath, setOutputPath] = useState(defaultPath);
   const [quality, setQuality] = useState<ExportQuality>('original');
   const ex = useStore((s) => s.export);
+
+  // If the caller passed a bare filename (no directory), upgrade it to
+  // ~/Downloads/<filename> so the saved file lands somewhere the user
+  // can find. Previously these paths resolved against process.cwd()
+  // which in dev mode is `packages/desktop/` — invisible to users.
+  useEffect(() => {
+    if (defaultPath.includes('/') || defaultPath.includes('\\')) return;
+    let cancelled = false;
+    void window.lynlens.getDownloadsDir().then((dir) => {
+      if (cancelled) return;
+      const sep = dir.includes('\\') ? '\\' : '/';
+      setOutputPath(`${dir}${sep}${defaultPath}`);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [defaultPath]);
 
   async function browse() {
     const base = outputPath.split(/[\\/]/).pop() ?? 'output.mp4';

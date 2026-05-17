@@ -55,6 +55,7 @@ const api: IpcApi = {
     ipcRenderer.invoke('prepare-packaging-preview', pid, variantId),
   exportPackaged: (pid, variantId, outputPath, quality) =>
     ipcRenderer.invoke('export-packaged', pid, variantId, outputPath, quality),
+  getDownloadsDir: () => ipcRenderer.invoke('get-downloads-dir'),
   deleteHighlightVariantSegment: (pid, vid, idx) =>
     ipcRenderer.invoke('delete-highlight-variant-segment', pid, vid, idx),
   exportHighlight: (pid, vid, outputPath, mode, quality) =>

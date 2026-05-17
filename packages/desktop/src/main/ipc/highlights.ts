@@ -10,7 +10,7 @@
 import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { ipcMain } from 'electron';
+import { app, ipcMain } from 'electron';
 import {
   buildHighlightSystemPrompt,
   buildHighlightUserPrompt,
@@ -46,6 +46,29 @@ function outputDimensions(meta: VideoMeta): { w: number; h: number } {
   const r = ((Math.round(meta.rotation ?? 0) % 360) + 360) % 360;
   if (r === 90 || r === 270) return { w: meta.height, h: meta.width };
   return { w: meta.width, h: meta.height };
+}
+
+/**
+ * Resolve an export output path so a bare filename / relative path
+ * lands in ~/Downloads instead of process.cwd() (which in dev is
+ * `packages/desktop/`, where users would never look). Absolute paths
+ * pass through unchanged.
+ *
+ * The user reported "I clicked export, it said success, but no file
+ * exists where I expected" — the file was there, just under the dev
+ * tree because the renderer hadn't called the saveDialog before
+ * confirming. This makes the failure mode benign instead of mysterious.
+ */
+function resolveExportOutputPath(outputPath: string): string {
+  if (path.isAbsolute(outputPath)) return outputPath;
+  // No directory component → bare filename → Downloads/<name>.
+  if (!outputPath.includes(path.sep) && !outputPath.includes('/')) {
+    return path.join(app.getPath('downloads'), outputPath);
+  }
+  // Relative path with directory parts → resolve against home so e.g.
+  // "Movies/foo.mp4" lands in $HOME/Movies/foo.mp4 rather than wherever
+  // process.cwd() happens to be.
+  return path.resolve(app.getPath('home'), outputPath);
 }
 // NOTE: renderPackagingPlan (Remotion-based export) is staged for v0.6+
 // but disabled in v0.5 — preview is pure HTML overlay, export reverts
@@ -452,6 +475,7 @@ export function registerHighlightsIpc(ctx: IpcContext): void {
       if (!plan) {
         throw new Error('当前对象没有包装方案。请在包装 tab 点「一键包装」生成。');
       }
+      const absOutputPath = resolveExportOutputPath(outputPath);
 
       // Build keep ranges. Variant: user-ordered segments (preserves
       // repeats/overlaps). 整片: computed from approved deletes + cuts.
@@ -518,7 +542,7 @@ export function registerHighlightsIpc(ctx: IpcContext): void {
       activeExports.set(projectId, ac);
       try {
         return await engine.exports.export(project, {
-          outputPath,
+          outputPath: absOutputPath,
           mode: 'precise',
           quality,
           signal: ac.signal,
@@ -565,7 +589,7 @@ export function registerHighlightsIpc(ctx: IpcContext): void {
           end: s.end,
         }));
         return await engine.exports.export(project, {
-          outputPath,
+          outputPath: resolveExportOutputPath(outputPath),
           mode,
           quality,
           signal: ac.signal,

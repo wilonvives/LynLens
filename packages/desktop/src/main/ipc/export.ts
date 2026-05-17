@@ -5,13 +5,33 @@
  * domain's data model.
  */
 
-import { ipcMain } from 'electron';
+import path from 'node:path';
+import { app, ipcMain } from 'electron';
 import { extractWaveform } from '@lynlens/core';
 import type { ExportRequest } from '../../shared/ipc-types';
 import type { IpcContext } from './_context';
 
+/**
+ * Resolve a renderer-supplied export path. Bare filenames + relative
+ * paths land in ~/Downloads instead of process.cwd() (which in dev is
+ * `packages/desktop/` — users would never look there). Absolute paths
+ * pass through unchanged.
+ */
+function resolveExportOutputPath(outputPath: string): string {
+  if (path.isAbsolute(outputPath)) return outputPath;
+  if (!outputPath.includes(path.sep) && !outputPath.includes('/')) {
+    return path.join(app.getPath('downloads'), outputPath);
+  }
+  return path.resolve(app.getPath('home'), outputPath);
+}
+
 export function registerExportIpc(ctx: IpcContext): void {
   const { engine, activeExports } = ctx;
+
+  // Expose the OS Downloads dir so the renderer can show a sensible
+  // default path before the user picks one — avoids the "exported,
+  // but where did it go?" footgun.
+  ipcMain.handle('get-downloads-dir', async () => app.getPath('downloads'));
 
   ipcMain.handle('get-waveform', async (_ev, projectId: string, _buckets: number) => {
     const project = engine.projects.get(projectId);
@@ -31,7 +51,7 @@ export function registerExportIpc(ctx: IpcContext): void {
     activeExports.set(req.projectId, ac);
     try {
       const result = await engine.exports.export(project, {
-        outputPath: req.outputPath,
+        outputPath: resolveExportOutputPath(req.outputPath),
         mode: req.mode,
         quality: req.quality,
         signal: ac.signal,

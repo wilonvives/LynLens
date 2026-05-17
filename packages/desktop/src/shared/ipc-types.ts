@@ -268,6 +268,12 @@ export interface IpcApi {
     outputPath: string,
     quality?: 'original' | 'high' | 'medium' | 'low'
   ): Promise<ExportResultDto>;
+  /**
+   * Absolute path to the OS Downloads dir. Renderer uses this so the
+   * ExportDialog can pre-fill a full path instead of a bare filename
+   * (which would silently land in process.cwd() — invisible to the user).
+   */
+  getDownloadsDir(): Promise<string>;
 
   /**
    * Generate per-platform copy in parallel. The returned setId is the
