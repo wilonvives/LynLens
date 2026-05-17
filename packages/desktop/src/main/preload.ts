@@ -43,6 +43,14 @@ const api: IpcApi = {
     ipcRenderer.invoke('add-highlight-variant-segment', pid, vid, hint),
   addBlankHighlightVariant: (pid, hint, title) =>
     ipcRenderer.invoke('add-blank-highlight-variant', pid, hint, title),
+  generatePackagingPlan: (pid, variantId, vibe) =>
+    ipcRenderer.invoke('generate-packaging-plan', pid, variantId, vibe),
+  getPackagingPlan: (pid, variantId) =>
+    ipcRenderer.invoke('get-packaging-plan', pid, variantId),
+  setPackagingPlan: (pid, plan) =>
+    ipcRenderer.invoke('set-packaging-plan', pid, plan),
+  clearPackagingPlan: (pid, variantId) =>
+    ipcRenderer.invoke('clear-packaging-plan', pid, variantId),
   deleteHighlightVariantSegment: (pid, vid, idx) =>
     ipcRenderer.invoke('delete-highlight-variant-segment', pid, vid, idx),
   exportHighlight: (pid, vid, outputPath, mode, quality) =>

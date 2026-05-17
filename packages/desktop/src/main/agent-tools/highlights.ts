@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import type { HighlightStyle } from '@lynlens/core';
+import type { HighlightStyle, PackagingVibe } from '@lynlens/core';
 import { type LynLensToolDef, okOrFail, text } from './types';
 
 /**
@@ -265,6 +265,122 @@ export const highlightTools: LynLensToolDef[] = [
         ok,
         `已把变体 ${args.variantId.slice(0, 8)} 的第 ${args.fromIdx + 1} 段移到第 ${args.toIdx + 1} 位`,
         '重排失败 —— 编号越界。'
+      );
+    },
+  },
+
+  {
+    name: 'generate_packaging_plan',
+    description:
+      'AI 一键包装:让 Claude 看字幕,自动决定每段字幕样式(默认白字粗黑,关键词黄色加大)+ 画面动作(默认 1.0,铺垫段 1.3,金句段 1.5 zoom)。variantId=null 时打包整片,传 id 时只打包该变体。vibe 控制风格强度(default/energetic/calm)。返回 plan 摘要;持久化到 .qcp。',
+    schema: {
+      projectId: z.string(),
+      variantId: z.string().nullable().default(null),
+      vibe: z.enum(['default', 'energetic', 'calm'] as const).default('default'),
+    },
+    handler: async (
+      args: { projectId: string; variantId: string | null; vibe: PackagingVibe },
+      engine
+    ) => {
+      const project = engine.projects.get(args.projectId);
+      if (!project.transcript || project.transcript.segments.length === 0) {
+        return {
+          content: [{ type: 'text', text: '请先生成字幕后再做一键包装。' }],
+          isError: true,
+        };
+      }
+      const {
+        buildPackagingSystemPrompt,
+        buildPackagingUserPrompt,
+        parsePackagingPlanResponse,
+        transcriptToPromptSegments,
+      } = await import('@lynlens/core');
+
+      // Mirror the IPC handler's transcript-filter logic so agent and UI
+      // see the same prompt context for the same (project, variantId).
+      const variant = args.variantId
+        ? project.findHighlightVariant(args.variantId)
+        : null;
+      if (args.variantId && !variant) {
+        return {
+          content: [{ type: 'text', text: `找不到高光变体: ${args.variantId}` }],
+          isError: true,
+        };
+      }
+      let promptSegments: ReturnType<typeof transcriptToPromptSegments>;
+      const segmentCount = project.transcript.segments.length;
+      if (variant) {
+        const indices: number[] = [];
+        project.transcript.segments.forEach((seg, i) => {
+          for (const v of variant.segments) {
+            if (seg.start >= v.start && seg.end <= v.end) {
+              indices.push(i);
+              break;
+            }
+          }
+        });
+        promptSegments = transcriptToPromptSegments(project.transcript, indices);
+      } else {
+        promptSegments = transcriptToPromptSegments(project.transcript);
+      }
+
+      const orientation: 'portrait' | 'landscape' | 'unknown' =
+        project.userOrientation ?? 'unknown';
+      const totalDurationSec = variant
+        ? variant.durationSeconds
+        : project.videoMeta.duration;
+      const title = variant?.title ?? '原片';
+
+      const { runOneShotViaCurrentProvider } = await import('../agent-dispatcher');
+      const sys = buildPackagingSystemPrompt();
+      const user = buildPackagingUserPrompt({
+        title,
+        totalDurationSec,
+        orientation,
+        segments: promptSegments,
+        vibe: args.vibe,
+      });
+      const { text: responseText, model } = await runOneShotViaCurrentProvider(sys, user);
+      const plan = parsePackagingPlanResponse(
+        responseText,
+        args.variantId,
+        segmentCount,
+        model
+      );
+      project.setPackagingPlan(plan);
+      const decoratedCount = plan.segments.length;
+      const totalSegs = variant ? variant.segments.length : segmentCount;
+      return text(
+        `生成包装方案: ${decoratedCount}/${totalSegs} 段加了特殊处理 (其余用默认样式)。\n` +
+          `defaults: ${JSON.stringify(plan.defaults.subtitle)}\n` +
+          plan.segments
+            .slice(0, 5)
+            .map(
+              (s) =>
+                `- seg ${s.segmentIdx}: ${s.camera?.zoom ? `zoom ${s.camera.zoom}x` : '无 zoom'}, ${s.subtitle?.wordEffects?.length ?? 0} 个词高亮`
+            )
+            .join('\n') +
+          (decoratedCount > 5 ? `\n... 还有 ${decoratedCount - 5} 段` : '')
+      );
+    },
+  },
+
+  {
+    name: 'clear_packaging_plan',
+    description: '丢弃某个变体(或整片,variantId=null)的包装方案,导出回到 ffmpeg 快速路径。',
+    schema: {
+      projectId: z.string(),
+      variantId: z.string().nullable().default(null),
+    },
+    handler: async (
+      args: { projectId: string; variantId: string | null },
+      engine
+    ) => {
+      const ok = engine.projects.get(args.projectId).clearPackagingPlan(args.variantId);
+      return okOrFail(
+        ok,
+        `已清除包装方案 (${args.variantId ?? '原片'})`,
+        '没有方案可清除。'
       );
     },
   },

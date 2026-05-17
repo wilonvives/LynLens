@@ -66,8 +66,12 @@ interface RawSegment {
  * failure, apply progressively riskier fixes (trailing commas, full-width
  * quotes) and try again. If all attempts fail, throw with a snippet of
  * the offending payload so the user can report it.
+ *
+ * Exported so other AI-output parsers (packaging-plan, future) can reuse
+ * the same tolerance logic — Claude's quirks are model-wide, not feature-
+ * specific.
  */
-function extractJsonObject(raw: string): unknown {
+export function extractJsonObject(raw: string): unknown {
   // 1. Strip markdown code fences (```json ... ``` or ``` ... ```).
   const fenceStripped = raw.replace(/```(?:json|JSON)?\s*/g, '').replace(/```/g, '');
   // 2. Trim to the outermost {...} span.

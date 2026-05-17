@@ -10,6 +10,7 @@ import {
 } from './diarization';
 import { getEffectiveDuration } from './ripple';
 import type { HighlightVariant } from './highlight-parser';
+import type { PackagingPlan } from './packaging-plan';
 import { applyCorrectionsToText, isPathologicalCorrection } from './learning-memory';
 import { fingerprintTranscript, hashCutRanges } from './variant-status';
 import type {
@@ -73,6 +74,16 @@ export class Project {
    */
   highlightVariants: HighlightVariant[] = [];
 
+  /**
+   * AI-generated packaging plans, keyed by the variant they target.
+   * The sentinel key `_root` is used for whole-video packaging (no
+   * variant selected). At most one plan per key — re-running
+   * `generate_packaging_plan` for the same key overwrites.
+   *
+   * Plans persist to .qcp so re-opening a project restores them.
+   */
+  packagingPlans: Record<string, PackagingPlan> = {};
+
   constructor(handle: ProjectHandle, eventBus: EventBus) {
     this.id = handle.projectId;
     this.projectPath = handle.projectPath;
@@ -108,6 +119,16 @@ export class Project {
           sourceSnapshot: v.sourceSnapshot,
         }))
       : [];
+    // Packaging plans. Legacy .qcp files lack this field — empty object.
+    // Each entry is a self-contained PackagingPlan record; we copy through
+    // wholesale since the serialised shape mirrors the runtime shape.
+    // types.ts deliberately stores them as Record<string, unknown> to keep
+    // types.ts a leaf module (no cycle with packaging-plan.ts); cast at
+    // this boundary, validate downstream if/when a plan is consumed.
+    this.packagingPlans =
+      typeof handle.data.packagingPlans === 'object' && handle.data.packagingPlans !== null
+        ? ({ ...handle.data.packagingPlans } as Record<string, PackagingPlan>)
+        : {};
     this.createdAt = handle.data.createdAt;
     this.modifiedAt = handle.data.modifiedAt;
     this.eventBus = eventBus;
@@ -670,6 +691,12 @@ export class Project {
               sourceSnapshot: v.sourceSnapshot,
             }))
           : undefined,
+      // Packaging plans. Same omit-when-empty pattern so legacy files
+      // don't grow a noisy `"packagingPlans": {}` on re-save.
+      packagingPlans:
+        Object.keys(this.packagingPlans).length > 0
+          ? { ...this.packagingPlans }
+          : undefined,
       createdAt: this.createdAt,
       modifiedAt: new Date().toISOString(),
     };
@@ -835,6 +862,55 @@ export class Project {
     this.highlightVariants = [...this.highlightVariants, next];
     this.modifiedAt = new Date().toISOString();
     return next;
+  }
+
+  // ---------- Packaging plans ----------
+
+  /**
+   * Storage key for a packaging plan. `variantId` keys per-variant plans;
+   * the literal string `_root` keys the whole-video plan (no variant
+   * selected). Centralised here so callers don't reinvent the sentinel.
+   */
+  private packagingKey(variantId: string | null): string {
+    return variantId ?? '_root';
+  }
+
+  /**
+   * Read the packaging plan for a variant (or `null` for whole-video).
+   * Returns undefined when no plan has been generated yet — callers
+   * should treat that as "no packaging, export the plain variant via
+   * the ffmpeg fast path".
+   */
+  getPackagingPlan(variantId: string | null): PackagingPlan | undefined {
+    return this.packagingPlans[this.packagingKey(variantId)];
+  }
+
+  /**
+   * Store a packaging plan, overwriting any existing one for the same
+   * variant. Callers (IPC handler / agent tool) are responsible for
+   * validating the plan first (use parsePackagingPlanResponse).
+   */
+  setPackagingPlan(plan: PackagingPlan): void {
+    this.packagingPlans = {
+      ...this.packagingPlans,
+      [this.packagingKey(plan.variantId)]: plan,
+    };
+    this.modifiedAt = new Date().toISOString();
+  }
+
+  /**
+   * Drop a packaging plan. After this, export of the affected variant
+   * reverts to the ffmpeg fast path (no Remotion). Returns true when a
+   * plan existed and was removed.
+   */
+  clearPackagingPlan(variantId: string | null): boolean {
+    const key = this.packagingKey(variantId);
+    if (!(key in this.packagingPlans)) return false;
+    const next = { ...this.packagingPlans };
+    delete next[key];
+    this.packagingPlans = next;
+    this.modifiedAt = new Date().toISOString();
+    return true;
   }
 
   /** Flip a variant's pinned state. Returns false if the id wasn't found. */

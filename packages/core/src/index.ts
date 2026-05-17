@@ -62,9 +62,25 @@ export {
   type HighlightStyle,
 } from './highlight-prompts';
 export {
+  extractJsonObject,
   parseHighlightResponse,
   type HighlightVariant,
 } from './highlight-parser';
+export {
+  DEFAULT_SUBTITLE_STYLE,
+  buildPackagingSystemPrompt,
+  buildPackagingUserPrompt,
+  emptyPackagingPlan,
+  parsePackagingPlanResponse,
+  transcriptToPromptSegments,
+  type BrandWatermark,
+  type CameraMove,
+  type PackagingPlan,
+  type PackagingSegment,
+  type PackagingVibe,
+  type SubtitleStyle,
+  type WordEffect,
+} from './packaging-plan';
 export {
   fingerprintTranscript,
   getVariantStatus,

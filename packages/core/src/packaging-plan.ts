@@ -1,0 +1,444 @@
+import { v4 as uuid } from 'uuid';
+import { extractJsonObject } from './highlight-parser';
+import type { Transcript } from './types';
+
+/**
+ * AI-driven 一键包装 / video packaging plan.
+ *
+ * Inspired by 开拍 Kaipai's auto-packaging workflow: Claude reads the
+ * transcript of a highlight variant (or the whole video) and outputs a
+ * structured plan that says "this segment's subtitle should look like X,
+ * this segment's camera should zoom Y, the brand watermark goes in the
+ * bottom-right".
+ *
+ * The plan is **renderer-agnostic** by design — same JSON drives Remotion
+ * preview AND export. A future v0.7+ migration to HyperFrames would only
+ * swap the renderer adapter, not this schema, the AI prompts, or the UI.
+ *
+ * v0.5 (MVP) implements just `camera.zoom` + `subtitle.wordEffects.highlight/size`
+ * + `subtitle` style overrides. The schema includes v0.6+ placeholder
+ * fields (`zoomFrom/zoomTo` for Ken Burns, `effect: 'pop-in'` for word
+ * animations, `transitionToNext`) so renderer additions don't require
+ * data model changes.
+ */
+
+// ---------- Schema types ----------
+
+export interface PackagingPlan {
+  id: string;
+  /**
+   * The highlight variant this plan packages. null when packaging the
+   * whole un-varianted source (i.e. you've cut a video and want to
+   * package the whole rippled output, no high-light pick).
+   */
+  variantId: string | null;
+  /**
+   * Permanent overlay (channel logo / handle) burned on every frame.
+   * v0.5 renders a static PNG; v0.6+ may support animated PNGs / Lottie.
+   */
+  brandWatermark?: BrandWatermark;
+  /** Project-level default styles. Per-segment values override these. */
+  defaults: {
+    subtitle?: SubtitleStyle;
+  };
+  /**
+   * Per-segment recipe. Segments NOT listed here get the defaults applied
+   * with no special effects — saves payload size and lets Claude focus
+   * on the segments that matter (金句 / punchline / 钩子).
+   */
+  segments: PackagingSegment[];
+  createdAt: string;
+  /** Which model emitted this plan, for debugging / future memory. */
+  model?: string;
+}
+
+export interface BrandWatermark {
+  /** Absolute path to PNG (with transparency) or base64 data URI. */
+  image: string;
+  position: 'top-left' | 'top-right' | 'bottom-left' | 'bottom-right';
+  /** Width as fraction of video width, 0..1. */
+  size: number;
+  /** 0..1. */
+  opacity: number;
+}
+
+export interface SubtitleStyle {
+  /** CSS font-family. Default: 'PingFang SC Heavy'. */
+  font?: string;
+  /** Font size in PX at 1080p reference height. */
+  size?: number;
+  /** Foreground hex color. */
+  color?: string;
+  /** Stroke / outline (for readability over busy backgrounds). */
+  outline?: { color: string; width: number };
+  /** Solid background behind the text (alternative to outline). */
+  bgColor?: string;
+  position?: 'bottom' | 'center' | 'top';
+  /** v0.5: only 'none'. v0.6+: 'fade-in' / 'typewriter'. */
+  animation?: 'none' | 'fade-in' | 'typewriter';
+}
+
+export interface PackagingSegment {
+  /** Index into the variant's segments[] (or transcript's segments[]). */
+  segmentIdx: number;
+  subtitle?: SubtitleStyle & {
+    /**
+     * Word-level overrides — make 1-2 punchline words pop visually.
+     * v0.5 renders `highlight` + `size`. `effect` is schema placeholder
+     * for v0.6+ (renderer ignores it for now).
+     */
+    wordEffects?: WordEffect[];
+  };
+  camera?: CameraMove;
+  /** v0.6+ placeholder, renderer ignores in v0.5. */
+  transitionToNext?: { type: 'fade' | 'dissolve' | 'wipe'; duration: number };
+  /** v0.6+ placeholder, renderer ignores in v0.5. */
+  textOverlay?: {
+    text: string;
+    appearAt: number;
+    duration: number;
+  };
+}
+
+export interface WordEffect {
+  /** Index into the segment's whitespace-tokenised text. */
+  wordIdx: number;
+  /** Override foreground color. */
+  highlight?: string;
+  /** Override font size. */
+  size?: number;
+  /** v0.6+ placeholder. */
+  effect?: 'pop-in' | 'shake';
+}
+
+export interface CameraMove {
+  /** Static zoom factor. 1.0 = original framing. v0.5 supports this. */
+  zoom?: number;
+  /** Crop center, 0..1 normalised. Default { x: 0.5, y: 0.5 }. */
+  focus?: { x: number; y: number };
+  // ↓ v0.6+ Ken Burns animation. Renderer ignores in v0.5.
+  zoomFrom?: number;
+  zoomTo?: number;
+  panFrom?: { x: number; y: number };
+  panTo?: { x: number; y: number };
+  easing?: 'linear' | 'ease-in-out';
+}
+
+/**
+ * Vibe knob the user can set when triggering 一键包装. Steers Claude
+ * toward different packaging styles for the same content.
+ */
+export type PackagingVibe = 'default' | 'energetic' | 'calm';
+
+// ---------- Default values ----------
+
+export const DEFAULT_SUBTITLE_STYLE: SubtitleStyle = {
+  font: 'PingFang SC Heavy',
+  size: 56,
+  color: '#ffffff',
+  outline: { color: '#000000', width: 3 },
+  position: 'bottom',
+  animation: 'none',
+};
+
+/**
+ * Reasonable defaults for a fresh PackagingPlan when the user wants an
+ * empty plan to fill in manually (without invoking Claude).
+ */
+export function emptyPackagingPlan(variantId: string | null): PackagingPlan {
+  return {
+    id: `pkg_${uuid().slice(0, 8)}`,
+    variantId,
+    defaults: { subtitle: { ...DEFAULT_SUBTITLE_STYLE } },
+    segments: [],
+    createdAt: new Date().toISOString(),
+  };
+}
+
+// ---------- AI prompt builders ----------
+
+const VIBE_DESC: Record<PackagingVibe, string> = {
+  default:
+    '通用风格,情绪适中,关键词高亮 + 金句段适度 zoom。适合大多数内容。',
+  energetic:
+    '高能风格,关键词更密集高亮,情绪段大胆 zoom (1.5x),节奏紧凑。适合钩子段、热点话题、爆点视频。',
+  calm:
+    '冷静风格,关键词少而精,zoom 克制(最多 1.3x),让画面呼吸。适合科普、深度内容、长解释。',
+};
+
+/**
+ * System prompt — defines Claude's role, the schema, and strict output
+ * format rules. Mirrors highlight-prompts.ts's pattern.
+ */
+export function buildPackagingSystemPrompt(): string {
+  return `你是短视频包装设计师,类似开拍 Kaipai 的自动包装功能。
+
+你会看到一份字幕(每段有 idx/start/end/text)和视频元数据。你的任务:**为每段判断字幕怎么呈现 + 画面怎么放大聚焦**,输出 PackagingPlan JSON。
+
+判断原则:
+1. **情绪曲线分析** — 开场 hook? 中段铺垫? 高潮金句? 收尾?
+2. **关键词挑选** — 每段最多挑 1-2 个最该被强调的词(数字 / 人名 / 情绪词 / 动词)。不是所有段都要高亮,平铺直叙段就不挑。
+3. **画面动作判断** — 默认 zoom 1.0,情绪铺垫段 1.3,金句段 1.5。focus 默认 0.5/0.5,如果是说话人头部强调可以 0.5/0.4。
+4. **节奏把控** — 开场前 3-5 秒不 zoom(让用户先看清场景),中段慢起,金句段拉近。
+
+**只对需要特殊处理的段输出 segments 条目**。不需要 zoom 也没关键词的段,不要列进 segments,会自动用 defaults。这样输出更精简。
+
+JSON 输出格式硬性要求(违反会解析失败):
+A. 只输出 JSON 对象,前后不要任何文字,不要 \`\`\`json 代码块围栏
+B. 字符串分隔符必须是 ASCII 双引号 "(不是中文引号 " " 或 ' ')
+C. 字符串内部如果出现双引号,必须用反斜杠转义: \\"
+D. 不要尾逗号: 最后一个数组元素 / 对象属性后面不加逗号
+E. 不要 JSON 注释 (// 或 /* */)
+
+输出格式(严格照搬,只改值。\`wordIdx\` 是从 0 开始的词索引,词之间用空格分割):
+{
+  "defaults": {
+    "subtitle": {
+      "font": "PingFang SC Heavy",
+      "size": 56,
+      "color": "#ffffff",
+      "outline": { "color": "#000000", "width": 3 },
+      "position": "bottom"
+    }
+  },
+  "segments": [
+    {
+      "segmentIdx": 4,
+      "subtitle": {
+        "wordEffects": [
+          { "wordIdx": 1, "highlight": "#ffd700", "size": 68 }
+        ]
+      },
+      "camera": { "zoom": 1.3 }
+    },
+    {
+      "segmentIdx": 12,
+      "subtitle": {
+        "wordEffects": [
+          { "wordIdx": 1, "highlight": "#ffd700", "size": 72 },
+          { "wordIdx": 2, "highlight": "#ffd700", "size": 72 }
+        ]
+      },
+      "camera": { "zoom": 1.5, "focus": { "x": 0.5, "y": 0.4 } }
+    }
+  ]
+}`;
+}
+
+/**
+ * User prompt — the actual content (transcript segments + metadata + vibe).
+ */
+export function buildPackagingUserPrompt(opts: {
+  title: string;
+  totalDurationSec: number;
+  orientation: 'portrait' | 'landscape' | 'unknown';
+  segments: Array<{ idx: number; start: number; end: number; text: string }>;
+  vibe: PackagingVibe;
+}): string {
+  const transcriptLines = opts.segments.map((s) => {
+    // Show wordIdx hints so Claude can match wordIdx to actual tokens
+    // (we tokenise on whitespace; 中文 is split per-char for now since
+    // the subtitle renderer does too — see Subtitle.tsx).
+    const words = s.text.split(/\s+/);
+    const wordsAnnotated = words
+      .map((w, i) => `[${i}]${w}`)
+      .join(' ');
+    return `seg ${s.idx} (${s.start.toFixed(1)}-${s.end.toFixed(1)}s): ${wordsAnnotated}`;
+  });
+
+  return `视频标题: ${opts.title}
+总时长: ${opts.totalDurationSec.toFixed(1)} 秒
+方向: ${opts.orientation === 'portrait' ? '竖屏 9:16' : opts.orientation === 'landscape' ? '横屏 16:9' : '未知'}
+vibe: ${opts.vibe} — ${VIBE_DESC[opts.vibe]}
+
+字幕(每段前缀 seg N,词前缀 [wordIdx]):
+${transcriptLines.join('\n')}
+
+请输出 PackagingPlan JSON。记住:**只列需要特殊处理的段**,其他段自动用 defaults。`;
+}
+
+// ---------- Parser ----------
+
+/**
+ * Parse Claude's PackagingPlan response into a validated, sanitised
+ * PackagingPlan record. Tolerant of model quirks via extractJsonObject;
+ * defensive about types (every field validated, bad values dropped not
+ * coerced into nonsense).
+ *
+ * @throws when the response has no parseable JSON, or no valid segments.
+ */
+export function parsePackagingPlanResponse(
+  raw: string,
+  variantId: string | null,
+  /** Used to drop segmentIdx values that are out of range. */
+  segmentCount: number,
+  model?: string
+): PackagingPlan {
+  const payload = extractJsonObject(raw) as Record<string, unknown>;
+  const defaultSubtitle = sanitiseSubtitleStyle(
+    (payload.defaults as Record<string, unknown> | undefined)?.subtitle
+  ) ?? { ...DEFAULT_SUBTITLE_STYLE };
+  const brandWatermark = sanitiseBrandWatermark(payload.brandWatermark);
+
+  const rawSegments = Array.isArray(payload.segments) ? payload.segments : [];
+  const segments: PackagingSegment[] = [];
+  for (const rawSeg of rawSegments) {
+    if (typeof rawSeg !== 'object' || rawSeg === null) continue;
+    const seg = rawSeg as Record<string, unknown>;
+    const idx = typeof seg.segmentIdx === 'number' ? Math.floor(seg.segmentIdx) : -1;
+    if (idx < 0 || idx >= segmentCount) continue;
+    const subtitle = sanitiseSubtitleWithWordEffects(seg.subtitle);
+    const camera = sanitiseCamera(seg.camera);
+    if (!subtitle && !camera) continue; // nothing meaningful in this entry
+    const out: PackagingSegment = { segmentIdx: idx };
+    if (subtitle) out.subtitle = subtitle;
+    if (camera) out.camera = camera;
+    segments.push(out);
+  }
+
+  return {
+    id: `pkg_${uuid().slice(0, 8)}`,
+    variantId,
+    brandWatermark,
+    defaults: { subtitle: defaultSubtitle },
+    segments,
+    createdAt: new Date().toISOString(),
+    model,
+  };
+}
+
+// ---------- Sanitisers (defensive coercion) ----------
+
+function sanitiseSubtitleStyle(input: unknown): SubtitleStyle | null {
+  if (typeof input !== 'object' || input === null) return null;
+  const v = input as Record<string, unknown>;
+  const out: SubtitleStyle = {};
+  if (typeof v.font === 'string') out.font = v.font;
+  if (typeof v.size === 'number' && v.size > 0 && v.size < 500) out.size = v.size;
+  if (typeof v.color === 'string' && /^#[0-9a-fA-F]{3,8}$/.test(v.color)) {
+    out.color = v.color;
+  }
+  if (typeof v.outline === 'object' && v.outline !== null) {
+    const o = v.outline as Record<string, unknown>;
+    if (
+      typeof o.color === 'string' &&
+      /^#[0-9a-fA-F]{3,8}$/.test(o.color) &&
+      typeof o.width === 'number' &&
+      o.width >= 0 &&
+      o.width < 50
+    ) {
+      out.outline = { color: o.color, width: o.width };
+    }
+  }
+  if (typeof v.bgColor === 'string' && /^#[0-9a-fA-F]{3,8}$/.test(v.bgColor)) {
+    out.bgColor = v.bgColor;
+  }
+  if (v.position === 'bottom' || v.position === 'center' || v.position === 'top') {
+    out.position = v.position;
+  }
+  if (v.animation === 'none' || v.animation === 'fade-in' || v.animation === 'typewriter') {
+    out.animation = v.animation;
+  }
+  return Object.keys(out).length > 0 ? out : null;
+}
+
+function sanitiseSubtitleWithWordEffects(
+  input: unknown
+): (SubtitleStyle & { wordEffects?: WordEffect[] }) | null {
+  if (typeof input !== 'object' || input === null) return null;
+  const base = sanitiseSubtitleStyle(input) ?? {};
+  const v = input as Record<string, unknown>;
+  const wordEffects: WordEffect[] = [];
+  if (Array.isArray(v.wordEffects)) {
+    for (const w of v.wordEffects) {
+      if (typeof w !== 'object' || w === null) continue;
+      const we = w as Record<string, unknown>;
+      const wordIdx = typeof we.wordIdx === 'number' ? Math.floor(we.wordIdx) : -1;
+      if (wordIdx < 0) continue;
+      const effect: WordEffect = { wordIdx };
+      if (typeof we.highlight === 'string' && /^#[0-9a-fA-F]{3,8}$/.test(we.highlight)) {
+        effect.highlight = we.highlight;
+      }
+      if (typeof we.size === 'number' && we.size > 0 && we.size < 500) {
+        effect.size = we.size;
+      }
+      if (we.effect === 'pop-in' || we.effect === 'shake') {
+        effect.effect = we.effect;
+      }
+      // Only keep if at least one override present.
+      if (effect.highlight || effect.size || effect.effect) wordEffects.push(effect);
+    }
+  }
+  if (wordEffects.length > 0) {
+    return { ...base, wordEffects };
+  }
+  return Object.keys(base).length > 0 ? base : null;
+}
+
+function sanitiseCamera(input: unknown): CameraMove | null {
+  if (typeof input !== 'object' || input === null) return null;
+  const v = input as Record<string, unknown>;
+  const out: CameraMove = {};
+  if (typeof v.zoom === 'number' && v.zoom >= 0.5 && v.zoom <= 3.0) {
+    out.zoom = v.zoom;
+  }
+  if (typeof v.focus === 'object' && v.focus !== null) {
+    const f = v.focus as Record<string, unknown>;
+    if (
+      typeof f.x === 'number' &&
+      typeof f.y === 'number' &&
+      f.x >= 0 && f.x <= 1 && f.y >= 0 && f.y <= 1
+    ) {
+      out.focus = { x: f.x, y: f.y };
+    }
+  }
+  // v0.6+ placeholders — pass through if shape is right, renderer ignores.
+  if (typeof v.zoomFrom === 'number') out.zoomFrom = v.zoomFrom;
+  if (typeof v.zoomTo === 'number') out.zoomTo = v.zoomTo;
+  return Object.keys(out).length > 0 ? out : null;
+}
+
+function sanitiseBrandWatermark(input: unknown): BrandWatermark | undefined {
+  if (typeof input !== 'object' || input === null) return undefined;
+  const v = input as Record<string, unknown>;
+  if (typeof v.image !== 'string' || !v.image) return undefined;
+  const pos = v.position;
+  if (
+    pos !== 'top-left' &&
+    pos !== 'top-right' &&
+    pos !== 'bottom-left' &&
+    pos !== 'bottom-right'
+  ) {
+    return undefined;
+  }
+  const size = typeof v.size === 'number' && v.size > 0 && v.size < 1 ? v.size : 0.12;
+  const opacity =
+    typeof v.opacity === 'number' && v.opacity > 0 && v.opacity <= 1 ? v.opacity : 1;
+  return { image: v.image, position: pos, size, opacity };
+}
+
+// ---------- Convenience: build prompt context from a Transcript ----------
+
+/**
+ * Turn a Transcript (+ optional segment-index filter for variants) into
+ * the shape buildPackagingUserPrompt expects. Variants pass the indices
+ * of segments inside the variant; whole-video packaging passes undefined
+ * to use all segments.
+ */
+export function transcriptToPromptSegments(
+  transcript: Transcript,
+  segmentIndices?: readonly number[]
+): Array<{ idx: number; start: number; end: number; text: string }> {
+  const segs = segmentIndices
+    ? segmentIndices
+        .map((i) => transcript.segments[i])
+        .filter((s): s is NonNullable<typeof s> => s != null)
+        .map((s, i) => ({ ...s, _idx: segmentIndices[i] }))
+    : transcript.segments.map((s, i) => ({ ...s, _idx: i }));
+  return segs.map((s) => ({
+    idx: s._idx,
+    start: s.start,
+    end: s.end,
+    text: s.text,
+  }));
+}

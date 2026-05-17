@@ -47,6 +47,8 @@ const TOOL_LABELS: Record<string, string> = {
   'mcp__lynlens__update_highlight_variant_segment': '调整高光段落',
   'mcp__lynlens__add_highlight_variant_segment': '添加高光段落',
   'mcp__lynlens__add_blank_highlight_variant': '新建自定义高光',
+  'mcp__lynlens__generate_packaging_plan': '生成包装方案',
+  'mcp__lynlens__clear_packaging_plan': '清除包装方案',
   'mcp__lynlens__delete_highlight_variant_segment': '删除高光段落',
   'mcp__lynlens__reorder_highlight_variant_segment': '重排高光段落',
   'mcp__lynlens__reject_segment': '拒绝段',

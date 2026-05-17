@@ -131,6 +131,14 @@ export interface QcpProject {
    * so types.ts stays a leaf (no highlight-parser import / circular dep).
    */
   highlightVariants?: HighlightVariantData[];
+  /**
+   * AI-generated packaging plans (v0.5+ 一键包装). Keyed by `variantId`
+   * the plan targets, or the sentinel `_root` for whole-video packaging.
+   * Values are PackagingPlan records (see core/packaging-plan.ts). We use
+   * `unknown` here to keep types.ts a leaf module — runtime project
+   * manager reads/writes via the typed shape from packaging-plan.ts.
+   */
+  packagingPlans?: Record<string, unknown>;
   socialCopies?: SocialCopySetData[];
   /** Free-form note the user keeps around to flavour all copy generations. */
   socialStyleNote?: string | null;

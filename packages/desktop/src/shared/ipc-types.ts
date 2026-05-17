@@ -4,6 +4,8 @@ import type {
   HighlightStyle,
   HighlightVariant,
   LynLensEvent,
+  PackagingPlan,
+  PackagingVibe,
   QcpProject,
   Segment,
   SocialCopySetData,
@@ -189,6 +191,31 @@ export interface IpcApi {
     hintSec: number | null,
     title?: string
   ): Promise<HighlightVariant>;
+
+  /**
+   * AI-driven 一键包装 — Claude reads the variant (or whole transcript
+   * when variantId is null), outputs a PackagingPlan describing per-
+   * segment subtitle styling + camera moves. Persisted to .qcp; the
+   * renderer uses it to drive the Remotion preview + export.
+   * `vibe` steers the style (default / energetic / calm).
+   */
+  generatePackagingPlan(
+    projectId: string,
+    variantId: string | null,
+    vibe?: PackagingVibe
+  ): Promise<PackagingPlan>;
+  /** Read the saved packaging plan for a variant (or root). */
+  getPackagingPlan(
+    projectId: string,
+    variantId: string | null
+  ): Promise<PackagingPlan | null>;
+  /** Replace the plan — used by micro-edit panel. */
+  setPackagingPlan(projectId: string, plan: PackagingPlan): Promise<void>;
+  /** Drop the plan; export reverts to ffmpeg fast path. */
+  clearPackagingPlan(
+    projectId: string,
+    variantId: string | null
+  ): Promise<boolean>;
   /**
    * Remove one segment from a variant. Refuses to delete the last remaining
    * segment (variant would be empty). Returns false on refusal / failure.

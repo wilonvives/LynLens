@@ -1,9 +1,18 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import type { HighlightStyle, HighlightVariant, Range, VariantStatus } from '@lynlens/core';
+import type {
+  HighlightStyle,
+  HighlightVariant,
+  PackagingPlan,
+  PackagingVibe,
+  Range,
+  VariantStatus,
+} from '@lynlens/core';
 import { getVariantStatus, sourceToEffective, effectiveToSource } from './core-browser';
 import { ExportDialog } from './ExportDialog';
 import { GenerateHighlightDialog } from './GenerateHighlightDialog';
 import { HighlightTimeline } from './HighlightTimeline';
+import { PackagingPreview } from './remotion/PackagingPreview';
+import { PackagingMicroEditor } from './components/PackagingMicroEditor';
 import { VariantCard } from './VariantCard';
 import { Resizer } from './Resizer';
 import { useStore } from './store';
@@ -91,6 +100,7 @@ export function HighlightPanel({
 }: Props) {
   const projectId = useStore((s) => s.projectId);
   const videoUrl = useStore((s) => s.videoUrl);
+  const videoMeta = useStore((s) => s.videoMeta);
   const transcript = useStore((s) => s.transcript);
   const segments = useStore((s) => s.segments);
   // Derive cut ranges the same way App.tsx does (status='cut' segments).
@@ -108,6 +118,17 @@ export function HighlightPanel({
   const [showDialog, setShowDialog] = useState(false);
   /** The variant currently shown in the ExportDialog. null = dialog closed. */
   const [exportingVariant, setExportingVariant] = useState<HighlightVariant | null>(null);
+  /**
+   * AI-driven 一键包装 state (v0.5):
+   *   - packagingPlan : current PackagingPlan for the selected variant
+   *     (or root). Drives the PackagingPreview render — when non-null,
+   *     the player area shows the Remotion preview instead of `<video>`.
+   *   - generatingPlan : true while AI is producing a plan (loading).
+   *   - showMicroEditor : whether the micro-edit panel is open for tweaks.
+   */
+  const [packagingPlan, setPackagingPlan] = useState<PackagingPlan | null>(null);
+  const [generatingPlan, setGeneratingPlan] = useState(false);
+  const [showMicroEditor, setShowMicroEditor] = useState(false);
   const [generating, setGenerating] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -228,6 +249,25 @@ export function HighlightPanel({
       cancelled = true;
     };
   }, [projectId]);
+
+  // Hydrate the packaging plan for the currently-selected variant (or
+  // root). Switches plan when user clicks a different variant card; if
+  // no plan exists for that variant the player falls back to plain video.
+  useEffect(() => {
+    if (!projectId) return;
+    let cancelled = false;
+    void window.lynlens
+      .getPackagingPlan(projectId, selectedVariantId ?? null)
+      .then((plan) => {
+        if (!cancelled) setPackagingPlan(plan);
+      })
+      .catch(() => {
+        if (!cancelled) setPackagingPlan(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [projectId, selectedVariantId]);
 
   // RAF loop: keep `videoCurrentTime` + `elapsed` in sync, and when
   // `previewMode` is on, hop between variant segments so playback feels
@@ -467,6 +507,63 @@ export function HighlightPanel({
         >
           ✋ 自定义
         </button>
+        {/* ✨ 一键包装 — AI 看字幕,自动决定字幕样式 + 画面动作。生成方案后
+            播放器自动切到 Remotion preview 展示效果。再点重新生成,或点
+            「⚙ 微调」改字幕色 / zoom 倍数,或点「🗑 清除包装」回到原片。 */}
+        <button
+          onClick={async () => {
+            if (!projectId) return;
+            setGeneratingPlan(true);
+            try {
+              const plan = await window.lynlens.generatePackagingPlan(
+                projectId,
+                selectedVariantId,
+                'default'
+              );
+              setPackagingPlan(plan);
+            } catch (err) {
+              alert(`一键包装失败: ${(err as Error).message}`);
+            } finally {
+              setGeneratingPlan(false);
+            }
+          }}
+          disabled={generating || generatingPlan || !projectId || !transcript}
+          title="AI 看字幕,自动决定字幕高亮 + 画面 zoom。生成后实时预览,可微调或重生成。"
+        >
+          {generatingPlan
+            ? '✨ 包装中...'
+            : packagingPlan
+              ? '✨ 重新包装'
+              : '✨ 一键包装'}
+        </button>
+        {packagingPlan && (
+          <>
+            <button
+              onClick={() => setShowMicroEditor(true)}
+              title="改字幕颜色 / zoom 倍数 / 关键词高亮"
+            >
+              ⚙ 微调
+            </button>
+            <button
+              onClick={async () => {
+                if (!projectId) return;
+                if (!confirm('清除当前的包装方案?导出会回到原片样式。')) return;
+                try {
+                  await window.lynlens.clearPackagingPlan(
+                    projectId,
+                    selectedVariantId
+                  );
+                  setPackagingPlan(null);
+                } catch (err) {
+                  alert(`清除失败: ${(err as Error).message}`);
+                }
+              }}
+              title="放弃包装方案,导出回到原片样式"
+            >
+              🗑 清除包装
+            </button>
+          </>
+        )}
         <button
           className="primary"
           onClick={() => setShowDialog(true)}
@@ -498,7 +595,44 @@ export function HighlightPanel({
               player. */}
           <div className="highlight-player-dock" ref={playerWrapRef}>
             <div className="highlight-player-video">
-              {videoUrl ? (
+              {/* When a packaging plan is loaded for the current variant
+                  (or root), swap the native `<video>` for a Remotion
+                  Player rendering the PackagingComposition. Same React
+                  tree drives preview + export → WYSIWYG by construction.
+                  The LynLens transport bar is hidden in this mode since
+                  Player has its own controls — keeping both would just
+                  confuse the user (they wouldn't sync). */}
+              {videoUrl && videoMeta && packagingPlan ? (
+                <PackagingPreview
+                  videoPath={videoUrl.replace(/^lynlens-media:\/\//, '')}
+                  segments={
+                    selectedVariant
+                      ? selectedVariant.segments.map((s) => {
+                          // Map variant segment → its enclosed transcript text
+                          // (find segments inside, join — best-effort for v0.5).
+                          const inside = transcript?.segments.filter(
+                            (t) => t.start >= s.start && t.end <= s.end
+                          ) ?? [];
+                          return {
+                            start: s.start,
+                            end: s.end,
+                            text: inside.map((t) => t.text).join(' '),
+                          };
+                        })
+                      : transcript
+                          ? transcript.segments.map((t) => ({
+                              start: t.start,
+                              end: t.end,
+                              text: t.text,
+                            }))
+                          : []
+                  }
+                  plan={packagingPlan}
+                  width={videoMeta.width}
+                  height={videoMeta.height}
+                  fps={videoMeta.fps}
+                />
+              ) : videoUrl ? (
                 <video
                   ref={videoRef}
                   src={videoUrl}
@@ -513,9 +647,9 @@ export function HighlightPanel({
               )}
               {/* Center play overlay when paused — standard "click to
                   resume" affordance. Pointer-events:none so the underlying
-                  <video onClick> still toggles. Shown whether a variant is
-                  selected or not — full-video playback works the same. */}
-              {!isPlaying && videoUrl && (
+                  <video onClick> still toggles. Hidden in packaging mode
+                  since Remotion Player has its own play affordance. */}
+              {!isPlaying && videoUrl && !packagingPlan && (
                 <div className="highlight-player-play-overlay">▶</div>
               )}
             </div>
@@ -832,6 +966,37 @@ export function HighlightPanel({
           effectiveDuration={effectiveDuration}
           onCancel={() => setShowDialog(false)}
           onConfirm={handleGenerate}
+        />
+      )}
+
+      {/* Micro-edit panel for the packaging plan. v0.5: per-segment subtitle
+          color + zoom slider. Saves via set-packaging-plan IPC. */}
+      {showMicroEditor && packagingPlan && projectId && (
+        <PackagingMicroEditor
+          plan={packagingPlan}
+          segmentLabels={
+            selectedVariant
+              ? selectedVariant.segments.map((s, i) => ({
+                  idx: i,
+                  text: transcript?.segments
+                    .filter((t) => t.start >= s.start && t.end <= s.end)
+                    .map((t) => t.text)
+                    .join(' ') ?? '',
+                }))
+              : transcript
+                ? transcript.segments.map((t, i) => ({ idx: i, text: t.text }))
+                : []
+          }
+          onCancel={() => setShowMicroEditor(false)}
+          onSave={async (next) => {
+            try {
+              await window.lynlens.setPackagingPlan(projectId, next);
+              setPackagingPlan(next);
+              setShowMicroEditor(false);
+            } catch (err) {
+              alert(`保存失败: ${(err as Error).message}`);
+            }
+          }}
         />
       )}
 
