@@ -193,34 +193,10 @@ function escapeAssText(s: string): string {
     .replace(/\r?\n/g, '\\N');
 }
 
-/**
- * Build a per-line style override block — used when this segment's
- * subtitle recipe differs from the default style (e.g. AI made one
- * segment red on yellow). Returns "" if no overrides needed.
- */
-function styleOverrideBlock(
-  segStyle: SubtitleStyle | undefined,
-  defaultStyle: SubtitleStyle
-): string {
-  if (!segStyle) return '';
-  const tags: string[] = [];
-  if (segStyle.color && segStyle.color !== defaultStyle.color) {
-    tags.push(`\\c${hexToAssColor(segStyle.color)}`);
-  }
-  if (segStyle.size && segStyle.size !== defaultStyle.size) {
-    tags.push(`\\fs${Math.round(clampSize(segStyle.size))}`);
-  }
-  if (segStyle.outline && segStyle.outline.color !== defaultStyle.outline?.color) {
-    tags.push(`\\3c${hexToAssColor(segStyle.outline.color)}`);
-  }
-  if (segStyle.outline && segStyle.outline.width !== defaultStyle.outline?.width) {
-    tags.push(`\\bord${segStyle.outline.width.toFixed(1)}`);
-  }
-  if (segStyle.position && segStyle.position !== defaultStyle.position) {
-    tags.push(`\\an${alignFor(segStyle.position)}`);
-  }
-  return tags.length > 0 ? `{${tags.join('')}}` : '';
-}
+// styleOverrideBlock removed: segment-level whole-line overrides are no
+// longer honored at generation time (only wordEffects survive). If a
+// future feature needs them back, restore from git history (commit
+// before this comment) and re-thread into generatePackagingAss.
 
 /**
  * Generate the complete ASS file content for a packaged variant.
@@ -275,14 +251,17 @@ export function generatePackagingAss(opts: AssGeneratorOptions): string {
     const slices = clipRangeToPlaylist(seg.start, seg.end, playlist);
     if (slices.length === 0) return;
 
+    // Only wordEffects from the recipe are honored; whole-line overrides
+    // (color/position/size/font/outline) are intentionally ignored at
+    // generation time so the burned-in export stays visually consistent
+    // across segments even if Claude or an old .qcp plan included them.
+    // See PackagingSubtitleOverlay for the matching render-side filter.
     const recipe = plan?.segments.find((s) => s.segmentIdx === idx);
-    const segStyle = recipe?.subtitle;
     const wordEffects: WordEffect[] = recipe?.subtitle?.wordEffects ?? [];
 
-    const effectiveSize = clampSize(segStyle?.size ?? defaults.size);
-    const effectiveColor = segStyle?.color ?? defaults.color;
+    const effectiveSize = defaults.size;
+    const effectiveColor = defaults.color;
 
-    const overrideBlock = styleOverrideBlock(segStyle, defaults);
     const body = renderAssText(seg.text, wordEffects, effectiveSize, effectiveColor);
     if (!body) return;
 
@@ -290,7 +269,7 @@ export function generatePackagingAss(opts: AssGeneratorOptions): string {
       const start = secondsToAssTime(sl.outStart);
       const end = secondsToAssTime(sl.outEnd);
       events.push(
-        `Dialogue: 0,${start},${end},Default,,0,0,0,,${overrideBlock}${body}`
+        `Dialogue: 0,${start},${end},Default,,0,0,0,,${body}`
       );
     }
   });

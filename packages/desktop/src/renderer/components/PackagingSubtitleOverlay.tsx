@@ -64,6 +64,14 @@ interface Props {
    * video-aspect wrap). Used to scale font sizes proportionally.
    */
   displayHeight: number;
+  /**
+   * Click handler — fires with the active transcript segment's index
+   * when the user clicks the visible subtitle text. Used by the 包装
+   * tab to jump to that segment's card in the 字幕 editor. Click events
+   * elsewhere on the overlay (transparent regions) pass through to the
+   * video underneath, preserving play/pause-on-click.
+   */
+  onSubtitleClick?: (segmentIdx: number) => void;
 }
 
 const FALLBACK_STYLE: SubtitleStyle = {
@@ -93,6 +101,7 @@ export function PackagingSubtitleOverlay({
   orientation,
   sourceHeight,
   displayHeight,
+  onSubtitleClick,
 }: Props): JSX.Element | null {
   // Map variant time → source time using the playlist. If currentTimeSec
   // falls between variant entries (mid-seek / outside any entry), the
@@ -129,14 +138,23 @@ export function PackagingSubtitleOverlay({
 
   if (!activeSeg) return null;
 
-  // Resolve the styling for THIS segment from the plan:
-  //   default style (plan.defaults.subtitle) merged with per-segment
-  //   recipe (plan.segments[i].subtitle) merged with FALLBACK_STYLE.
+  // Resolve the styling for THIS segment:
+  //   whole-line styling = FALLBACK ← plan.defaults.subtitle
+  //   per-keyword highlights = recipe.subtitle.wordEffects (only)
+  //
+  // We deliberately DO NOT merge recipe.subtitle's color/position/size/
+  // font/outline/bgColor — those whole-line overrides made adjacent
+  // segments render in different colors / positions (user reported
+  // "preview 乱飞"). The parser now drops them on new generations, but
+  // plans persisted to .qcp before that change still carry them; this
+  // render-time filter makes loading an old plan look clean too.
+  // Wholesale per-segment styling, if ever needed, should land as a
+  // proper feature with its own UI affordance, not a free-for-all on
+  // AI's whims.
   const recipe = plan?.segments.find((s) => s.segmentIdx === activeIdx);
-  const merged: SubtitleStyle & { wordEffects?: WordEffect[] } = {
+  const merged: SubtitleStyle = {
     ...FALLBACK_STYLE,
     ...(plan?.defaults.subtitle ?? {}),
-    ...(recipe?.subtitle ?? {}),
   };
   const wordEffects: WordEffect[] = recipe?.subtitle?.wordEffects ?? [];
 
@@ -210,6 +228,13 @@ export function PackagingSubtitleOverlay({
       }}
     >
       <div
+        onClick={(e) => {
+          if (!onSubtitleClick) return;
+          // Stop propagation so the click doesn't ALSO toggle video
+          // play/pause (the video element has its own onClick).
+          e.stopPropagation();
+          onSubtitleClick(activeIdx);
+        }}
         style={{
           maxWidth: '92%',
           padding: '6px 18px',
@@ -217,7 +242,12 @@ export function PackagingSubtitleOverlay({
           borderRadius: bgColor ? 6 : 0,
           textAlign: 'center',
           lineHeight: 1.2,
+          // Re-enable pointer events on the TEXT area only (outer overlay
+          // still passes clicks through to the video for play/pause).
+          pointerEvents: onSubtitleClick ? 'auto' : 'none',
+          cursor: onSubtitleClick ? 'pointer' : 'default',
         }}
+        title={onSubtitleClick ? '点字幕 → 右侧字幕 tab 编辑这段' : undefined}
       >
         {tokens.map((tok, i) => {
           const eff = effectByIdx.get(i);

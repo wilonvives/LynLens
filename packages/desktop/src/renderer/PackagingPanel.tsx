@@ -87,6 +87,13 @@ export function PackagingPanel({ effectiveDuration }: Props): JSX.Element {
   const [generating, setGenerating] = useState(false);
   const [vibe, setVibe] = useState<PackagingVibe>('default');
   const [activeTab, setActiveTab] = useState<PackagingTab>('subtitles');
+  /**
+   * Click-on-subtitle → jump-to-card state. We keep both the requested
+   * segmentIdx AND a monotonic token so clicking the SAME subtitle again
+   * still re-triggers the scroll+pulse animation.
+   */
+  const [jumpToIdx, setJumpToIdx] = useState<number | null>(null);
+  const [jumpToken, setJumpToken] = useState(0);
 
   // Preview render state.
   const [preview, setPreview] = useState<PreviewState | null>(null);
@@ -562,6 +569,14 @@ export function PackagingPanel({ effectiveDuration }: Props): JSX.Element {
                     orientation={orientation}
                     sourceHeight={videoMeta.height}
                     displayHeight={wrapSize.h}
+                    onSubtitleClick={(segmentIdx) => {
+                      // Switch to 字幕 tab + tell the tab to scroll &
+                      // pulse the card. Token bump re-fires the effect
+                      // even when the same idx is clicked twice.
+                      setActiveTab('subtitles');
+                      setJumpToIdx(segmentIdx);
+                      setJumpToken((t) => t + 1);
+                    }}
                   />
                 </div>
               ) : sourceVideoUrl ? (
@@ -678,6 +693,8 @@ export function PackagingPanel({ effectiveDuration }: Props): JSX.Element {
                   playlist={preview.playlist}
                   plan={plan}
                   currentTimeSec={currentTimeSec}
+                  scrollToSegmentIdx={jumpToIdx}
+                  scrollToken={jumpToken}
                   onSeek={seekTo}
                   onPlanChange={handlePlanChange}
                 />

@@ -53,10 +53,11 @@ export function PackagingSegmentCard({
   const effByIdx = new Map<number, WordEffect>();
   wordEffects.forEach((w) => effByIdx.set(w.wordIdx, w));
 
-  const lineColor = recipe?.subtitle?.color ?? defaultColor;
-  const hasOverrides =
-    (recipe?.subtitle?.color && recipe.subtitle.color !== defaultColor) ||
-    (recipe?.subtitle?.wordEffects?.length ?? 0) > 0;
+  // Whole-line color comes from project default. Per-segment color
+  // overrides are no longer honored (render-side filter); the picker
+  // is gone too — only the keyword chip colors are user-editable here.
+  const lineColor = defaultColor;
+  const hasOverrides = (recipe?.subtitle?.wordEffects?.length ?? 0) > 0;
 
   function toggleWord(wordIdx: number): void {
     onChange(segmentIdx, (s) => {
@@ -90,13 +91,6 @@ export function PackagingSegmentCard({
         subtitle: { ...(s.subtitle ?? {}), wordEffects: next },
       };
     });
-  }
-
-  function setLineColor(color: string): void {
-    onChange(segmentIdx, (s) => ({
-      ...s,
-      subtitle: { ...(s.subtitle ?? {}), color },
-    }));
   }
 
   function resetLine(): void {
@@ -201,50 +195,45 @@ export function PackagingSegmentCard({
         })}
       </div>
 
-      {/* Inline controls: line color + per-word color tweaks */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: 12, fontSize: 11 }}>
-        <label style={{ display: 'flex', alignItems: 'center', gap: 6, color: 'var(--text2)' }}>
-          整行
-          <input
-            type="color"
-            value={lineColor}
-            onChange={(e) => setLineColor(e.target.value)}
-            style={{
-              width: 32,
-              height: 22,
-              padding: 0,
-              border: '1px solid #333',
-              borderRadius: 3,
-              cursor: 'pointer',
-              background: 'transparent',
-            }}
-            title="整行文字颜色"
-          />
-        </label>
-        {wordEffects.map((w) => (
-          <label
-            key={w.wordIdx}
-            style={{ display: 'flex', alignItems: 'center', gap: 6, color: 'var(--text2)' }}
-          >
-            「{tokens[w.wordIdx]?.slice(0, 6) ?? '?'}」
-            <input
-              type="color"
-              value={w.highlight ?? DEFAULT_HIGHLIGHT}
-              onChange={(e) => setWordColor(w.wordIdx, e.target.value)}
-              style={{
-                width: 26,
-                height: 22,
-                padding: 0,
-                border: '1px solid #333',
-                borderRadius: 3,
-                cursor: 'pointer',
-                background: 'transparent',
-              }}
-              title="此关键词颜色"
-            />
-          </label>
-        ))}
-      </div>
+      {/* Per-keyword color tweaks only. Whole-line color sits in
+          "默认样式" at the top of the 字幕 tab — applies project-wide
+          so adjacent segments stay visually consistent. */}
+      {wordEffects.length > 0 && (
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            flexWrap: 'wrap',
+            gap: 10,
+            fontSize: 11,
+            color: 'var(--text2)',
+          }}
+        >
+          {wordEffects.map((w) => (
+            <label
+              key={w.wordIdx}
+              style={{ display: 'flex', alignItems: 'center', gap: 6 }}
+            >
+              「{tokens[w.wordIdx]?.slice(0, 6) ?? '?'}」
+              <input
+                type="color"
+                value={w.highlight ?? DEFAULT_HIGHLIGHT}
+                onChange={(e) => setWordColor(w.wordIdx, e.target.value)}
+                style={{
+                  width: 26,
+                  height: 22,
+                  padding: 0,
+                  border: '1px solid #333',
+                  borderRadius: 3,
+                  cursor: 'pointer',
+                  background: 'transparent',
+                }}
+                title="改这个关键词的颜色"
+              />
+            </label>
+          ))}
+        </div>
+      )}
     </div>
   );
 }

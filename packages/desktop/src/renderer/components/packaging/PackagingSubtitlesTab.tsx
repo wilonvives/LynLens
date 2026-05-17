@@ -18,7 +18,7 @@
  * via `onPlanChange`. Parent debounces the persistence to setPackagingPlan
  * so we don't spam IPC on every color-picker change.
  */
-import { useMemo } from 'react';
+import { useEffect, useMemo, useRef } from 'react';
 import type {
   PackagingPlan,
   PackagingSegment,
@@ -35,6 +35,14 @@ interface Props {
   plan: PackagingPlan;
   /** Current playhead in VARIANT seconds (highlights the active card). */
   currentTimeSec: number;
+  /**
+   * When set, scrolls the matching segment card into view and pulses it.
+   * Driven by clicks on the preview subtitle overlay. Re-set with the
+   * same value to re-trigger the scroll/pulse.
+   */
+  scrollToSegmentIdx?: number | null;
+  /** Bumped whenever the parent wants to force a re-scroll on the same idx. */
+  scrollToken?: number;
   /** Seek the player to a specific variant time. */
   onSeek: (variantSec: number) => void;
   /** Bubble up plan edits. Parent persists via setPackagingPlan IPC. */
@@ -66,9 +74,30 @@ export function PackagingSubtitlesTab({
   playlist,
   plan,
   currentTimeSec,
+  scrollToSegmentIdx,
+  scrollToken,
   onSeek,
   onPlanChange,
 }: Props): JSX.Element {
+  // Card-DOM map for scroll-into-view when user clicks the preview subtitle.
+  const cardRefs = useRef<Map<number, HTMLDivElement>>(new Map());
+
+  // Scroll the requested segment card into view + pulse it briefly.
+  useEffect(() => {
+    if (scrollToSegmentIdx === undefined || scrollToSegmentIdx === null) return;
+    const el = cardRefs.current.get(scrollToSegmentIdx);
+    if (!el) return;
+    el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    // Pulse flash: temporarily add a class via inline style swap. Simpler
+    // than CSS keyframes here.
+    const prev = el.style.boxShadow;
+    el.style.boxShadow = '0 0 0 3px rgba(122, 162, 247, 0.6)';
+    el.style.transition = 'box-shadow 0.4s ease';
+    const t = setTimeout(() => {
+      el.style.boxShadow = prev;
+    }, 1000);
+    return () => clearTimeout(t);
+  }, [scrollToSegmentIdx, scrollToken]);
   // Build the visible list: transcript segments whose midpoint lies
   // inside one of the playlist's source ranges. Carry along the variant-
   // time mapping so each card can display its timestamp + seek correctly.
@@ -224,8 +253,15 @@ export function PackagingSubtitlesTab({
           const isActive =
             currentTimeSec >= row.variantStart && currentTimeSec < row.variantEnd;
           return (
-            <PackagingSegmentCard
+            <div
               key={row.segmentIdx}
+              ref={(el) => {
+                if (el) cardRefs.current.set(row.segmentIdx, el);
+                else cardRefs.current.delete(row.segmentIdx);
+              }}
+              style={{ borderRadius: 6 }}
+            >
+            <PackagingSegmentCard
               segmentIdx={row.segmentIdx}
               timeLabel={formatVariantTime(row.variantStart)}
               text={row.text}
@@ -235,6 +271,7 @@ export function PackagingSubtitlesTab({
               onSeek={() => onSeek(row.variantStart)}
               onChange={upsertSegment}
             />
+            </div>
           );
         })}
       </div>
