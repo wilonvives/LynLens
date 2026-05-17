@@ -167,6 +167,41 @@ describe('parsePackagingPlanResponse', () => {
     expect(plan.segments[0].segmentIdx).toBe(1);
   });
 
+  it('clamps oversized subtitle font-sizes to 120 (preview-blowup guard)', () => {
+    // Real-world Claude failure: returning size:200/300 made one
+    // character fill the whole video frame in preview AND export.
+    // Parser must now clamp anything above 120.
+    const raw = JSON.stringify({
+      defaults: { subtitle: { size: 280 } }, // way too big
+      segments: [
+        {
+          segmentIdx: 0,
+          subtitle: {
+            size: 300, // also way too big
+            wordEffects: [
+              { wordIdx: 0, highlight: '#ffd700', size: 240 }, // per-word too
+              { wordIdx: 1, highlight: '#ffd700', size: 80 }, // in range, kept
+            ],
+          },
+        },
+      ],
+    });
+    const plan = parsePackagingPlanResponse(raw, null, 1);
+    expect(plan.defaults.subtitle?.size).toBe(120);
+    expect(plan.segments[0].subtitle?.size).toBe(120);
+    expect(plan.segments[0].subtitle?.wordEffects?.[0].size).toBe(120);
+    expect(plan.segments[0].subtitle?.wordEffects?.[1].size).toBe(80);
+  });
+
+  it('also clamps undersized sizes to 16 (defensive)', () => {
+    const raw = JSON.stringify({
+      defaults: { subtitle: { size: 4 } },
+      segments: [],
+    });
+    const plan = parsePackagingPlanResponse(raw, null, 0);
+    expect(plan.defaults.subtitle?.size).toBe(16);
+  });
+
   it('rejects invalid hex colors silently', () => {
     const raw = JSON.stringify({
       defaults: { subtitle: { color: 'not-a-hex' } }, // dropped

@@ -188,6 +188,12 @@ export function buildPackagingSystemPrompt(): string {
    - 动词高潮 (爆、崩、炸)
 2. **不是所有段都要高亮** — 平铺直叙的解释段、过渡段就不要挑,只给 punchline / 金句 / 钩子加。
 3. **只对需要花字的段输出 segments 条目** — 不要列出"无修改"的段,会自动用 defaults。
+4. **字号(size)严格控制范围 32-120 px** (相对 1080p 视频高度):
+   - 默认 56 (普通字幕),
+   - 关键词高亮 64-80 (微强调),
+   - 金句 / 钩子 80-100 (大强调),
+   - **永远不要超过 120**。超出会被自动 clamp,而且会丑。
+   想要"更突出"应该是换颜色 / 加描边,不是单纯放大字号。
 
 JSON 输出格式硬性要求(违反会解析失败):
 A. 只输出 JSON 对象,前后不要任何文字,不要 \`\`\`json 代码块围栏
@@ -311,12 +317,28 @@ export function parsePackagingPlanResponse(
 
 // ---------- Sanitisers (defensive coercion) ----------
 
+/**
+ * Sane subtitle font-size cap, in source-resolution px. Calibrated so a
+ * size value on a 1080p (1920-high) source stays well under 7% of frame
+ * height. The previous `< 500` ceiling let Claude return 200-300 size
+ * values that made one character fill the screen in preview AND took
+ * 1 line per char in the burned-in export. Real-world subtitle sizes
+ * top out around 72-96 even for the loudest emphasis; capping at 120
+ * leaves headroom for a punchline pop without ever blowing up the frame.
+ */
+const MAX_SUBTITLE_SIZE = 120;
+const MIN_SUBTITLE_SIZE = 16;
+
+function clampSubtitleSize(v: number): number {
+  return Math.min(MAX_SUBTITLE_SIZE, Math.max(MIN_SUBTITLE_SIZE, v));
+}
+
 function sanitiseSubtitleStyle(input: unknown): SubtitleStyle | null {
   if (typeof input !== 'object' || input === null) return null;
   const v = input as Record<string, unknown>;
   const out: SubtitleStyle = {};
   if (typeof v.font === 'string') out.font = v.font;
-  if (typeof v.size === 'number' && v.size > 0 && v.size < 500) out.size = v.size;
+  if (typeof v.size === 'number' && v.size > 0) out.size = clampSubtitleSize(v.size);
   if (typeof v.color === 'string' && /^#[0-9a-fA-F]{3,8}$/.test(v.color)) {
     out.color = v.color;
   }
@@ -361,8 +383,8 @@ function sanitiseSubtitleWithWordEffects(
       if (typeof we.highlight === 'string' && /^#[0-9a-fA-F]{3,8}$/.test(we.highlight)) {
         effect.highlight = we.highlight;
       }
-      if (typeof we.size === 'number' && we.size > 0 && we.size < 500) {
-        effect.size = we.size;
+      if (typeof we.size === 'number' && we.size > 0) {
+        effect.size = clampSubtitleSize(we.size);
       }
       if (we.effect === 'pop-in' || we.effect === 'shake') {
         effect.effect = we.effect;
