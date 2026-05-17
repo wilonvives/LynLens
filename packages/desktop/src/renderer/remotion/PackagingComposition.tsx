@@ -19,21 +19,21 @@
  * and `@remotion/renderer` (export). Identical React render path =
  * pixel-level WYSIWYG by construction.
  */
-import { AbsoluteFill, Sequence, Video } from 'remotion';
+import { AbsoluteFill, Sequence } from 'remotion';
 import type { PackagingPlan } from '@lynlens/core';
 import { Subtitle } from './components/Subtitle';
 import { CameraZoom } from './components/CameraZoom';
+import { NativeVideo } from './components/NativeVideo';
 import { Watermark } from './components/Watermark';
 
-// Note on Video vs OffthreadVideo:
-// `<OffthreadVideo>` extracts frames via ffmpeg (preferred for export
-// because it handles every codec ffmpeg supports), but in Player mode
-// it can fail silently with custom protocols like LynLens's
-// `lynlens-media://`. `<Video>` uses the native browser <video> tag —
-// same path the precision tab uses — and works with our protocol
-// handler's Range-aware responses. Slower for renderMedia exports but
-// reliable for both preview AND export in this codebase. Revisit
-// OffthreadVideo in v0.6+ if exports become a perf bottleneck.
+// Why NativeVideo (raw <video>) instead of Remotion's <Video> / <OffthreadVideo>:
+// LynLens loads source video through a custom lynlens-media:// protocol
+// (BrowserWindow has webSecurity=true so file:// is blocked). Remotion's
+// <Video> wrapper silently fails on non-http(s) schemes (frame stays
+// black). NativeVideo uses a raw <video> tag — same path the precision
+// tab uses successfully — synchronised with Remotion's frame ticker.
+// PREVIEW ONLY: renderMedia (export) can't capture frames from a native
+// <video>; the export pipeline branches separately (TODO v0.5.1).
 
 export interface PackagingCompositionProps {
   videoPath: string;
@@ -95,12 +95,10 @@ export function PackagingComposition({
             durationInFrames={durFrames}
           >
             <CameraZoom zoom={cameraZoom} focus={cameraFocus}>
-              <Video
+              <NativeVideo
                 src={videoPath}
-                // Trim to JUST this segment's source time. Video's
-                // startFrom + endAt are in frames (relative to source).
-                startFrom={Math.round(seg.start * fps)}
-                endAt={Math.round(seg.end * fps)}
+                sourceStartSec={seg.start}
+                sourceEndSec={seg.end}
                 style={{
                   width: '100%',
                   height: '100%',

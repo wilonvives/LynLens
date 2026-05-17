@@ -305,10 +305,12 @@ export function PackagingPanel({ effectiveDuration, videoPath }: Props): JSX.Ele
         >
           {videoUrl && videoMeta && plan ? (
             <PackagingPreview
-              // Pass the lynlens-media:// URL AS-IS — the app's custom
-              // protocol handler is registered in the Electron main and
-              // the BrowserWindow has access to it. Stripping the protocol
-              // (as we did previously) broke video loading entirely.
+              // Pass the lynlens-media:// URL the precision tab uses
+              // successfully. PackagingComposition uses a native
+              // <video> wrapper (not Remotion's <Video>) to ensure
+              // the custom protocol works in this BrowserWindow
+              // (webSecurity=true → file:// blocked, only registered
+              // custom protocols work).
               videoPath={videoUrl}
               segments={previewSegments}
               plan={plan}
