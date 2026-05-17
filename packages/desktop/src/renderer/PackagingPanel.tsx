@@ -59,6 +59,25 @@ export function PackagingPanel({ effectiveDuration }: Props): JSX.Element {
   const [currentTimeSec, setCurrentTimeSec] = useState(0);
 
   const videoRef = useRef<HTMLVideoElement>(null);
+  /**
+   * Wrap-div ref + size — the wrap has aspectRatio matching the source
+   * video so it letterboxes the same way as the video element. We
+   * measure its rendered size so PackagingSubtitleOverlay can scale
+   * font sizes proportionally (AI returns sizes calibrated for source
+   * resolution; we rescale to the actual displayed pixels).
+   */
+  const videoWrapRef = useRef<HTMLDivElement | null>(null);
+  const [wrapSize, setWrapSize] = useState({ w: 0, h: 0 });
+  useEffect(() => {
+    const el = videoWrapRef.current;
+    if (!el) return;
+    const ro = new ResizeObserver(() => {
+      setWrapSize({ w: el.clientWidth, h: el.clientHeight });
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+
   const selectedVariantId = selectedKey === ROOT_KEY ? null : selectedKey;
   const selectedVariant = useMemo(
     () => variants.find((v) => v.id === selectedKey),
@@ -264,8 +283,27 @@ export function PackagingPanel({ effectiveDuration }: Props): JSX.Element {
             overflow: 'hidden',
           }}
         >
-          {videoUrl ? (
-            <>
+          {videoUrl && videoMeta ? (
+            // Aspect-ratio wrap — the wrap matches the source video's
+            // ratio, so the OVERLAY is positioned relative to the
+            // actual visible video frame (not the black letterbox area
+            // of the surrounding container). Without this, subtitles
+            // for a portrait video would render against the WHOLE
+            // landscape player area and bleed past the video edges.
+            <div
+              ref={videoWrapRef}
+              style={{
+                position: 'relative',
+                aspectRatio: `${videoMeta.width} / ${videoMeta.height}`,
+                maxWidth: '100%',
+                maxHeight: '100%',
+                // Center any oversized content (defensive — the
+                // aspect-ratio + maxWidth/maxHeight should size correctly).
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+              }}
+            >
               <video
                 ref={videoRef}
                 src={videoUrl}
@@ -281,8 +319,8 @@ export function PackagingPanel({ effectiveDuration }: Props): JSX.Element {
                   )
                 }
                 style={{
-                  maxWidth: '100%',
-                  maxHeight: '100%',
+                  width: '100%',
+                  height: '100%',
                   display: 'block',
                 }}
               />
@@ -291,8 +329,10 @@ export function PackagingPanel({ effectiveDuration }: Props): JSX.Element {
                 plan={plan}
                 currentTimeSec={currentTimeSec}
                 orientation={orientation}
+                sourceHeight={videoMeta.height}
+                displayHeight={wrapSize.h}
               />
-            </>
+            </div>
           ) : (
             <div style={{ color: 'var(--text3)' }}>视频未加载</div>
           )}

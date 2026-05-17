@@ -39,6 +39,18 @@ interface Props {
   currentTimeSec: number;
   /** Display orientation hint (affects default sizes). */
   orientation?: 'portrait' | 'landscape' | 'unknown';
+  /**
+   * Source video height in px (typically videoMeta.height). AI returns
+   * font-sizes scaled to this — e.g. size:56 on a 1080-high video means
+   * roughly "5% of video height". We rescale to the rendered display
+   * size so subtitles aren't huge when the video plays small.
+   */
+  sourceHeight: number;
+  /**
+   * Currently-rendered video height in px (from a ResizeObserver on the
+   * video-aspect wrap). Used to scale font sizes proportionally.
+   */
+  displayHeight: number;
 }
 
 const FALLBACK_STYLE: SubtitleStyle = {
@@ -54,6 +66,8 @@ export function PackagingSubtitleOverlay({
   plan,
   currentTimeSec,
   orientation,
+  sourceHeight,
+  displayHeight,
 }: Props): JSX.Element | null {
   // Locate the active transcript segment for the current playhead.
   // Linear scan is fine — transcript segments are small (hundreds, not
@@ -82,11 +96,23 @@ export function PackagingSubtitleOverlay({
   const wordEffects: WordEffect[] = recipe?.subtitle?.wordEffects ?? [];
 
   const font = merged.font ?? FALLBACK_STYLE.font!;
-  const size = merged.size ?? FALLBACK_STYLE.size!;
+  const baseSize = merged.size ?? FALLBACK_STYLE.size!;
   const color = merged.color ?? FALLBACK_STYLE.color!;
-  const outline = merged.outline ?? FALLBACK_STYLE.outline!;
+  const baseOutline = merged.outline ?? FALLBACK_STYLE.outline!;
   const bgColor = merged.bgColor;
   const position = merged.position ?? 'bottom';
+
+  // Scale source-resolution px sizes to the actual displayed video size.
+  // AI returns sizes calibrated for the source (e.g. 56px on a 1080-tall
+  // video). When the video plays at 400px tall in a small player, 56px
+  // text would be HUGE relative to the frame. Multiply by the ratio.
+  const scale =
+    sourceHeight > 0 && displayHeight > 0 ? displayHeight / sourceHeight : 1;
+  const size = Math.max(8, Math.round(baseSize * scale));
+  const outline = {
+    color: baseOutline.color,
+    width: Math.max(0.5, baseOutline.width * scale),
+  };
 
   // Tokenise to map wordEffects.wordIdx to spans. Whitespace split is
   // simple; CJK without spaces becomes one token (wordIdx=0). Per v0.6
@@ -117,10 +143,11 @@ export function PackagingSubtitleOverlay({
 
   // Adjust default size by orientation if the AI didn't pick one.
   // Portrait videos play in a tall narrow box; same px size feels
-  // smaller. Bump 1.2x for portrait.
+  // smaller. Bump 1.15x for portrait. (Subtle — most of the resizing
+  // is already handled by the source→display scale above.)
   const orientedSize =
     merged.size === undefined && orientation === 'portrait'
-      ? Math.round(size * 1.2)
+      ? Math.round(size * 1.15)
       : size;
 
   return (
@@ -147,7 +174,10 @@ export function PackagingSubtitleOverlay({
         {tokens.map((tok, i) => {
           const eff = effectByIdx.get(i);
           const tokColor = eff?.highlight ?? color;
-          const tokSize = eff?.size ?? orientedSize;
+          // Scale per-word effect sizes the same way as the base size.
+          const tokSize = eff?.size
+            ? Math.max(8, Math.round(eff.size * scale))
+            : orientedSize;
           return (
             <span
               key={i}
