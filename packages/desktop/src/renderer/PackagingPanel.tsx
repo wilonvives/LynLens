@@ -87,7 +87,10 @@ export function PackagingPanel({ effectiveDuration }: Props): JSX.Element {
   const [plan, setPlan] = useState<PackagingPlan | null>(null);
   const [generating, setGenerating] = useState(false);
   const [vibe, setVibe] = useState<PackagingVibe>('default');
-  const [activeTab, setActiveTab] = useState<PackagingTab>('subtitles');
+  // Landing tab = 模板 (the user-chosen design baseline). After picking
+  // one, they typically drill into 字幕 for keyword tweaks — that
+  // transition happens via onSubtitleClick / 一键包装 button.
+  const [activeTab, setActiveTab] = useState<PackagingTab>('templates');
   /**
    * Click-on-subtitle → jump-to-card state. We keep both the requested
    * segmentIdx AND a monotonic token so clicking the SAME subtitle again

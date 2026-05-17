@@ -23,6 +23,10 @@ interface VibeOption {
   accent: string;
 }
 
+// 冷静 vibe removed from the UI per user direction — we're focusing the
+// template lineup on a small set of well-crafted designs (通用 baseline
+// + 高能 punchy). 'calm' stays in PackagingVibe type for backward-compat
+// with .qcp files that have the vibe persisted, but is no longer pickable.
 const VIBES: VibeOption[] = [
   {
     key: 'default',
@@ -35,12 +39,6 @@ const VIBES: VibeOption[] = [
     label: '高能',
     desc: '关键词更密,红黄轮换 +30%',
     accent: '#ff6b6b',
-  },
-  {
-    key: 'calm',
-    label: '冷静',
-    desc: '关键词稀疏,克制金色 +10%',
-    accent: '#9ece6a',
   },
 ];
 
@@ -72,7 +70,7 @@ export function PackagingTemplatesTab({
       </div>
 
       {/* Vibe picker — bigger touch targets than the header dropdown */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 8 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 8 }}>
         {VIBES.map((v) => (
           <button
             key={v.key}
