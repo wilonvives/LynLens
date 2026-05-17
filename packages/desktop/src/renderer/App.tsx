@@ -657,6 +657,38 @@ export function App() {
           videoMeta={store.videoMeta}
           defaultOrientation={store.userOrientation}
           onCancel={() => setShowOrientDialog(false)}
+          onImportSrt={async (orientation) => {
+            // Skip whisper entirely; just read an existing .srt as the
+            // project's transcript. Orientation still persisted so subtitle
+            // line-wrap matches the user's choice. Diarization is NOT run
+            // — imported SRTs carry no speaker info; user can trigger it
+            // separately from the chat panel if they want speaker tags.
+            setShowOrientDialog(false);
+            if (!store.projectId) return;
+            const pid = store.projectId;
+            await window.lynlens.setUserOrientation(pid, orientation);
+            store.setUserOrientation(orientation);
+            if (
+              store.transcript &&
+              store.transcript.segments.length > 0 &&
+              !confirm(
+                `已有 ${store.transcript.segments.length} 段字幕。导入新的会替换现有字幕,继续吗?`
+              )
+            ) {
+              return;
+            }
+            try {
+              const r = await window.lynlens.importSrtIntoProject(pid);
+              if (!r) return; // user cancelled the picker
+              const qcp = await window.lynlens.getState(pid);
+              store.setTranscript(qcp.transcript);
+              alert(`字幕导入完成: ${r.segmentCount} 段\n来源: ${r.sourcePath}`);
+            } catch (err) {
+              const raw = (err as Error).message ?? String(err);
+              const msg = raw.length > 400 ? raw.slice(0, 400) + '\n…' : raw;
+              alert(`字幕导入失败:\n\n${msg}`);
+            }
+          }}
           onConfirm={async ({ orientation, speakerCount }) => {
             setShowOrientDialog(false);
             if (!store.projectId) return;

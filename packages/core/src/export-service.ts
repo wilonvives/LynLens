@@ -396,27 +396,28 @@ function colorTagsAsEncoderParam(
 }
 
 /**
- * Normalise a variant's segment list into a safe keep list: sort, clamp to
- * [0, duration], drop empty ranges, merge overlaps. Reused by highlight
- * variant export so malformed model output can't crash ffmpeg.
+ * Normalise a variant's segment list into a safe keep list for export.
+ *
+ * Preserves the user's order and ALL repetitions/overlaps. ffmpeg's
+ * concat filter happily concatenates any sequence — including the same
+ * source range twice in a row — so we don't need to dedupe or sort.
+ *
+ * Previously we sorted by start + merged overlaps which made sense when
+ * variants were AI-generated (always sorted, never overlapping). Once
+ * the UI started supporting manual reorder + overlap + repeat, the
+ * export ignored those edits: segments came out time-sorted instead of
+ * playback-order, and a "use clip X twice" pattern collapsed to once.
+ *
+ * What we still do: clamp each range to [0, duration] and drop empty /
+ * NaN ranges so malformed input can't crash ffmpeg.
  */
 function mergeKeeps(raw: readonly Range[], duration: number): Range[] {
-  const clamped: Range[] = [];
+  const safe: Range[] = [];
   for (const r of raw) {
     if (!Number.isFinite(r.start) || !Number.isFinite(r.end)) continue;
     const s = Math.max(0, r.start);
     const e = Math.min(duration, r.end);
-    if (e > s) clamped.push({ start: s, end: e });
+    if (e > s) safe.push({ start: s, end: e });
   }
-  clamped.sort((a, b) => a.start - b.start);
-  const merged: Range[] = [];
-  for (const r of clamped) {
-    const last = merged[merged.length - 1];
-    if (last && r.start <= last.end) {
-      last.end = Math.max(last.end, r.end);
-    } else {
-      merged.push({ start: r.start, end: r.end });
-    }
-  }
-  return merged;
+  return safe;
 }

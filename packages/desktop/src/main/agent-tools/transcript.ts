@@ -1,4 +1,12 @@
+import { promises as fsp } from 'node:fs';
 import { z } from 'zod';
+import {
+  applyAutoCorrections,
+  applyProperNouns,
+  filterTranscriptByCuts,
+  mergeShortEnglishSegments,
+  parseSrt,
+} from '@lynlens/core';
 import { type LynLensToolDef, okOrFail, text } from './types';
 
 /**
@@ -178,6 +186,38 @@ export const transcriptTools: LynLensToolDef[] = [
     ) => {
       const n = engine.projects.get(args.projectId).replaceInTranscript(args.find, args.replace);
       return text(`替换 "${args.find}" → "${args.replace}": ${n} 段被改动`);
+    },
+  },
+
+  {
+    name: 'import_srt_into_project',
+    description:
+      '读取一个 .srt 字幕文件作为本项目的字幕(会覆盖现有字幕)。和"字幕转录"等价但跳过 whisper:用第三方工具 / 手工编辑生成好的字幕直接套上。会自动应用学到的修正 + 专有名词大小写 + cut 范围过滤。',
+    schema: {
+      projectId: z.string(),
+      srtPath: z.string().min(1),
+    },
+    handler: async (
+      args: { projectId: string; srtPath: string },
+      engine
+    ) => {
+      const project = engine.projects.get(args.projectId);
+      const raw = await fsp.readFile(args.srtPath, 'utf-8');
+      let transcript = parseSrt(raw);
+      if (project.cutRanges.length > 0) {
+        transcript = filterTranscriptByCuts(transcript, project.cutRanges);
+      }
+      const autoCorrections = engine.learningMemory.getAutoCorrections();
+      if (Object.keys(autoCorrections).length > 0) {
+        transcript = applyAutoCorrections(transcript, autoCorrections);
+      }
+      const properNouns = engine.learningMemory.getProperNouns();
+      if (Object.keys(properNouns).length > 0) {
+        transcript = applyProperNouns(transcript, properNouns);
+      }
+      transcript = mergeShortEnglishSegments(transcript);
+      project.setTranscript(transcript);
+      return text(`字幕导入完成: ${transcript.segments.length} 段 (来源: ${args.srtPath})`);
     },
   },
 ];

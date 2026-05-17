@@ -41,10 +41,12 @@ const api: IpcApi = {
     ipcRenderer.invoke('reorder-highlight-variant-segment', pid, vid, from, to),
   addHighlightVariantSegment: (pid, vid, hint) =>
     ipcRenderer.invoke('add-highlight-variant-segment', pid, vid, hint),
+  addBlankHighlightVariant: (pid, hint, title) =>
+    ipcRenderer.invoke('add-blank-highlight-variant', pid, hint, title),
   deleteHighlightVariantSegment: (pid, vid, idx) =>
     ipcRenderer.invoke('delete-highlight-variant-segment', pid, vid, idx),
-  exportHighlight: (pid, vid, outputPath) =>
-    ipcRenderer.invoke('export-highlight', pid, vid, outputPath),
+  exportHighlight: (pid, vid, outputPath, mode, quality) =>
+    ipcRenderer.invoke('export-highlight', pid, vid, outputPath, mode, quality),
   generateSocialCopies: (pid, opts) => ipcRenderer.invoke('generate-social-copies', pid, opts),
   getSocialCopies: (pid) => ipcRenderer.invoke('get-social-copies', pid),
   updateSocialCopy: (pid, setId, copyId, patch) =>
@@ -89,6 +91,8 @@ const api: IpcApi = {
   clearTranscriptSuggestion: (pid, sid) =>
     ipcRenderer.invoke('clear-transcript-suggestion', pid, sid),
   saveSrt: (pid, content) => ipcRenderer.invoke('save-srt', pid, content),
+  importSrtIntoProject: (pid, srtPath) =>
+    ipcRenderer.invoke('import-srt-into-project', pid, srtPath),
   // ---- Learning memory ----
   learningGetSnapshot: () => ipcRenderer.invoke('learning-get-snapshot'),
   learningGetAll: () => ipcRenderer.invoke('learning-get-all'),

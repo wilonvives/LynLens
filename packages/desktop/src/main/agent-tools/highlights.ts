@@ -168,6 +168,28 @@ export const highlightTools: LynLensToolDef[] = [
   },
 
   {
+    name: 'add_blank_highlight_variant',
+    description:
+      '新建一个空的高光变体让用户(或 agent)从头自己挑段子。会种一个 3 秒种子段在 hintSec 附近(默认 0)。自动 pinned,不会被"重新生成"覆盖。返回新变体的 id 和 title。',
+    schema: {
+      projectId: z.string(),
+      hintSec: z.number().nullable().default(null),
+      title: z.string().optional(),
+    },
+    handler: async (
+      args: { projectId: string; hintSec: number | null; title?: string },
+      engine
+    ) => {
+      const variant = engine.projects
+        .get(args.projectId)
+        .addBlankHighlightVariant(args.hintSec, args.title);
+      return text(
+        `已新建自定义变体「${variant.title}」(id=${variant.id.slice(0, 8)}, 种子段 ${variant.segments[0].start.toFixed(2)} - ${variant.segments[0].end.toFixed(2)})。`
+      );
+    },
+  },
+
+  {
     name: 'add_highlight_variant_segment',
     description:
       '给某个高光变体加一段(source 秒)。新段追加到末尾,用 reorder 改位置。必须不与现有段重叠。',

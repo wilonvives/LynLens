@@ -778,6 +778,65 @@ export class Project {
     this.modifiedAt = new Date().toISOString();
   }
 
+  /**
+   * Create a fresh blank variant the user fills in themselves. Used by
+   * the "自定义" button in the highlight header — instead of AI-generating
+   * a batch, the user starts with a single 3-second seed segment and
+   * builds up the variant by hand via the timeline editor (drag edges,
+   * + 加段 button, etc).
+   *
+   * - `hintSourceSec` (optional): where to place the seed segment. We
+   *   centre a 3-second window around it, clamped to video bounds. If
+   *   omitted (or invalid) we place it at the start of the video.
+   * - `title` (optional): defaults to "自定义 #N" where N is the next
+   *   sequence number across all existing custom-titled variants.
+   *
+   * The new variant is auto-pinned because the user explicitly created
+   * it — accidentally losing a hand-built variant when a fresh AI batch
+   * lands would be bad UX. Returns the new variant so the renderer can
+   * select it immediately.
+   */
+  addBlankHighlightVariant(
+    hintSourceSec?: number | null,
+    title?: string
+  ): HighlightVariant {
+    const SEED_DUR = 3;
+    const videoDur = this.videoMeta.duration;
+    const hint =
+      typeof hintSourceSec === 'number' && Number.isFinite(hintSourceSec)
+        ? Math.max(0, Math.min(videoDur, hintSourceSec))
+        : 0;
+    // Centre a SEED_DUR window on the hint, clamped to video bounds.
+    let start = Math.max(0, hint - SEED_DUR / 2);
+    let end = Math.min(videoDur, start + SEED_DUR);
+    if (end - start < 0.2) {
+      // Pathological: video shorter than seed duration; degrade gracefully.
+      start = 0;
+      end = Math.min(videoDur, Math.max(0.2, videoDur));
+    }
+    // Auto-number "自定义 #N" if no explicit title.
+    const existingCustom = this.highlightVariants.filter((v) =>
+      /^自定义\s*#?\d+/.test(v.title)
+    ).length;
+    const finalTitle = title?.trim() || `自定义 #${existingCustom + 1}`;
+    const next: HighlightVariant = {
+      id: `hv_${uuid().slice(0, 8)}`,
+      title: finalTitle,
+      style: 'default',
+      segments: [{ start, end, reason: '自定义起点' }],
+      durationSeconds: end - start,
+      createdAt: new Date().toISOString(),
+      pinned: true,
+      sourceSnapshot: {
+        cutRangesHash: hashCutRanges(this.cutRanges),
+        transcriptFingerprint: fingerprintTranscript(this.transcript),
+      },
+    };
+    this.highlightVariants = [...this.highlightVariants, next];
+    this.modifiedAt = new Date().toISOString();
+    return next;
+  }
+
   /** Flip a variant's pinned state. Returns false if the id wasn't found. */
   setHighlightVariantPinned(variantId: string, pinned: boolean): boolean {
     const idx = this.highlightVariants.findIndex((v) => v.id === variantId);
@@ -822,17 +881,12 @@ export class Project {
     const variant = this.highlightVariants[vIdx];
     if (segmentIdx < 0 || segmentIdx >= variant.segments.length) return false;
 
-    // Overlap check against siblings — but only the ones that currently
-    // touch the same region. We don't enforce chronological ordering
-    // (users may re-order intentionally); we just refuse to let two
-    // segments overlap in source time, which would confuse playback.
-    for (let i = 0; i < variant.segments.length; i++) {
-      if (i === segmentIdx) continue;
-      const other = variant.segments[i];
-      const overlaps = newStart < other.end && newEnd > other.start;
-      if (overlaps) return false;
-    }
-
+    // Overlap is intentionally ALLOWED. Users sometimes want to reuse
+    // the same moment multiple times in a variant — or have two
+    // adjacent segments fade into each other. Playback uses
+    // playingSegIdx to pick which one is "current"; overlap doesn't
+    // confuse it. Previously we rejected overlap which kept blocking
+    // legitimate edits ("拖来拖去都失败").
     const nextSegs = variant.segments.map((s, i) =>
       i === segmentIdx
         ? {
@@ -882,10 +936,7 @@ export class Project {
     if (vIdx < 0) return false;
     const variant = this.highlightVariants[vIdx];
 
-    for (const other of variant.segments) {
-      if (newStart < other.end && newEnd > other.start) return false;
-    }
-
+    // Overlap allowed — see updateHighlightVariantSegment for rationale.
     const nextSegs = [...variant.segments, { start: newStart, end: newEnd, reason }];
     const nextVariant = {
       ...variant,

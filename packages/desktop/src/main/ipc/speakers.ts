@@ -27,6 +27,42 @@ export function registerSpeakersIpc(ctx: IpcContext): void {
         throw new Error('请先生成字幕后再区分说话人');
       }
 
+      const wantedCount =
+        opts?.speakerCount && opts.speakerCount > 0
+          ? Math.floor(opts.speakerCount)
+          : undefined;
+
+      // Short-circuit: when the user explicitly says "1 person", running
+      // sherpa-onnx with --clustering.num-clusters=1 is degenerate — the
+      // clustering step crashes (SIGBUS on macOS) because intra-cluster
+      // distance math divides by (n-1). Skip the model entirely and just
+      // tag every existing transcript segment as the single speaker S1.
+      // Same observable result as a "successful" 1-speaker diarization,
+      // but instant and crash-proof.
+      if (wantedCount === 1) {
+        const allSegments = project.transcript.segments.map((s) => ({
+          start: s.start,
+          end: s.end,
+          speaker: 'S1',
+        }));
+        // Use 'mock' for engine field — DiarizationResult only accepts
+        // 'mock' | 'sherpa-onnx'. Internally this IS a mock (no model ran).
+        const result = {
+          engine: 'mock' as const,
+          segments: allSegments,
+          speakers: ['S1'],
+        };
+        project.applyDiarization(result);
+        if (project.projectPath) {
+          await engine.projects.saveProject(projectId);
+        }
+        return {
+          engine: result.engine,
+          speakers: result.speakers,
+          segmentCount: result.segments.length,
+        };
+      }
+
       const diarBase = resolveBundledDiarizationBase();
       let diarEngine: DiarizationEngine;
       if (diarBase) {
@@ -34,14 +70,11 @@ export function registerSpeakersIpc(ctx: IpcContext): void {
         if (paths) {
           // When the caller knows the speaker count, forward it — vastly
           // more reliable than threshold-based auto-clustering for
-          // short / low-speaker-count content.
-          const count =
-            opts?.speakerCount && opts.speakerCount > 0
-              ? Math.floor(opts.speakerCount)
-              : undefined;
+          // short / low-speaker-count content. We've already short-circuited
+          // the count===1 case above; sherpa is only invoked for >= 2.
           diarEngine = new SherpaOnnxDiarizationEngine(paths, engine.ffmpegPaths, {
             clusterThreshold: 0.9,
-            numClusters: count,
+            numClusters: wantedCount,
           });
         } else {
           diarEngine = new MockDiarizationEngine(() => project.transcript);

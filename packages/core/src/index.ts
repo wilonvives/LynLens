@@ -45,6 +45,7 @@ export {
   type FillerMatch,
 } from './transcription';
 export { LearningMemory, defaultLearningMemoryPath, applyCorrectionsToText, minimalDiff, isPathologicalCorrection } from './learning-memory';
+export { parseSrt } from './srt-parser';
 export { LearningService } from './learning-service';
 export {
   PROMOTION_THRESHOLD,

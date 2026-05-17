@@ -113,6 +113,85 @@ export function Timeline(props: TimelineProps) {
   useEffect(() => {
     viewRef.current = view;
   }, [view]);
+  /**
+   * Bookmarked view (zoom + scroll position). Click the zoom-level chip
+   * in the corner overlay to save the current view; click again from a
+   * different view to jump back. Shift+click clears. Mirrors the same
+   * UX in the highlight tab — and uses a different localStorage key so
+   * each tab remembers its own preferred working view.
+   */
+  const [bookmark, setBookmark] = useState<View | null>(() => {
+    if (typeof window === 'undefined') return null;
+    try {
+      const raw = window.localStorage.getItem('lynlens.precisionZoomBookmark');
+      if (!raw) return null;
+      const parsed = JSON.parse(raw) as Partial<View>;
+      if (
+        typeof parsed.offsetSec === 'number' &&
+        typeof parsed.visibleSec === 'number' &&
+        parsed.visibleSec > 0
+      ) {
+        return { offsetSec: parsed.offsetSec, visibleSec: parsed.visibleSec };
+      }
+    } catch {
+      /* ignore */
+    }
+    return null;
+  });
+  const isAtBookmark = (): boolean => {
+    if (!bookmark) return false;
+    return (
+      Math.abs(bookmark.visibleSec - view.visibleSec) < 0.01 &&
+      Math.abs(bookmark.offsetSec - view.offsetSec) < 0.01
+    );
+  };
+  const saveBookmark = (next: View | null): void => {
+    setBookmark(next);
+    try {
+      if (next) {
+        window.localStorage.setItem(
+          'lynlens.precisionZoomBookmark',
+          JSON.stringify(next)
+        );
+      } else {
+        window.localStorage.removeItem('lynlens.precisionZoomBookmark');
+      }
+    } catch {
+      /* ignore quota errors */
+    }
+  };
+  const onZoomChipClick = (e: React.MouseEvent): void => {
+    e.stopPropagation();
+    if (e.shiftKey) {
+      saveBookmark(null);
+      return;
+    }
+    if (!bookmark || isAtBookmark()) {
+      saveBookmark({ ...view });
+      return;
+    }
+    const visible = Math.min(duration, Math.max(0.2, bookmark.visibleSec));
+    const offset = Math.max(
+      0,
+      Math.min(duration - visible, bookmark.offsetSec)
+    );
+    setView({ offsetSec: offset, visibleSec: visible });
+  };
+  const zoomBy = (factor: number): void => {
+    if (duration <= 0) return;
+    const center = view.offsetSec + view.visibleSec / 2;
+    const nextVisible = Math.max(0.2, Math.min(duration, view.visibleSec * factor));
+    const nextOffset = Math.max(
+      0,
+      Math.min(duration - nextVisible, center - nextVisible / 2)
+    );
+    setView({ offsetSec: nextOffset, visibleSec: nextVisible });
+  };
+  const zoomToFit = (): void => {
+    setView({ offsetSec: 0, visibleSec: duration });
+  };
+  const zoomLevel =
+    duration > 0 && view.visibleSec > 0 ? duration / view.visibleSec : 1;
   const [dragging, setDragging] = useState<{ startSec: number; endSec: number } | null>(null);
   /** Live preview of a segment being resized/moved; committed to IPC on mouseup. */
   const [segDrag, setSegDrag] = useState<
@@ -1202,6 +1281,55 @@ export function Timeline(props: TimelineProps) {
       }}
     >
       <canvas ref={canvasRef} />
+      {/* Shared zoom-controls overlay (.tl-zoom-*) — bottom-right corner.
+          Click `+` / `−` to zoom around the visible window's centre;
+          click the zoom-level chip to save/recall a bookmarked view
+          (Shift+click clears). Same UX as the highlight tab. */}
+      <div
+        className="tl-zoom-controls"
+        onMouseDown={(e) => e.stopPropagation()}
+      >
+        <button
+          className="tl-zoom-btn"
+          onClick={() => zoomBy(1 / 1.5)}
+          title="放大 (⌘+滚轮)"
+          disabled={view.visibleSec <= 0.5}
+        >
+          +
+        </button>
+        <button
+          className={`tl-zoom-chip${bookmark ? ' has-bookmark' : ''}${
+            bookmark && isAtBookmark() ? ' at-bookmark' : ''
+          }`}
+          onClick={onZoomChipClick}
+          title={
+            !bookmark
+              ? '点击记住当前缩放/位置 (再点回到这里;Shift+点击清除)'
+              : isAtBookmark()
+                ? '已在书签位置·再点更新书签到当前视图;Shift+点击清除'
+                : `点击回到书签位置 (${(duration > 0 ? duration / bookmark.visibleSec : 1).toFixed(1)}×);Shift+点击清除`
+          }
+        >
+          {bookmark && <span className="tl-zoom-pin">📌</span>}
+          {zoomLevel.toFixed(1)}×
+        </button>
+        <button
+          className="tl-zoom-btn"
+          onClick={() => zoomBy(1.5)}
+          title="缩小"
+          disabled={view.visibleSec >= duration}
+        >
+          −
+        </button>
+        <button
+          className="tl-zoom-btn"
+          onClick={zoomToFit}
+          title="适应屏幕"
+          disabled={view.visibleSec >= duration - 0.01}
+        >
+          ⇱⇲
+        </button>
+      </div>
     </div>
   );
 }

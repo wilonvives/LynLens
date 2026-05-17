@@ -21,7 +21,11 @@ interface AIBarProps {
  * runs both passes back-to-back. Pre-selecting count up front is the single
  * biggest lever for good diarization, so we never skip this step.
  */
-export function AIBar({ diarizing, onOpenOrientDialog, onOpenQuickMarkDialog }: AIBarProps): JSX.Element {
+export function AIBar({
+  diarizing,
+  onOpenOrientDialog,
+  onOpenQuickMarkDialog,
+}: AIBarProps): JSX.Element {
   const store = useStore();
   const aiStatusClass =
     store.aiStatus === 'transcribing' ? 'working' : store.aiStatus === 'error' ? 'error' : 'ready';
@@ -81,7 +85,9 @@ export function AIBar({ diarizing, onOpenOrientDialog, onOpenQuickMarkDialog }: 
               : '字幕转录'}
       </button>
       {/* 区分说话人 button merged into 字幕转录 above — same dialog, one-click
-          pipeline. Chat panel MCP still exposes it separately. */}
+          pipeline. Chat panel MCP still exposes it separately. SRT import
+          lives inside that same dialog (second action button) — one entry
+          point instead of two competing buttons. */}
       <button
         className="ai"
         disabled={!store.projectId}

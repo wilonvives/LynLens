@@ -11,6 +11,14 @@ interface Props {
     orientation: 'landscape' | 'portrait';
     speakerCount: SpeakerCountChoice;
   }) => void;
+  /**
+   * Alternative to running whisper: read an existing .srt file as the
+   * project's transcript. Same dialog, second action button — keeps the
+   * "how do I get subtitles on this video" question in one place instead
+   * of two competing buttons on the toolbar. Receives the user-picked
+   * orientation so the imported subtitles get the same display width.
+   */
+  onImportSrt: (orientation: 'landscape' | 'portrait') => void;
   onCancel: () => void;
 }
 
@@ -30,6 +38,7 @@ export function OrientationDialog({
   videoMeta,
   defaultOrientation,
   onConfirm,
+  onImportSrt,
   onCancel,
 }: Props) {
   const autoOrient = getOrientation(
@@ -122,6 +131,17 @@ export function OrientationDialog({
 
         <div className="dialog-actions">
           <button onClick={onCancel}>取消</button>
+          {/* Secondary action: skip whisper, import an existing .srt
+              instead. The user picks orientation up top (still affects
+              subtitle display) but speaker count is ignored — diarization
+              needs the original audio, which the user can run separately
+              from chat panel if they want speaker tags on imported subs. */}
+          <button
+            onClick={() => onImportSrt(orientation)}
+            title="读取一个 .srt 文件作为字幕(跳过 AI 转录)"
+          >
+            📂 导入 SRT
+          </button>
           <button
             className="primary"
             onClick={() => onConfirm({ orientation, speakerCount })}

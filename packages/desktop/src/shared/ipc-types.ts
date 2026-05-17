@@ -179,6 +179,17 @@ export interface IpcApi {
     hintSec: number | null
   ): Promise<{ start: number; end: number } | null>;
   /**
+   * Create a fresh empty highlight variant the user fills in themselves.
+   * Seeded with one 3-second segment centred at `hintSec` (or 0 if null),
+   * auto-pinned so it survives later "重新生成" batches. Title defaults
+   * to "自定义 #N" when omitted. Returns the new variant.
+   */
+  addBlankHighlightVariant(
+    projectId: string,
+    hintSec: number | null,
+    title?: string
+  ): Promise<HighlightVariant>;
+  /**
    * Remove one segment from a variant. Refuses to delete the last remaining
    * segment (variant would be empty). Returns false on refusal / failure.
    */
@@ -187,11 +198,18 @@ export interface IpcApi {
     variantId: string,
     segmentIdx: number
   ): Promise<boolean>;
-  /** Export one variant to a file; same stream-copy pipeline as regular export. */
+  /**
+   * Export one variant to a file. Same encoder pipeline as the precision
+   * tab's `export` IPC (frame-accurate cuts + source color tags); mode +
+   * quality are optional with the same defaults the export dialog picks
+   * (precise + original) so legacy callers keep working.
+   */
   exportHighlight(
     projectId: string,
     variantId: string,
-    outputPath: string
+    outputPath: string,
+    mode?: 'precise',
+    quality?: 'original' | 'high' | 'medium' | 'low'
   ): Promise<ExportResultDto>;
 
   /**
@@ -321,6 +339,23 @@ export interface IpcApi {
    * the chosen absolute path on success, null when the user cancels.
    */
   saveSrt(projectId: string, content: string): Promise<string | null>;
+
+  /**
+   * Import an external .srt file as the project's transcript. When
+   * `srtPath` is omitted a native file picker opens (defaults to the
+   * source video's folder). Returns null when the user cancels the
+   * picker; on success returns the segment count + detected language
+   * + the absolute path that was read.
+   *
+   * Post-processing matches `transcribe`: cut filter, learned auto-
+   * corrections, proper-noun case normalisation, English fragment
+   * merge. Replaces any existing transcript without confirmation —
+   * caller should warn if needed.
+   */
+  importSrtIntoProject(
+    projectId: string,
+    srtPath?: string
+  ): Promise<{ segmentCount: number; language: string; sourcePath: string } | null>;
 
   // ---- Learning memory ----
   /**

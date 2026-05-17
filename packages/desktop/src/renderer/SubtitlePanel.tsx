@@ -772,6 +772,22 @@ export function SubtitlePanel({
                   seg={seg}
                   effStart={effStart}
                   effEnd={effEnd}
+                  // Compute neighbor edges for the "↤ 贴上 / ↦ 贴下" snap
+                  // buttons. Just direct prev/next — we don't try to skip
+                  // fully-cut neighbours since that's a rare edge case and
+                  // the snap-target validity check (next start > effStart,
+                  // prev end < effEnd) hides the button when the result
+                  // would be useless anyway.
+                  prevEffEnd={
+                    i > 0
+                      ? sourceToEffective(transcript.segments[i - 1].end, cutRanges)
+                      : undefined
+                  }
+                  nextEffStart={
+                    i < transcript.segments.length - 1
+                      ? sourceToEffective(transcript.segments[i + 1].start, cutRanges)
+                      : undefined
+                  }
                   editing={editingTime && editingTime.segId === seg.id ? editingTime : null}
                   onJump={onJump}
                   onBeginEdit={(edge, initial) =>
@@ -1158,6 +1174,20 @@ interface TimestampEditorProps {
   /** Effective start in seconds (already computed by caller). */
   effStart: number;
   effEnd: number;
+  /**
+   * Effective end time of the PREVIOUS segment (if any). When defined and
+   * editing the start edge, a "↤ 贴上" snap button appears that sets start
+   * to this value — closes the gap to the previous subtitle in one click.
+   */
+  prevEffEnd?: number;
+  /**
+   * Effective start time of the NEXT segment (if any). When defined and
+   * editing the end edge, a "↦ 贴下" snap button appears that sets end to
+   * this value — closes the gap to the next subtitle in one click. Solves
+   * "deleted the next card → now there's a silent gap I have to manually
+   * type the timestamp to close".
+   */
+  nextEffStart?: number;
   /** null when no edge of THIS segment is being edited. */
   editing: { edge: 'start' | 'end'; draft: string } | null;
   /** Seek the player to a SOURCE-time second (see SubtitlePanel.onJump). */
@@ -1178,6 +1208,8 @@ function TimestampEditor({
   seg,
   effStart,
   effEnd,
+  prevEffEnd,
+  nextEffStart,
   editing,
   onJump,
   onBeginEdit,
@@ -1191,6 +1223,24 @@ function TimestampEditor({
 
   function renderEdge(edge: 'start' | 'end', value: number, isEditing: boolean) {
     if (isEditing && editing) {
+      // Snap target: closes the gap to the adjacent subtitle in one click.
+      //   editing 'start' → snap to prev segment's end
+      //   editing 'end'   → snap to next segment's start
+      // Show only when the target keeps the segment non-empty (otherwise
+      // the snap would collapse start ≥ end and commitTimes would reject).
+      const snapTarget =
+        edge === 'start'
+          ? prevEffEnd != null && prevEffEnd < effEnd
+            ? prevEffEnd
+            : null
+          : nextEffStart != null && nextEffStart > effStart
+            ? nextEffStart
+            : null;
+      const snapLabel = edge === 'start' ? '↤ 贴上' : '↦ 贴下';
+      const snapTitle =
+        snapTarget != null
+          ? `贴到${edge === 'start' ? '上' : '下'}一段字幕 (${formatTime(snapTarget)})`
+          : '';
       return (
         <span className="sub-time-edit">
           <input
@@ -1248,6 +1298,17 @@ function TimestampEditor({
             >
               +0.5
             </button>
+            {snapTarget != null && (
+              <button
+                type="button"
+                className="sub-time-snap-btn"
+                onMouseDown={(e) => e.preventDefault()}
+                onClick={() => void onCommitEdit(edge, snapTarget)}
+                title={snapTitle}
+              >
+                {snapLabel}
+              </button>
+            )}
           </span>
         </span>
       );

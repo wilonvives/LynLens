@@ -131,6 +131,25 @@ export function registerHighlightsIpc(ctx: IpcContext): void {
     }
   );
 
+  /**
+   * Create a fresh empty variant the user will fill in via the timeline
+   * editor. Powers the "自定义" button next to "重新生成" in the highlight
+   * header. Seed segment is centred on `hintSec` (typically the current
+   * playhead) or starts at 0 if unspecified. Auto-pinned so it survives
+   * "重新生成" wiping the AI batch.
+   */
+  ipcMain.handle(
+    'add-blank-highlight-variant',
+    async (_ev, projectId: string, hintSec: number | null, title?: string) => {
+      const project = engine.projects.get(projectId);
+      const variant = project.addBlankHighlightVariant(hintSec, title);
+      if (project.projectPath) {
+        await engine.projects.saveProject(projectId).catch(() => {});
+      }
+      return variant;
+    }
+  );
+
   ipcMain.handle(
     'add-highlight-variant-segment',
     async (_ev, projectId: string, variantId: string, hintSec: number | null) => {
@@ -167,7 +186,18 @@ export function registerHighlightsIpc(ctx: IpcContext): void {
 
   ipcMain.handle(
     'export-highlight',
-    async (_ev, projectId: string, variantId: string, outputPath: string) => {
+    async (
+      _ev,
+      projectId: string,
+      variantId: string,
+      outputPath: string,
+      // Optional — defaults match the v0.4.1 behaviour so existing
+      // callers (MCP tools, old renderer code) keep working. New renderer
+      // sends the user's pick from the shared ExportDialog so the two
+      // tabs encode with the same parameters.
+      mode: 'precise' = 'precise',
+      quality: 'original' | 'high' | 'medium' | 'low' = 'original'
+    ) => {
       const project = engine.projects.get(projectId);
       const variant = project.findHighlightVariant(variantId);
       if (!variant) throw new Error(`Highlight variant not found: ${variantId}`);
@@ -177,13 +207,14 @@ export function registerHighlightsIpc(ctx: IpcContext): void {
       const ac = new AbortController();
       activeExports.set(projectId, ac);
       try {
-        // Single export pipeline now: frame-accurate cuts + color preserved.
-        // The previous mode: 'fast' (stream copy) was removed in v0.4.1 —
-        // it caused frame jumps at every cut and color shift on Windows.
+        // Single export pipeline: frame-accurate cuts + color preserved.
+        // Same engine call as the precision tab's `export` IPC — only
+        // difference is `keepOverride` (variant segments instead of the
+        // project's keep intervals).
         return await engine.exports.export(project, {
           outputPath,
-          mode: 'precise',
-          quality: 'original',
+          mode,
+          quality,
           signal: ac.signal,
           ffmpegPaths: engine.ffmpegPaths,
           keepOverride,

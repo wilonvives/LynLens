@@ -345,6 +345,26 @@
   border-color: var(--accent);
   color: var(--text1);
 }
+/* "贴上 / 贴下" snap-to-neighbour button — same shape as the nudge buttons
+   but tinted with accent so the user can find it without scanning, since
+   it's the only one that does a single high-leverage action ("close the
+   gap to the next subtitle in one click"). */
+.sub-time-snap-btn {
+  font-size: 10px;
+  padding: 0 6px;
+  margin-left: 4px;
+  border: 1px solid var(--accent);
+  background: rgba(99, 132, 240, 0.18);
+  color: var(--text1);
+  border-radius: 2px;
+  cursor: pointer;
+  font-variant-numeric: tabular-nums;
+  line-height: 16px;
+  font-weight: 600;
+}
+.sub-time-snap-btn:hover {
+  background: rgba(99, 132, 240, 0.32);
+}
 .sub-dirty { color: #f39c12; }
 .sub-cut-tag {
   color: #c0392b;

@@ -6,6 +6,9 @@ interface Props {
   defaultPath: string;
   onClose: () => void;
   onConfirm: (args: { outputPath: string; mode: ExportMode; quality: ExportQuality }) => void;
+  /** Override the heading. Defaults to "导出视频" for the precision tab; the
+   *  highlight tab passes "导出高光 — <variant title>" for clarity. */
+  title?: string;
 }
 
 /**
@@ -20,7 +23,7 @@ interface Props {
  * is visually transparent for SDR content. Mode is left at 'precise' under
  * the hood so the IPC contract stays stable.
  */
-export function ExportDialog({ defaultPath, onClose, onConfirm }: Props) {
+export function ExportDialog({ defaultPath, onClose, onConfirm, title }: Props) {
   const [outputPath, setOutputPath] = useState(defaultPath);
   const [quality, setQuality] = useState<ExportQuality>('original');
   const ex = useStore((s) => s.export);
@@ -34,7 +37,7 @@ export function ExportDialog({ defaultPath, onClose, onConfirm }: Props) {
   return (
     <div className="dialog-backdrop" onClick={(e) => e.target === e.currentTarget && onClose()}>
       <div className="dialog">
-        <h3>导出视频</h3>
+        <h3>{title ?? '导出视频'}</h3>
         <div className="dialog-row">
           <label>输出路径</label>
           <div style={{ display: 'flex', gap: 6 }}>

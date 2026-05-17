@@ -9,6 +9,13 @@
 import { ipcMain, dialog } from 'electron';
 import path from 'node:path';
 import { promises as fsp } from 'node:fs';
+import {
+  applyAutoCorrections,
+  applyProperNouns,
+  filterTranscriptByCuts,
+  mergeShortEnglishSegments,
+  parseSrt,
+} from '@lynlens/core';
 import type { IpcContext } from './_context';
 
 export function registerTranscriptIpc(ctx: IpcContext): void {
@@ -37,6 +44,75 @@ export function registerTranscriptIpc(ctx: IpcContext): void {
       // browser-side blob download wrote before.
       await fsp.writeFile(result.filePath, '\uFEFF' + content, 'utf-8');
       return result.filePath;
+    }
+  );
+
+  /**
+   * Import an external SRT file as the project's transcript. The user's
+   * workflow: third-party tool / hand-edit produced subtitles for this
+   * exact video; we read them in instead of running whisper from scratch.
+   *
+   * When `srtPath` is omitted we show a native file picker so the user
+   * can browse. Defaults the dialog to the source video's folder \u2014 that's
+   * where the SRT typically sits when someone exports one alongside.
+   *
+   * Post-processing matches the live transcribe pipeline:
+   *   1. cut-range filter (drop / trim segments inside ripple cuts)
+   *   2. learned auto-corrections (so the user's "\u5728\u4F5C"\u2192"\u5728\u505A" still apply)
+   *   3. proper-noun canonical casing
+   *   4. short-English merge (in case the SRT was also chopped fine)
+   *
+   * Returns the count + source path so the renderer can show a confirmation
+   * toast. Throws on parse failure \u2014 caller surfaces the error to the user.
+   */
+  ipcMain.handle(
+    'import-srt-into-project',
+    async (_ev, projectId: string, srtPath?: string) => {
+      const project = engine.projects.get(projectId);
+      let actualPath = srtPath ?? null;
+      if (!actualPath) {
+        const defaultDir = path.dirname(project.videoPath);
+        const result = await dialog.showOpenDialog(getMainWindow()!, {
+          title: '\u5BFC\u5165\u5B57\u5E55\u6587\u4EF6',
+          defaultPath: defaultDir,
+          properties: ['openFile'],
+          filters: [{ name: 'SubRip Subtitle', extensions: ['srt'] }],
+        });
+        if (result.canceled || result.filePaths.length === 0) return null;
+        actualPath = result.filePaths[0];
+      }
+      const raw = await fsp.readFile(actualPath, 'utf-8');
+      let transcript = parseSrt(raw);
+      // Same post-process pipeline as transcribe: cut filter \u2192 auto-fix \u2192
+      // proper-noun case \u2192 English merge. Same source-of-truth for both
+      // paths means the user gets the same polish whether they transcribe
+      // or import.
+      if (project.cutRanges.length > 0) {
+        transcript = filterTranscriptByCuts(transcript, project.cutRanges);
+      }
+      const autoCorrections = engine.learningMemory.getAutoCorrections();
+      if (Object.keys(autoCorrections).length > 0) {
+        transcript = applyAutoCorrections(transcript, autoCorrections);
+      }
+      const properNouns = engine.learningMemory.getProperNouns();
+      if (Object.keys(properNouns).length > 0) {
+        transcript = applyProperNouns(transcript, properNouns);
+      }
+      transcript = mergeShortEnglishSegments(transcript);
+      project.setTranscript(transcript);
+      if (project.projectPath) {
+        await engine.projects.saveProject(projectId);
+      }
+      engine.eventBus.emit({
+        type: 'transcription.completed',
+        projectId,
+        segmentCount: transcript.segments.length,
+      });
+      return {
+        segmentCount: transcript.segments.length,
+        language: transcript.language,
+        sourcePath: actualPath,
+      };
     }
   );
 

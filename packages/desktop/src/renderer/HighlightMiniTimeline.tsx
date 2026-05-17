@@ -32,6 +32,27 @@ interface Props {
    * parent to re-render this panel on every timeupdate.
    */
   getPlayheadSourceSec?: () => number | null;
+  /**
+   * Current playback position as a fraction [0, 1] of the variant total.
+   * Drives the playhead cursor that glides across the segment blocks —
+   * which doubles as the variant's progress bar. Pass `undefined` when no
+   * variant is playing.
+   */
+  elapsedFrac?: number;
+  /**
+   * Click-on-timeline → seek inside the variant. Receives the click x as
+   * a fraction [0, 1] of the timeline width (NOT seconds). Parent
+   * translates to elapsed-seconds-within-variant then dispatches to the
+   * video element.
+   */
+  onSeek?: (frac: number) => void;
+  /**
+   * Mode flag: when 'embedded' the component drops its own toolbar (the
+   * parent renders + 加段 in the unified player dock). When omitted
+   * defaults to 'standalone' which renders the local + 加段 toolbar so
+   * older callers keep working.
+   */
+  mode?: 'standalone' | 'embedded';
 }
 
 interface DragState {
@@ -49,6 +70,9 @@ export function HighlightMiniTimeline({
   variant,
   onVariantChanged,
   getPlayheadSourceSec,
+  elapsedFrac,
+  onSeek,
+  mode = 'standalone',
 }: Props) {
   const wrapRef = useRef<HTMLDivElement | null>(null);
   const [drag, setDrag] = useState<DragState | null>(null);
@@ -179,22 +203,41 @@ export function HighlightMiniTimeline({
     }
   }
 
+  /**
+   * Click anywhere on the timeline body → seek the player to that point
+   * within the variant. Skipped when no handler is wired (standalone
+   * mode pre-unification didn't support this). Ignored when the click
+   * lands on a child control (drag handle, delete button) — those
+   * stopPropagation themselves so we won't see them.
+   */
+  function onTimelineClick(e: React.MouseEvent<HTMLDivElement>): void {
+    if (!onSeek) return;
+    const rect = e.currentTarget.getBoundingClientRect();
+    const frac = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+    onSeek(frac);
+  }
+
   return (
-    <div className="hl-mini-timeline-wrap">
+    <div className={`hl-mini-timeline-wrap${mode === 'embedded' ? ' embedded' : ''}`}>
       {error && <div className="hl-mini-err">{error}</div>}
-      <div className="hl-mini-toolbar">
-        <span className="hl-mini-toolbar-hint">
-          拖两端调整 · 悬停显示删除
-        </span>
-        <button
-          className="hl-mini-add"
-          onClick={() => void addSegment()}
-          title="从视频当前位置开始加 3 秒段;如果位置被占了,自动放到末尾。加完再拖边调整。"
-        >
-          + 加段
-        </button>
-      </div>
-      <div className="hl-mini-timeline" ref={wrapRef}>
+      {/* Standalone mode keeps the toolbar (legacy callers). In embedded
+          mode the parent (HighlightPanel's unified player dock) renders
+          the + 加段 button next to the transport controls instead. */}
+      {mode === 'standalone' && (
+        <div className="hl-mini-toolbar">
+          <span className="hl-mini-toolbar-hint">
+            拖两端调整 · 悬停显示删除
+          </span>
+          <button
+            className="hl-mini-add"
+            onClick={() => void addSegment()}
+            title="从视频当前位置开始加 3 秒段;如果位置被占了,自动放到末尾。加完再拖边调整。"
+          >
+            + 加段
+          </button>
+        </div>
+      )}
+      <div className="hl-mini-timeline" ref={wrapRef} onClick={onTimelineClick}>
         {variant.segments.map((s, i) => {
           // Use the drag preview for the segment being dragged; original
           // otherwise. This lets adjacent segments render at their real
@@ -245,7 +288,36 @@ export function HighlightMiniTimeline({
             </div>
           );
         })}
+        {/* Playhead — only when parent told us where playback is. Lets
+            the mini-timeline act as the variant's scrubber too, killing
+            the previously-separate progress bar. Pointer-events:none so
+            the underlying timeline keeps catching seek clicks. */}
+        {typeof elapsedFrac === 'number' && (
+          <div
+            className="hl-mini-playhead"
+            style={{ left: `${Math.max(0, Math.min(1, elapsedFrac)) * 100}%` }}
+          />
+        )}
       </div>
     </div>
+  );
+}
+
+/**
+ * Imperative escape hatch so the unified player dock (embedded mode) can
+ * trigger the "add segment" action from its own toolbar. Exposed as a
+ * named export so the parent can build its own button without re-
+ * implementing all the IPC + error handling. Kept beside the component
+ * to make the contract obvious.
+ */
+export async function addHighlightVariantSegment(
+  projectId: string,
+  variantId: string,
+  hintSourceSec: number | null
+): Promise<{ start: number; end: number } | null> {
+  return window.lynlens.addHighlightVariantSegment(
+    projectId,
+    variantId,
+    hintSourceSec
   );
 }

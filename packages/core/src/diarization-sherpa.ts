@@ -266,18 +266,41 @@ function runChildCollectingStdout(
         .map((l) => l.trim())
         .filter((l) => l.length > 0 && !/^progress\s+[\d.]+%/i.test(l));
       const tail = cleanLines.slice(-4).join('\n');
-      // code === null means the process was killed by a signal (OOM-kill
-      // for SIGKILL on long videos, or SIGTERM/SIGSEGV otherwise).
-      // Surface this distinctly so the user knows it wasn't sherpa's fault.
+      // Always log full stderr to main-process console — the in-UI error is
+      // truncated and lossy, but for SIGBUS / SIGSEGV diagnosis we want the
+      // actual crash context preserved somewhere. `cleanLines` is post-
+      // filter; we want even the progress noise gone but every real line.
+      // eslint-disable-next-line no-console
+      console.error(
+        `[sherpa-onnx] failed (code=${code} sig=${sigName ?? 'none'}). Full stderr (no progress):\n${cleanLines.join('\n')}`
+      );
+      // code === null means the process was killed by a signal. Most common
+      // on macOS for this binary:
+      //   SIGBUS  → degenerate input (e.g. --num-clusters=1, silent audio,
+      //             zero-length WAV). NOT memory pressure — that's SIGKILL.
+      //   SIGKILL → OOM killer (very long video on a small-RAM Mac).
+      //   SIGSEGV → onnxruntime bug / corrupted model file.
       const exitDesc =
         code === null
-          ? `被系统终止 (signal ${sigName ?? 'unknown'}, 通常是内存不足或视频过长)`
+          ? `被系统终止 (signal ${sigName ?? 'unknown'})`
           : `退出码 ${code}`;
-      const hint = stderr.includes('quarantine')
-        ? '\n提示: macOS Gatekeeper 可能拦了二进制,试试:\n  xattr -cr packages/desktop/resources/diarization/mac-arm64/'
-        : '';
+      const hints: string[] = [];
+      if (sigName === 'SIGBUS') {
+        hints.push(
+          '提示: SIGBUS 通常是输入退化导致 (静音 / 极短音频 / 单一说话人聚类)。\n' +
+            '试试: 1) 用更长的有声片段 2) 改成 2+ 说话人 3) 确认视频有音轨'
+        );
+      } else if (sigName === 'SIGKILL') {
+        hints.push('提示: SIGKILL 通常是内存不足。试试: 用更短的视频片段。');
+      }
+      if (stderr.includes('quarantine')) {
+        hints.push(
+          '提示: macOS Gatekeeper 可能拦了二进制,试试:\n  xattr -cr packages/desktop/resources/diarization/mac-arm64/'
+        );
+      }
       const cleanMessage = tail.length > 0 ? `\n${tail}` : '';
-      reject(new Error(`sherpa-onnx ${exitDesc}${cleanMessage}${hint}`));
+      const hintText = hints.length > 0 ? '\n' + hints.join('\n') : '';
+      reject(new Error(`sherpa-onnx ${exitDesc}${cleanMessage}${hintText}`));
     });
   });
 }

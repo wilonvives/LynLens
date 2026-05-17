@@ -324,6 +324,88 @@ button.ai.active {
   position: relative;
 }
 
+/* ---------- Shared timeline zoom-controls overlay ----------
+   Used by both the precision tab's Timeline and the highlight tab's
+   HighlightTimeline. Floats bottom-right of the canvas with a click-to-
+   bookmark chip in the middle: click to save the current zoom + scroll
+   position; click again from a different view to jump back. Shift+click
+   clears. Bookmarks persist per-tab via localStorage. */
+.tl-zoom-controls {
+  position: absolute;
+  bottom: 4px;
+  right: 4px;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  background: rgba(20, 20, 24, 0.85);
+  border: 1px solid #2a2a2a;
+  border-radius: 4px;
+  padding: 2px;
+  z-index: 4;
+  /* Cursor reset inside — the wrapping `.timeline-wrap` sets various
+     drag cursors that would otherwise bleed through. */
+  cursor: default;
+}
+.tl-zoom-btn {
+  background: #22222a;
+  border: 1px solid #3a3a3a;
+  color: var(--text1);
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 3px;
+  cursor: pointer;
+  line-height: 18px;
+  min-width: 22px;
+}
+.tl-zoom-btn:hover:not(:disabled) {
+  background: #2d2d38;
+  border-color: var(--accent);
+}
+.tl-zoom-btn:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+/* Click-to-bookmark chip. Visual states:
+     idle (no bookmark)  — plain text, like a static zoom display.
+     has-bookmark        — 📌 pin prefix, accent-tinted border.
+     at-bookmark         — solid accent fill (currently at saved view;
+                           clicking re-saves to update the bookmark). */
+.tl-zoom-chip {
+  font-size: 10px;
+  color: var(--text2);
+  font-variant-numeric: tabular-nums;
+  min-width: 44px;
+  text-align: center;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 3px;
+  padding: 2px 6px;
+  cursor: pointer;
+  line-height: 16px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+}
+.tl-zoom-chip:hover {
+  background: #2d2d38;
+  border-color: #3a3a3a;
+  color: var(--text1);
+}
+.tl-zoom-chip.has-bookmark {
+  border-color: var(--accent);
+  color: var(--text1);
+}
+.tl-zoom-chip.at-bookmark {
+  background: rgba(99, 132, 240, 0.25);
+  border-color: var(--accent);
+  color: #fff;
+}
+.tl-zoom-pin {
+  font-size: 9px;
+  line-height: 1;
+}
+
 .resizer {
   background: transparent;
   flex-shrink: 0;

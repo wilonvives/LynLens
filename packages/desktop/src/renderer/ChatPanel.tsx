@@ -46,6 +46,7 @@ const TOOL_LABELS: Record<string, string> = {
   'mcp__lynlens__clear_highlights': '清空高光变体',
   'mcp__lynlens__update_highlight_variant_segment': '调整高光段落',
   'mcp__lynlens__add_highlight_variant_segment': '添加高光段落',
+  'mcp__lynlens__add_blank_highlight_variant': '新建自定义高光',
   'mcp__lynlens__delete_highlight_variant_segment': '删除高光段落',
   'mcp__lynlens__reorder_highlight_variant_segment': '重排高光段落',
   'mcp__lynlens__reject_segment': '拒绝段',
@@ -79,6 +80,7 @@ const TOOL_LABELS: Record<string, string> = {
   'mcp__lynlens__update_transcript_segment': '修改字幕',
   'mcp__lynlens__suggest_transcript_fix': '提交字幕建议',
   'mcp__lynlens__replace_in_transcript': '全局替换字幕',
+  'mcp__lynlens__import_srt_into_project': '导入字幕文件',
 };
 
 function prettyToolName(raw: string): string {
