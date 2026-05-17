@@ -300,6 +300,15 @@ export function PackagingSubtitleOverlay({
   // Text container — when transform set: absolutely placed at (x, y) with
   // CSS transform for scale + rotation. Otherwise: flex-positioned via
   // outer container's verticalStyle.
+  //
+  // `width: max-content` is CRITICAL: without it, absolutely-positioned
+  // elements with `left: X%` and `width: auto` get sized to the
+  // available space from `left` to the right edge of the containing
+  // block. Drag the subtitle to x=90% → available width = 10% → the
+  // container shrinks to 10% of frame → CJK text wraps one char per
+  // line. Dragging LEFT (x=10%) leaves 90% available so it looked fine.
+  // `max-content` makes the container size to its natural content
+  // width (one-line preferred), with `maxWidth: 92%` still capping it.
   const textContainerStyle: React.CSSProperties = renderTransform
     ? {
         position: 'absolute',
@@ -307,6 +316,7 @@ export function PackagingSubtitleOverlay({
         top: `${renderTransform.y * 100}%`,
         transform: `translate(-50%, -50%) scale(${renderTransform.scale}) rotate(${renderTransform.rotation}deg)`,
         transformOrigin: 'center center',
+        width: 'max-content',
         maxWidth: '92%',
         padding: '6px 18px',
         background: bgColor ?? 'transparent',
@@ -319,6 +329,7 @@ export function PackagingSubtitleOverlay({
         outlineOffset: 2,
       }
     : {
+        width: 'max-content',
         maxWidth: '92%',
         padding: '6px 18px',
         background: bgColor ?? 'transparent',
