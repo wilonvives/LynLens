@@ -222,6 +222,13 @@ export function PackagingSubtitleOverlay({
         position: 'absolute',
         inset: 0,
         display: 'flex',
+        // flex-direction COLUMN so:
+        //   - justifyContent controls VERTICAL placement (top/center/bottom)
+        //   - alignItems controls HORIZONTAL placement (always center)
+        // The old code used row direction with the same fields, which
+        // made position='bottom' actually render text on the RIGHT edge
+        // vertically centered — looked like "字在中间" in every screenshot.
+        flexDirection: 'column',
         alignItems: 'center',
         pointerEvents: 'none',
         ...verticalStyle,

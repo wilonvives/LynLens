@@ -6,6 +6,7 @@
  */
 export { PackagingAudioTab } from './PackagingAudioTab';
 export { PackagingCameraTab } from './PackagingCameraTab';
+export { PackagingInlineEditor } from './PackagingInlineEditor';
 export { PackagingRightPanel, type PackagingTab } from './PackagingRightPanel';
 export { PackagingSegmentCard } from './PackagingSegmentCard';
 export { PackagingSubtitlesTab } from './PackagingSubtitlesTab';

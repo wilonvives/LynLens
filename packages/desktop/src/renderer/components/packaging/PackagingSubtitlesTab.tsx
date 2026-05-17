@@ -177,6 +177,18 @@ export function PackagingSubtitlesTab({
     });
   }
 
+  function setDefaultPosition(position: 'top' | 'center' | 'bottom'): void {
+    onPlanChange({
+      ...plan,
+      defaults: {
+        ...plan.defaults,
+        subtitle: { ...(plan.defaults.subtitle ?? {}), position },
+      },
+    });
+  }
+
+  const defaultPosition = plan.defaults.subtitle?.position ?? 'bottom';
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
       {/* Plan-level default style — applies to every line unless that
@@ -189,24 +201,49 @@ export function PackagingSubtitlesTab({
           borderRadius: 6,
         }}
       >
-        <div style={{ fontSize: 11, color: 'var(--text2)', marginBottom: 6 }}>
-          默认样式 (所有未单独调整的段)
+        <div style={{ fontSize: 11, color: 'var(--text2)', marginBottom: 8 }}>
+          默认样式 (所有段共用)
         </div>
-        <label
+        <div
           style={{
             display: 'flex',
             alignItems: 'center',
-            gap: 8,
+            gap: 16,
             fontSize: 12,
             color: 'var(--text2)',
+            flexWrap: 'wrap',
           }}
         >
-          字幕颜色
-          <input
-            type="color"
-            value={defaultColor}
-            onChange={(e) => setDefaultColor(e.target.value)}
-            style={{
+          <label style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+            位置
+            <div style={{ display: 'inline-flex', border: '1px solid #333', borderRadius: 4, overflow: 'hidden' }}>
+              {(['top', 'center', 'bottom'] as const).map((p) => (
+                <button
+                  key={p}
+                  onClick={() => setDefaultPosition(p)}
+                  style={{
+                    padding: '4px 10px',
+                    fontSize: 11,
+                    background: defaultPosition === p ? 'var(--accent)' : '#181820',
+                    color: defaultPosition === p ? '#fff' : 'var(--text2)',
+                    border: 'none',
+                    borderRight: p !== 'bottom' ? '1px solid #333' : 'none',
+                    cursor: 'pointer',
+                  }}
+                  title={p === 'top' ? '顶部' : p === 'center' ? '中间' : '底部'}
+                >
+                  {p === 'top' ? '↑' : p === 'center' ? '●' : '↓'}
+                </button>
+              ))}
+            </div>
+          </label>
+          <label style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+            颜色
+            <input
+              type="color"
+              value={defaultColor}
+              onChange={(e) => setDefaultColor(e.target.value)}
+              style={{
               width: 40,
               height: 24,
               padding: 0,
@@ -216,10 +253,11 @@ export function PackagingSubtitlesTab({
               background: 'transparent',
             }}
           />
-          <span style={{ color: 'var(--text3)', fontSize: 10 }}>
-            字号 / 字体留给 v0.6+ 完整面板。
+          </label>
+          <span style={{ color: 'var(--text3)', fontSize: 10, flexBasis: '100%' }}>
+            字号 / 字体 / 每段单独定位留给 v0.6+。当前所有段共用一个位置 + 颜色。
           </span>
-        </label>
+        </div>
       </div>
 
       {/* Segment list */}

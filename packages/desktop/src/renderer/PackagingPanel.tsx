@@ -43,6 +43,7 @@ import { PackagingSubtitleOverlay } from './components/PackagingSubtitleOverlay'
 import {
   PackagingAudioTab,
   PackagingCameraTab,
+  PackagingInlineEditor,
   PackagingRightPanel,
   PackagingSubtitlesTab,
   PackagingTemplatesTab,
@@ -94,6 +95,8 @@ export function PackagingPanel({ effectiveDuration }: Props): JSX.Element {
    */
   const [jumpToIdx, setJumpToIdx] = useState<number | null>(null);
   const [jumpToken, setJumpToken] = useState(0);
+  /** Floating quick-edit toolbar visibility (shown over the video preview). */
+  const [showInlineEditor, setShowInlineEditor] = useState(false);
 
   // Preview render state.
   const [preview, setPreview] = useState<PreviewState | null>(null);
@@ -570,14 +573,31 @@ export function PackagingPanel({ effectiveDuration }: Props): JSX.Element {
                     sourceHeight={videoMeta.height}
                     displayHeight={wrapSize.h}
                     onSubtitleClick={(segmentIdx) => {
-                      // Switch to 字幕 tab + tell the tab to scroll &
-                      // pulse the card. Token bump re-fires the effect
-                      // even when the same idx is clicked twice.
+                      // Two actions on subtitle click:
+                      //   1. Pop up the inline mini-toolbar over the
+                      //      video for instant 位置/颜色 changes (the
+                      //      gesture user expects from open-pai etc).
+                      //   2. ALSO scroll the corresponding card into
+                      //      view in the 字幕 tab and switch to it, so
+                      //      keyword-level edits are one click away.
+                      setShowInlineEditor(true);
                       setActiveTab('subtitles');
                       setJumpToIdx(segmentIdx);
                       setJumpToken((t) => t + 1);
                     }}
                   />
+                  {/* Floating quick-edit toolbar — appears over the
+                      video preview when subtitle is clicked. */}
+                  {showInlineEditor && plan && (
+                    <PackagingInlineEditor
+                      plan={plan}
+                      onPlanChange={handlePlanChange}
+                      onClose={() => setShowInlineEditor(false)}
+                      subtitlePosition={
+                        plan.defaults.subtitle?.position ?? 'bottom'
+                      }
+                    />
+                  )}
                 </div>
               ) : sourceVideoUrl ? (
                 <div style={{ color: 'var(--text3)' }}>
