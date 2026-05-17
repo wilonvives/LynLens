@@ -27,8 +27,20 @@ import { Watermark } from './components/Watermark';
 
 export interface PackagingCompositionProps {
   videoPath: string;
-  /** Source-time segments to play, in order. */
-  segments: Array<{ start: number; end: number; text?: string }>;
+  /**
+   * Source-time segments to play, in order. **Each entry should be one
+   * transcript line** (a single subtitle), NOT a variant chunk — so
+   * subtitles change at the right cadence. `segmentIdx` is the original
+   * transcript index (matches what AI prompt sees + what PackagingPlan
+   * recipes reference). Pre-bug-fix this was joined per-variant-chunk
+   * which caused all sentences in a chunk to appear stacked at once.
+   */
+  segments: Array<{
+    start: number;
+    end: number;
+    text: string;
+    segmentIdx: number;
+  }>;
   /** AI-generated packaging plan. May be null → render with defaults only. */
   plan: PackagingPlan | null;
   /** Frame rate the composition was registered at — needed for sec→frame. */
@@ -47,13 +59,16 @@ export function PackagingComposition({
   let cursorFrames = 0;
   return (
     <AbsoluteFill style={{ backgroundColor: 'black' }}>
-      {segments.map((seg, idx) => {
+      {segments.map((seg) => {
         const durSec = Math.max(0, seg.end - seg.start);
         const durFrames = Math.max(1, Math.round(durSec * fps));
         const startFrames = cursorFrames;
         cursorFrames += durFrames;
 
-        const recipe = plan?.segments.find((s) => s.segmentIdx === idx);
+        // Match the AI recipe by ORIGINAL transcript segment index. Each
+        // `seg` here is one transcript line; plan.segments[i].segmentIdx
+        // is the index Claude saw + returned (e.g. "seg 12 → zoom 1.5").
+        const recipe = plan?.segments.find((s) => s.segmentIdx === seg.segmentIdx);
         const subtitleStyle = {
           ...(plan?.defaults.subtitle ?? {}),
           ...(recipe?.subtitle ?? {}),
@@ -64,7 +79,11 @@ export function PackagingComposition({
         const text = seg.text ?? '';
 
         return (
-          <Sequence key={idx} from={startFrames} durationInFrames={durFrames}>
+          <Sequence
+            key={seg.segmentIdx}
+            from={startFrames}
+            durationInFrames={durFrames}
+          >
             <CameraZoom zoom={cameraZoom} focus={cameraFocus}>
               <OffthreadVideo
                 src={videoPath}

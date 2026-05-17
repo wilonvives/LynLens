@@ -22,16 +22,23 @@ interface SubtitleProps {
 }
 
 export function Subtitle({ text, style, wordEffects }: SubtitleProps): JSX.Element {
-  const font = style.font ?? 'PingFang SC Heavy, Source Han Sans CN, sans-serif';
+  // Stack PingFang SC Heavy on macOS, fall back to bold sans-serif elsewhere.
+  // "PingFang SC Heavy" is a font weight variant — most rendering engines
+  // want `font-family: 'PingFang SC'` + `font-weight: 900`. We use a stack
+  // that covers both naming conventions.
+  const font = style.font ?? "'PingFang SC', 'Source Han Sans CN', 'Helvetica Neue', sans-serif";
   const size = style.size ?? 56;
   const color = style.color ?? '#ffffff';
-  const outline = style.outline ?? { color: '#000000', width: 3 };
+  // Default outline ALWAYS applied unless explicitly cleared via {width: 0}.
+  // Subtitles over light/busy backgrounds are unreadable without an outline,
+  // and AI-returned plans sometimes omit the outline field entirely.
+  const outline = style.outline ?? { color: '#000000', width: 4 };
   const bgColor = style.bgColor;
   const position = style.position ?? 'bottom';
 
   // Tokenise to render each word with its own span so wordEffects can
-  // override per-token. Use simple whitespace split; intentional space
-  // between tokens is preserved with margin-right via inline-block.
+  // override per-token. Whitespace split — CJK without spaces becomes one
+  // token (wordIdx=0). v0.6+ may add char-level tokenisation.
   const tokens = text.split(/\s+/).filter((t) => t.length > 0);
   const effectByIdx = new Map<number, WordEffect>();
   (wordEffects ?? []).forEach((w) => effectByIdx.set(w.wordIdx, w));
@@ -43,8 +50,9 @@ export function Subtitle({ text, style, wordEffects }: SubtitleProps): JSX.Eleme
         ? { justifyContent: 'center' }
         : { justifyContent: 'flex-end', paddingBottom: '12%' };
 
-  // CSS text-shadow approximates outline via 4-corner offset shadows.
-  // Cleaner than -webkit-text-stroke (inconsistent across Chromium versions).
+  // CSS text-shadow approximates outline via 8-direction offset shadows.
+  // Cleaner than -webkit-text-stroke (inconsistent across Chromium versions
+  // + cuts strokes off CJK glyphs in some Chinese fonts).
   const textShadow = outline.width > 0
     ? Array.from({ length: 8 })
         .map((_, i) => {
@@ -81,7 +89,9 @@ export function Subtitle({ text, style, wordEffects }: SubtitleProps): JSX.Eleme
                 color: tokColor,
                 textShadow,
                 marginRight: i < tokens.length - 1 ? '0.25em' : 0,
-                fontWeight: 700,
+                // 900 = Heavy; covers PingFang's Heavy variant when the
+                // font-family stack falls back to the regular PingFang SC.
+                fontWeight: 900,
                 display: 'inline-block',
                 verticalAlign: 'baseline',
               }}

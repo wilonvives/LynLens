@@ -103,24 +103,44 @@ export function PackagingPanel({ effectiveDuration, videoPath }: Props): JSX.Ele
   }
 
   // Compute the source-time segments + text for preview / export.
+  // CRITICAL: each entry is ONE transcript line (single subtitle), not
+  // a variant chunk. Previously I joined all lines inside a variant chunk
+  // into one segment which made every sentence in the chunk appear at
+  // once on screen (visible bug: all 8 subtitles stacked vertically).
+  // `segmentIdx` is the ORIGINAL transcript index — matches what AI
+  // saw + what PackagingPlan recipes reference.
   const previewSegments = (() => {
     if (selectedVariant) {
-      return selectedVariant.segments.map((s) => {
-        const inside = transcript.segments.filter(
-          (t) => t.start >= s.start && t.end <= s.end
-        );
-        return {
-          start: s.start,
-          end: s.end,
-          text: inside.map((t) => t.text).join(' '),
-        };
+      // Variant: include transcript lines whose source-time falls inside
+      // ANY variant segment. Preserves transcript-line cadence for
+      // subtitles; camera zoom switches per-line based on plan.
+      const lines: Array<{
+        start: number;
+        end: number;
+        text: string;
+        segmentIdx: number;
+      }> = [];
+      transcript.segments.forEach((t, i) => {
+        for (const v of selectedVariant.segments) {
+          if (t.start >= v.start && t.end <= v.end) {
+            lines.push({
+              start: t.start,
+              end: t.end,
+              text: t.text,
+              segmentIdx: i,
+            });
+            break;
+          }
+        }
       });
+      return lines;
     }
-    // ROOT: use the full transcript segments as source-time pieces.
-    return transcript.segments.map((t) => ({
+    // ROOT: use every transcript line as its own segment.
+    return transcript.segments.map((t, i) => ({
       start: t.start,
       end: t.end,
       text: t.text,
+      segmentIdx: i,
     }));
   })();
 
@@ -266,7 +286,9 @@ export function PackagingPanel({ effectiveDuration, videoPath }: Props): JSX.Ele
           ))}
         </div>
 
-        {/* Preview area — Remotion Player when plan exists, else hint. */}
+        {/* Preview area — Remotion Player when plan exists, else hint.
+            Loading overlay shows on TOP of whatever is there (player or
+            hint) so the user never wonders "is it still working?". */}
         <div
           style={{
             flex: 1,
@@ -277,35 +299,67 @@ export function PackagingPanel({ effectiveDuration, videoPath }: Props): JSX.Ele
             alignItems: 'center',
             justifyContent: 'center',
             minHeight: 0,
+            position: 'relative',
+            overflow: 'hidden',
           }}
         >
           {videoUrl && videoMeta && plan ? (
             <PackagingPreview
-              videoPath={videoUrl.replace(/^lynlens-media:\/\//, '')}
+              // Pass the lynlens-media:// URL AS-IS — the app's custom
+              // protocol handler is registered in the Electron main and
+              // the BrowserWindow has access to it. Stripping the protocol
+              // (as we did previously) broke video loading entirely.
+              videoPath={videoUrl}
               segments={previewSegments}
               plan={plan}
               width={videoMeta.width}
               height={videoMeta.height}
               fps={videoMeta.fps}
             />
-          ) : (
+          ) : !generating ? (
             <div style={{ textAlign: 'center', color: 'var(--text3)', padding: 40 }}>
-              {generating ? (
-                <>
-                  <div style={{ fontSize: 24, marginBottom: 8 }}>✨</div>
-                  <div>AI 正在看字幕,设计包装方案...</div>
-                  <div style={{ fontSize: 11, marginTop: 6 }}>通常 5-15 秒</div>
-                </>
-              ) : (
-                <>
-                  <div style={{ fontSize: 14 }}>
-                    选好「{selectedVariant?.title ?? '整片'}」后,点上方「✨ 一键包装」开始
-                  </div>
-                  <div style={{ fontSize: 11, marginTop: 6 }}>
-                    AI 会自动决定每段字幕样式 + 画面什么时候 zoom
-                  </div>
-                </>
-              )}
+              <div style={{ fontSize: 14 }}>
+                选好「{selectedVariant?.title ?? '整片'}」后,点上方「✨ 一键包装」开始
+              </div>
+              <div style={{ fontSize: 11, marginTop: 6 }}>
+                AI 会自动决定每段字幕样式 + 画面什么时候 zoom
+              </div>
+            </div>
+          ) : null}
+
+          {/* Loading overlay — always on top while generating, with a
+              visible spinner so the user knows AI is working. */}
+          {generating && (
+            <div
+              style={{
+                position: 'absolute',
+                inset: 0,
+                background: 'rgba(0, 0, 0, 0.75)',
+                display: 'flex',
+                flexDirection: 'column',
+                alignItems: 'center',
+                justifyContent: 'center',
+                gap: 12,
+                zIndex: 10,
+                color: '#fff',
+              }}
+            >
+              <div
+                style={{
+                  width: 48,
+                  height: 48,
+                  border: '4px solid rgba(255,255,255,0.2)',
+                  borderTopColor: 'var(--accent)',
+                  borderRadius: '50%',
+                  animation: 'lynlens-spin 1s linear infinite',
+                }}
+              />
+              <div style={{ fontSize: 16, fontWeight: 500 }}>
+                ✨ AI 正在设计包装方案
+              </div>
+              <div style={{ fontSize: 12, color: 'rgba(255,255,255,0.6)' }}>
+                看完{transcript.segments.length} 段字幕,挑关键词 + 决定 zoom...通常 5-15 秒
+              </div>
             </div>
           )}
         </div>

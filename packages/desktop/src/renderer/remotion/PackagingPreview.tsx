@@ -19,8 +19,18 @@ import { PackagingComposition } from './PackagingComposition';
 interface PackagingPreviewProps {
   /** Absolute filesystem path to the source video. */
   videoPath: string;
-  /** Source-time segments to play in order. */
-  segments: Array<{ start: number; end: number; text?: string }>;
+  /**
+   * Source-time segments to play in order. Each entry is ONE transcript
+   * line (single subtitle), NOT a variant chunk — keeps the subtitle
+   * cadence right. `segmentIdx` is the original transcript index used
+   * to look up the per-segment recipe in the PackagingPlan.
+   */
+  segments: Array<{
+    start: number;
+    end: number;
+    text: string;
+    segmentIdx: number;
+  }>;
   /** Packaging plan to apply. null → render with defaults (no decorations). */
   plan: PackagingPlan | null;
   /** Video dimensions — Player needs these to scale correctly. */
@@ -44,9 +54,13 @@ export function PackagingPreview({
   style,
   showControls = true,
 }: PackagingPreviewProps): JSX.Element {
-  // Player wants a file:// URL for local files when running in Electron.
+  // Pass the URL through unchanged if it already has a protocol (handles
+  // file://, http(s)://, AND the app's custom lynlens-media:// scheme).
+  // Otherwise treat as a raw filesystem path and prepend file://. The
+  // lynlens-media handler is the normal LynLens way to load source video
+  // in the renderer (registered in main/index.ts).
   const videoUrl = useMemo(() => {
-    if (videoPath.startsWith('file://') || videoPath.startsWith('http')) {
+    if (/^[a-z][a-z0-9+.-]*:\/\//i.test(videoPath)) {
       return videoPath;
     }
     return `file://${videoPath}`;

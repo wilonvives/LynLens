@@ -345,18 +345,34 @@ export function registerHighlightsIpc(ctx: IpcContext): void {
             mode: 'precise',
             outputPath,
           });
+          // Flatten to per-transcript-line segments so subtitles change
+          // at the right cadence (one subtitle per sentence, not "all
+          // subtitles in this 35s variant chunk shown at once"). Use the
+          // original transcript indices for `segmentIdx` so the recipe
+          // lookup in PackagingComposition can find each segment's
+          // packaging plan via the transcript-relative index Claude saw.
+          const renderSegments: Array<{
+            start: number;
+            end: number;
+            text: string;
+            segmentIdx: number;
+          }> = [];
+          (project.transcript?.segments ?? []).forEach((t, i) => {
+            for (const v of variant.segments) {
+              if (t.start >= v.start && t.end <= v.end) {
+                renderSegments.push({
+                  start: t.start,
+                  end: t.end,
+                  text: t.text,
+                  segmentIdx: i,
+                });
+                break;
+              }
+            }
+          });
           await renderPackagingPlan({
             videoPath: project.videoPath,
-            segments: variant.segments.map((s) => {
-              const inside = project.transcript?.segments.filter(
-                (t) => t.start >= s.start && t.end <= s.end
-              ) ?? [];
-              return {
-                start: s.start,
-                end: s.end,
-                text: inside.map((t) => t.text).join(' '),
-              };
-            }),
+            segments: renderSegments,
             plan,
             width: project.videoMeta.width,
             height: project.videoMeta.height,

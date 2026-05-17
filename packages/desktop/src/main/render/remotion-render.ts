@@ -106,8 +106,18 @@ async function getOrBuildBundle(): Promise<string> {
 export interface RenderPackagingArgs {
   /** Absolute filesystem path to the source video. */
   videoPath: string;
-  /** Source-time segments to play in order. */
-  segments: Array<{ start: number; end: number; text?: string }>;
+  /**
+   * Source-time segments to play in order. Each entry is ONE transcript
+   * line (single subtitle), NOT a variant chunk. `segmentIdx` is the
+   * original transcript index so the composition can look up per-segment
+   * recipes from the plan.
+   */
+  segments: Array<{
+    start: number;
+    end: number;
+    text: string;
+    segmentIdx: number;
+  }>;
   /** Plan describing per-segment subtitle / camera / watermark. */
   plan: PackagingPlan;
   /** Composition dimensions (typically videoMeta.width/height). */
@@ -141,10 +151,21 @@ const QUALITY_CRF: Record<RenderPackagingArgs['quality'], number> = {
  */
 export async function renderPackagingPlan(args: RenderPackagingArgs): Promise<void> {
   const serveUrl = await getOrBuildBundle();
-  // file:// URL is what OffthreadVideo expects for local files.
-  const videoUrl = args.videoPath.startsWith('file://')
-    ? args.videoPath
-    : `file://${args.videoPath}`;
+  // file:// URL is what OffthreadVideo expects in headless Chrome (which
+  // doesn't have the LynLens app's custom lynlens-media:// protocol handler
+  // registered). Strip any other protocol and prepend file://.
+  const rawPath = args.videoPath
+    .replace(/^lynlens-media:\/\/\/?f\//, '')
+    .replace(/^file:\/\//, '');
+  // The lynlens-media path component is URL-encoded; decode for filesystem.
+  const decodedPath = (() => {
+    try {
+      return decodeURIComponent(rawPath);
+    } catch {
+      return rawPath;
+    }
+  })();
+  const videoUrl = `file://${decodedPath.startsWith('/') ? decodedPath : '/' + decodedPath}`;
 
   const inputProps = {
     videoPath: videoUrl,
