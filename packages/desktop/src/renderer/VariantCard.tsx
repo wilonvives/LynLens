@@ -232,6 +232,9 @@ export function VariantCard({
   const [titleDraft, setTitleDraft] = useState<string | null>(null);
   // AI 🪄 enrich in-flight indicator.
   const [enriching, setEnriching] = useState(false);
+  // Secondary-actions overflow menu (⋯) — keeps the visible button row
+  // short so cards don't wrap when titles are long.
+  const [moreOpen, setMoreOpen] = useState(false);
   const [editing, setEditing] = useState<
     | null
     | { segIdx: number; kind: 'start' | 'end' | 'reason'; draft: string }
@@ -314,6 +317,29 @@ export function VariantCard({
       await onVariantChanged();
     } catch (err) {
       setEditError(`失败: ${(err as Error).message}`);
+    }
+  }
+
+  /**
+   * Copy one segment out as its own new variant. Non-destructive — the
+   * source variant keeps the segment. Used for "分类出来" / "this
+   * piece is its own thing now" UX.
+   */
+  async function extractSegment(segIdx: number): Promise<void> {
+    if (!projectId) return;
+    try {
+      const created = await window.lynlens.extractHighlightSegment(
+        projectId,
+        variant.id,
+        segIdx
+      );
+      setEditError(null);
+      await onVariantChanged();
+      // Quick visible feedback — toast-style alert. Could be replaced
+      // with a non-blocking banner later.
+      alert(`✓ 已提取为新变体: "${created.title}"`);
+    } catch (err) {
+      setEditError(`提取失败: ${(err as Error).message}`);
     }
   }
 
@@ -558,65 +584,119 @@ export function VariantCard({
       )}
 
       <div className="variant-card-actions" onClick={(e) => e.stopPropagation()}>
+        {/* Primary row — kept short so cards don't wrap. Less-used
+            actions live in the ⋯ overflow menu next to it. */}
+        <button
+          className="primary"
+          onClick={doExport}
+          disabled={exporting || isBroken}
+          title={isBroken ? '变体已失效,无法导出' : '导出这个变体为视频文件'}
+        >
+          {exporting ? '导出中...' : '导出'}
+        </button>
         <button
           onClick={(e) => {
             e.stopPropagation();
             setExpanded((v) => !v);
           }}
+          title={expanded ? '收起段落详情' : '展开看每段时间 + 备注'}
         >
-          {expanded ? '收起段落' : '查看段落'}
+          {expanded ? '收起' : '段落'}
         </button>
         <button
-          onClick={(e) => {
-            e.stopPropagation();
-            void addSegment();
-          }}
-          disabled={!projectId || isBroken}
-          title="在变体末尾追加一段(默认 3 秒,加完可在展开视图里调)"
+          onClick={doCopy}
+          disabled={!transcript}
+          title="把这个变体对应的字幕拼起来复制到剪贴板"
         >
-          + 加段
+          {copied ? '已复制' : '复制'}
         </button>
-        <button
-          className="primary"
-          onClick={doExport}
-          disabled={exporting || isBroken}
-          title={isBroken ? '变体已失效,无法导出' : undefined}
-        >
-          {exporting ? '导出中...' : '导出'}
-        </button>
-        <button onClick={doCopy} disabled={!transcript} title="把这个变体对应的字幕拼起来复制到剪贴板">
-          {copied ? '已复制' : '复制文案'}
-        </button>
-        <button
-          onClick={(e) => void doEnrich(e)}
-          disabled={enriching || !transcript || !projectId}
-          title={
-            transcript
-              ? 'AI 看每段说了什么, 自动起标题 + 写段落备注'
-              : '需要先生成字幕,AI 才有信息推断'
-          }
-        >
-          {enriching ? '🪄 AI 整理中...' : '🪄 AI 起名/备注'}
-        </button>
-        <button
-          onClick={(e) => {
-            e.stopPropagation();
-            void onTogglePin(variant);
-          }}
-          className={isPinned ? 'pin-on' : 'pin-off'}
-          title={isPinned ? '取消收藏(下次生成会覆盖)' : '收藏,防止被下次生成覆盖'}
-        >
-          {isPinned ? '取消收藏' : '收藏'}
-        </button>
-        <button
-          onClick={(e) => {
-            e.stopPropagation();
-            if (confirm('永久删除这个变体?')) void onDelete(variant);
-          }}
-          title="永久删除这个变体"
-        >
-          删除
-        </button>
+        {/* ⋯ overflow menu trigger. Inline popover anchored under it. */}
+        <div style={{ position: 'relative', display: 'inline-flex' }}>
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              setMoreOpen((v) => !v);
+            }}
+            title="更多操作"
+            aria-haspopup="menu"
+            aria-expanded={moreOpen}
+          >
+            ⋯
+          </button>
+          {moreOpen && (
+            <>
+              {/* Click-outside backdrop — invisible, full viewport, eats
+                  the next click to close the menu. */}
+              <div
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setMoreOpen(false);
+                }}
+                style={{
+                  position: 'fixed',
+                  inset: 0,
+                  zIndex: 100,
+                  background: 'transparent',
+                }}
+              />
+              <div
+                role="menu"
+                style={{
+                  position: 'absolute',
+                  top: 'calc(100% + 4px)',
+                  right: 0,
+                  zIndex: 101,
+                  minWidth: 180,
+                  background: '#1a1a26',
+                  border: '1px solid #2a2a2a',
+                  borderRadius: 6,
+                  boxShadow: '0 8px 24px rgba(0,0,0,0.5)',
+                  padding: 4,
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: 2,
+                }}
+              >
+                <MenuItem
+                  disabled={!projectId || isBroken}
+                  onClick={() => {
+                    setMoreOpen(false);
+                    void addSegment();
+                  }}
+                  label="➕ 加一段"
+                  hint="在末尾追加 3 秒空段"
+                />
+                <MenuItem
+                  disabled={enriching || !transcript || !projectId}
+                  onClick={() => {
+                    setMoreOpen(false);
+                    void doEnrich({ stopPropagation: () => {} } as unknown as React.MouseEvent);
+                  }}
+                  label={enriching ? '🪄 整理中…' : '🪄 AI 起名 / 备注'}
+                  hint={transcript ? 'AI 看内容自动写标题和备注' : '需要先生成字幕'}
+                />
+                <MenuItem
+                  onClick={() => {
+                    setMoreOpen(false);
+                    void onTogglePin(variant);
+                  }}
+                  label={isPinned ? '⭐️ 取消收藏' : '⭐️ 收藏'}
+                  hint={isPinned ? '下次生成会覆盖' : '保护,防止生成时被覆盖'}
+                />
+                <div style={{ height: 1, background: '#2a2a2a', margin: '2px 0' }} />
+                <MenuItem
+                  onClick={() => {
+                    setMoreOpen(false);
+                    if (confirm('永久删除这个变体?')) void onDelete(variant);
+                  }}
+                  label="🗑 删除变体"
+                  hint="永久删除"
+                  destructive
+                />
+              </div>
+            </>
+          )}
+        </div>
       </div>
 
       {expanded && (
@@ -722,6 +802,22 @@ export function VariantCard({
                   <span className="variant-seg-row-spacer" />
                   <button
                     className="variant-seg-del"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      void extractSegment(i);
+                    }}
+                    title="把这段单独抽出来,做一个新变体(原变体不动)"
+                    style={{
+                      fontSize: 11,
+                      padding: '3px 8px',
+                      color: 'var(--accent)',
+                      borderColor: 'var(--accent)',
+                    }}
+                  >
+                    → 新变体
+                  </button>
+                  <button
+                    className="variant-seg-del"
                     onClick={() => void deleteSegment(i)}
                     disabled={variant.segments.length <= 1}
                     title={
@@ -759,5 +855,59 @@ export function VariantCard({
         </div>
       )}
     </div>
+  );
+}
+
+/**
+ * Single row inside the variant card's ⋯ overflow menu. Plain button
+ * styled to look like a menu item; destructive items get a red tint.
+ */
+function MenuItem({
+  label,
+  hint,
+  onClick,
+  disabled,
+  destructive,
+}: {
+  label: string;
+  hint?: string;
+  onClick: () => void;
+  disabled?: boolean;
+  destructive?: boolean;
+}): JSX.Element {
+  return (
+    <button
+      onClick={onClick}
+      disabled={disabled}
+      title={hint}
+      style={{
+        width: '100%',
+        textAlign: 'left',
+        padding: '6px 10px',
+        background: 'transparent',
+        border: 'none',
+        color: disabled ? 'var(--text3)' : destructive ? '#ff6b6b' : 'var(--text1)',
+        cursor: disabled ? 'not-allowed' : 'pointer',
+        borderRadius: 4,
+        fontSize: 13,
+        display: 'flex',
+        flexDirection: 'column',
+        alignItems: 'flex-start',
+        gap: 1,
+      }}
+      onMouseEnter={(e) => {
+        if (!disabled) e.currentTarget.style.background = '#252533';
+      }}
+      onMouseLeave={(e) => {
+        e.currentTarget.style.background = 'transparent';
+      }}
+    >
+      <span>{label}</span>
+      {hint && (
+        <span style={{ fontSize: 10, color: 'var(--text3)', fontWeight: 400 }}>
+          {hint}
+        </span>
+      )}
+    </button>
   );
 }

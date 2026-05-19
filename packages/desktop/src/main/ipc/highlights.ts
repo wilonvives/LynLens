@@ -157,6 +157,35 @@ export function registerHighlightsIpc(ctx: IpcContext): void {
    * titles are rejected (refuses to wipe the field). Returns the
    * accepted title so the renderer can sync optimistic state.
    */
+  /**
+   * Copy one segment from an existing variant out into its own new
+   * variant. Source variant is untouched. Used by the "→ 新变体"
+   * button in each segment row of the variant card. Returns the new
+   * variant so the renderer can scroll/select it.
+   */
+  ipcMain.handle(
+    'extract-highlight-segment',
+    async (
+      _ev,
+      projectId: string,
+      sourceVariantId: string,
+      segmentIdx: number
+    ) => {
+      const project = engine.projects.get(projectId);
+      const created = project.extractHighlightSegmentAsVariant(
+        sourceVariantId,
+        segmentIdx
+      );
+      if (!created) {
+        throw new Error('无法提取(源变体不存在或段索引越界)');
+      }
+      if (project.projectPath) {
+        await engine.projects.saveProject(projectId).catch(() => {});
+      }
+      return created;
+    }
+  );
+
   ipcMain.handle(
     'rename-highlight-variant',
     async (_ev, projectId: string, variantId: string, newTitle: string) => {

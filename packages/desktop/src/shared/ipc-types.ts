@@ -166,6 +166,16 @@ export interface IpcApi {
     reasons: Array<string | null>;
   }>;
   /**
+   * Copy one segment from an existing variant into a new pinned
+   * variant. Source variant is untouched. Throws on bad ids.
+   * Returns the new variant so the renderer can scroll to / select it.
+   */
+  extractHighlightSegment(
+    projectId: string,
+    sourceVariantId: string,
+    segmentIdx: number
+  ): Promise<HighlightVariant>;
+  /**
    * Fine-tune the (start, end) of a segment inside a variant. Source
    * time. Returns false on validation failure (overlap / too short /
    * out of bounds). The variant's sourceSnapshot is cleared on success

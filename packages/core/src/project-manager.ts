@@ -864,6 +864,54 @@ export class Project {
     return next;
   }
 
+  /**
+   * "Extract this segment as a new variant" — non-destructive copy.
+   * The source variant is untouched; a fresh variant is created with
+   * just the one segment + a derived title.
+   *
+   * Title derivation:
+   *   - If segment has a non-empty reason, use it (clipped to 30 chars).
+   *   - Otherwise fall back to "{source-title} · 段 {idx+1}".
+   *
+   * Like addBlankHighlightVariant, the new variant is auto-pinned so
+   * the user's explicit action survives the next "重新生成" sweep.
+   *
+   * Returns the new variant on success, null when src not found or
+   * segmentIdx is out of range.
+   */
+  extractHighlightSegmentAsVariant(
+    sourceVariantId: string,
+    segmentIdx: number
+  ): HighlightVariant | null {
+    const src = this.highlightVariants.find((v) => v.id === sourceVariantId);
+    if (!src) return null;
+    if (segmentIdx < 0 || segmentIdx >= src.segments.length) return null;
+    const seg = src.segments[segmentIdx];
+
+    const rawReason = (seg.reason ?? '').trim();
+    const derivedTitle =
+      rawReason && rawReason !== '自定义起点'
+        ? rawReason.slice(0, 30)
+        : `${src.title} · 段 ${segmentIdx + 1}`;
+
+    const next: HighlightVariant = {
+      id: `hv_${uuid().slice(0, 8)}`,
+      title: derivedTitle,
+      style: src.style,
+      segments: [{ start: seg.start, end: seg.end, reason: seg.reason ?? '' }],
+      durationSeconds: seg.end - seg.start,
+      createdAt: new Date().toISOString(),
+      pinned: true,
+      sourceSnapshot: {
+        cutRangesHash: hashCutRanges(this.cutRanges),
+        transcriptFingerprint: fingerprintTranscript(this.transcript),
+      },
+    };
+    this.highlightVariants = [...this.highlightVariants, next];
+    this.modifiedAt = new Date().toISOString();
+    return next;
+  }
+
   // ---------- Packaging plans ----------
 
   /**
