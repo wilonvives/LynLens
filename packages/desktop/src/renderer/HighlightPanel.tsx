@@ -766,10 +766,45 @@ export function HighlightPanel({
           isPlaying={isPlaying}
           playingSegIdx={playingSegIdx}
           onSeek={(srcSec) => {
+            // Click on the timeline → just SEEK. The browser preserves
+            // play/pause state across currentTime writes, so if the
+            // user had it playing it keeps playing at the new spot, and
+            // if they had it paused it stays paused. Previously we
+            // unconditionally called play() which surprised users who
+            // wanted to just "park the playhead" without committing to
+            // playback. Dragging the playhead still uses onScrub which
+            // also doesn't auto-play; clicking a variant CARD or a
+            // segment row still uses selectVariant/selectSegment which
+            // DO play (those gestures imply "preview this now").
             const v = videoRef.current;
             if (!v) return;
             v.currentTime = srcSec;
-            void v.play().catch(() => {});
+          }}
+          onMarkRange={async (srcStart, srcEnd) => {
+            // Shift+drag on the highlight timeline → add a new segment
+            // to the currently-selected variant. Mirror's precision
+            // tab's shift+drag = mark gesture. If the user has no
+            // variant selected, HighlightTimeline doesn't even fire
+            // this callback (falls back to seek).
+            if (!projectId || !selectedVariant) return;
+            try {
+              const added = await window.lynlens.addHighlightVariantSegmentRange(
+                projectId,
+                selectedVariant.id,
+                srcStart,
+                srcEnd
+              );
+              if (!added) {
+                alert(
+                  '加段失败: 可能太短(<0.2s)或超出视频范围。'
+                );
+                return;
+              }
+              const latest = await window.lynlens.getHighlights(projectId);
+              setVariants(latest);
+            } catch (err) {
+              alert(`加段失败: ${(err as Error).message}`);
+            }
           }}
           onScrub={(srcSec) => {
             // Live-scrub: just move currentTime; don't auto-play so the

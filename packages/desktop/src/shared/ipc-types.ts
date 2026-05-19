@@ -214,6 +214,18 @@ export interface IpcApi {
     hintSec: number | null
   ): Promise<{ start: number; end: number } | null>;
   /**
+   * Add a segment with EXPLICIT (start, end) source-time range. Used
+   * by the highlight timeline's shift+drag gesture. Returns the
+   * (start, end) on success, null on validation failure.
+   */
+  addHighlightVariantSegmentRange(
+    projectId: string,
+    variantId: string,
+    startSec: number,
+    endSec: number,
+    reason?: string
+  ): Promise<{ start: number; end: number } | null>;
+  /**
    * Create a fresh empty highlight variant the user fills in themselves.
    * Seeded with one 3-second segment centred at `hintSec` (or 0 if null),
    * auto-pinned so it survives later "重新生成" batches. Title defaults

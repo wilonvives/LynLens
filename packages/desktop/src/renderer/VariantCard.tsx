@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { createPortal } from 'react-dom';
 import type { HighlightVariant, Transcript, VariantStatus } from '@lynlens/core';
 import { formatTime } from './util';
 
@@ -234,7 +235,16 @@ export function VariantCard({
   const [enriching, setEnriching] = useState(false);
   // Secondary-actions overflow menu (⋯) — keeps the visible button row
   // short so cards don't wrap when titles are long.
-  const [moreOpen, setMoreOpen] = useState(false);
+  // Anchor coords + open flag. Stored together so the menu is rendered
+  // ONLY when both moreOpen=true AND coords are set (avoids a flash at
+  // 0,0 on first open). Coords are in viewport-fixed space so the menu
+  // can escape the variant card's overflow:hidden ancestor (which was
+  // clipping the menu behind the waveform).
+  const [menuAnchor, setMenuAnchor] = useState<
+    | { x: number; y: number; placement: 'below' | 'above' }
+    | null
+  >(null);
+  const moreOpen = menuAnchor !== null;
   const [editing, setEditing] = useState<
     | null
     | { segIdx: number; kind: 'start' | 'end' | 'reason'; draft: string }
@@ -620,48 +630,75 @@ export function VariantCard({
         >
           {copied ? '已复制' : '复制'}
         </button>
-        {/* ⋯ overflow menu trigger. Inline popover anchored under it. */}
-        <div style={{ position: 'relative', display: 'inline-flex' }}>
-          <button
-            onClick={(e) => {
-              e.stopPropagation();
-              setMoreOpen((v) => !v);
-            }}
-            title="更多操作"
-            aria-haspopup="menu"
-            aria-expanded={moreOpen}
-            style={{ fontSize: 12, padding: '4px 8px' }}
-          >
-            ⋯
-          </button>
-          {moreOpen && (
+        {/* ⋯ overflow menu trigger. The menu itself is portaled to
+            <body> and positioned with viewport-fixed coords so it
+            escapes the variant card's stacking context (the waveform
+            was painting on top of the previous absolute-positioned
+            version). */}
+        <button
+          onClick={(e) => {
+            e.stopPropagation();
+            // Toggle: if already open, close; else compute anchor from
+            // the button's viewport rect + flip up when there's not
+            // enough room below.
+            if (moreOpen) {
+              setMenuAnchor(null);
+              return;
+            }
+            const btn = e.currentTarget.getBoundingClientRect();
+            const ESTIMATED_MENU_H = 240;
+            const placeBelow =
+              btn.bottom + ESTIMATED_MENU_H < window.innerHeight - 16;
+            setMenuAnchor({
+              x: btn.right, // right-align
+              y: placeBelow ? btn.bottom + 4 : btn.top - 4,
+              placement: placeBelow ? 'below' : 'above',
+            });
+          }}
+          title="更多操作"
+          aria-haspopup="menu"
+          aria-expanded={moreOpen}
+          style={{ fontSize: 12, padding: '4px 8px' }}
+        >
+          ⋯
+        </button>
+        {moreOpen &&
+          menuAnchor &&
+          createPortal(
             <>
-              {/* Click-outside backdrop — invisible, full viewport, eats
-                  the next click to close the menu. */}
+              {/* Click-outside backdrop, viewport-wide. Eats the next
+                  click to close the menu. */}
               <div
                 onClick={(e) => {
                   e.stopPropagation();
-                  setMoreOpen(false);
+                  setMenuAnchor(null);
                 }}
                 style={{
                   position: 'fixed',
                   inset: 0,
-                  zIndex: 100,
+                  zIndex: 9999,
                   background: 'transparent',
                 }}
               />
               <div
                 role="menu"
                 style={{
-                  position: 'absolute',
-                  top: 'calc(100% + 4px)',
-                  right: 0,
-                  zIndex: 101,
-                  minWidth: 180,
+                  position: 'fixed',
+                  left: menuAnchor.x,
+                  // Right-align: shift the menu left by its own width
+                  // via transform. menuAnchor.x is the button's right
+                  // edge.
+                  transform:
+                    menuAnchor.placement === 'below'
+                      ? 'translate(-100%, 0)'
+                      : 'translate(-100%, -100%)',
+                  top: menuAnchor.y,
+                  zIndex: 10000,
+                  minWidth: 200,
                   background: '#1a1a26',
                   border: '1px solid #2a2a2a',
                   borderRadius: 6,
-                  boxShadow: '0 8px 24px rgba(0,0,0,0.5)',
+                  boxShadow: '0 8px 24px rgba(0,0,0,0.6)',
                   padding: 4,
                   display: 'flex',
                   flexDirection: 'column',
@@ -671,7 +708,7 @@ export function VariantCard({
                 <MenuItem
                   disabled={!projectId || isBroken}
                   onClick={() => {
-                    setMoreOpen(false);
+                    setMenuAnchor(null);
                     void addSegment();
                   }}
                   label="➕ 加一段"
@@ -680,7 +717,7 @@ export function VariantCard({
                 <MenuItem
                   disabled={enriching || !transcript || !projectId}
                   onClick={() => {
-                    setMoreOpen(false);
+                    setMenuAnchor(null);
                     void doEnrich({ stopPropagation: () => {} } as unknown as React.MouseEvent);
                   }}
                   label={enriching ? '🪄 整理中…' : '🪄 AI 起名 / 备注'}
@@ -688,7 +725,7 @@ export function VariantCard({
                 />
                 <MenuItem
                   onClick={() => {
-                    setMoreOpen(false);
+                    setMenuAnchor(null);
                     void onTogglePin(variant);
                   }}
                   label={isPinned ? '⭐️ 取消收藏' : '⭐️ 收藏'}
@@ -697,7 +734,7 @@ export function VariantCard({
                 <div style={{ height: 1, background: '#2a2a2a', margin: '2px 0' }} />
                 <MenuItem
                   onClick={() => {
-                    setMoreOpen(false);
+                    setMenuAnchor(null);
                     if (confirm('永久删除这个变体?')) void onDelete(variant);
                   }}
                   label="🗑 删除变体"
@@ -705,9 +742,9 @@ export function VariantCard({
                   destructive
                 />
               </div>
-            </>
+            </>,
+            document.body
           )}
-        </div>
       </div>
 
       {expanded && (

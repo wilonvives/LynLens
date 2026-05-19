@@ -349,6 +349,41 @@ export function registerHighlightsIpc(ctx: IpcContext): void {
     }
   );
 
+  /**
+   * Add a segment with an EXPLICIT (start, end) range. Used by the
+   * highlight timeline's shift+drag gesture so the user can paint a
+   * new segment precisely, instead of relying on the 3-second
+   * findInsertSlot guess. Source-time inputs (caller should convert
+   * from effective via effectiveToSource before calling).
+   *
+   * Returns the (start, end) added, or null if validation failed
+   * (MIN_DUR / out of bounds / variant not found).
+   */
+  ipcMain.handle(
+    'add-highlight-variant-segment-range',
+    async (
+      _ev,
+      projectId: string,
+      variantId: string,
+      startSec: number,
+      endSec: number,
+      reason?: string
+    ) => {
+      const project = engine.projects.get(projectId);
+      const ok = project.addHighlightVariantSegment(
+        variantId,
+        startSec,
+        endSec,
+        reason || 'shift+拖动添加'
+      );
+      if (!ok) return null;
+      if (project.projectPath) {
+        await engine.projects.saveProject(projectId).catch(() => {});
+      }
+      return { start: startSec, end: endSec };
+    }
+  );
+
   ipcMain.handle(
     'delete-highlight-variant-segment',
     async (_ev, projectId: string, variantId: string, segmentIdx: number) => {

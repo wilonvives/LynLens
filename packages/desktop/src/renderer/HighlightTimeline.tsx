@@ -53,6 +53,15 @@ interface Props {
   onResizeSegment: (segIdx: number, newStart: number, newEnd: number) => void;
   /** Delete a segment by index. */
   onDeleteSegment: (segIdx: number) => void;
+  /**
+   * Shift+drag → mark a new segment range. (srcStart, srcEnd) are
+   * source seconds, already clamped + converted from effective by
+   * the timeline. Parent applies to the currently-selected variant
+   * via the add-highlight-variant-segment-range IPC.
+   *
+   * Optional — if not provided, shift+drag falls back to plain seek.
+   */
+  onMarkRange?: (srcStart: number, srcEnd: number) => void;
 }
 
 interface View {
@@ -90,6 +99,7 @@ export function HighlightTimeline({
   onSetPlayingSegIdx,
   onResizeSegment,
   onDeleteSegment,
+  onMarkRange,
 }: Props): JSX.Element {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -101,6 +111,16 @@ export function HighlightTimeline({
    *  happens at the same point — and to disable auto-follow during scrub
    *  so the view doesn't fight the user. */
   const [scrubbing, setScrubbing] = useState(false);
+  /**
+   * Active shift+drag mark in EFFECTIVE seconds. While the user holds
+   * shift and drags, this defines the visual rectangle being painted
+   * over the timeline. On mouseup the parent commits it via the
+   * onMarkRange callback. Null when no shift+drag in progress.
+   */
+  const [markDrag, setMarkDrag] = useState<
+    | { startEff: number; endEff: number }
+    | null
+  >(null);
   /**
    * Bookmarked view (zoom level + scroll position). Click on the zoom-
    * level chip in the corner overlay to save the current view; click it
@@ -308,17 +328,66 @@ export function HighlightTimeline({
     return ((effSec - view.offsetSec) / view.visibleSec) * 100;
   };
 
-  // ---------- click-to-seek ----------
-  const onContainerClick = (e: React.MouseEvent<HTMLDivElement>): void => {
-    if (segDrag || scrubbing) return; // suppress click that ended a drag
+  // ---------- mousedown: shift+drag = mark, plain click = seek ----------
+  // Mirrors the precision Timeline.tsx pattern. Shift+drag paints a
+  // range that's committed as a new variant segment on mouseup; plain
+  // click (no movement) is a seek; click+drag without shift is no-op
+  // (the playhead has its own drag handler).
+  const onContainerMouseDown = (e: React.MouseEvent<HTMLDivElement>): void => {
+    if (segDrag || scrubbing) return;
+    // Ignore right-click / aux buttons.
+    if (e.button !== 0) return;
     const rect = e.currentTarget.getBoundingClientRect();
-    const effSec = xToEff(e.clientX - rect.left);
-    const srcSec = effectiveToSource(
-      Math.max(0, Math.min(effectiveDuration, effSec)),
-      cutRanges
+    const startX = e.clientX - rect.left;
+    const startEff = Math.max(
+      0,
+      Math.min(effectiveDuration, xToEff(startX))
     );
+
+    if (e.shiftKey && onMarkRange) {
+      // SHIFT+drag → mark a range. Bail if there's no variant selected
+      // (parent shows a hint banner). Otherwise enter mark mode.
+      if (!variant) {
+        // Fallback to seek when there's nothing to add to. User sees
+        // nothing happen visually — parent should disable this case
+        // via banner / tooltip.
+        const srcSec = effectiveToSource(startEff, cutRanges);
+        onSeek(srcSec);
+        return;
+      }
+      e.preventDefault();
+      setMarkDrag({ startEff, endEff: startEff });
+      const move = (ev: MouseEvent): void => {
+        const x = ev.clientX - rect.left;
+        const eff = Math.max(0, Math.min(effectiveDuration, xToEff(x)));
+        setMarkDrag({ startEff, endEff: eff });
+      };
+      const up = (): void => {
+        window.removeEventListener('mousemove', move);
+        window.removeEventListener('mouseup', up);
+        setMarkDrag((d) => {
+          if (!d) return null;
+          const a = Math.min(d.startEff, d.endEff);
+          const b = Math.max(d.startEff, d.endEff);
+          // Require at least 0.1s of drag — anything less is a misclick.
+          if (b - a >= 0.1) {
+            const srcA = effectiveToSource(a, cutRanges);
+            const srcB = effectiveToSource(b, cutRanges);
+            onMarkRange(srcA, srcB);
+          }
+          return null;
+        });
+      };
+      window.addEventListener('mousemove', move);
+      window.addEventListener('mouseup', up);
+      return;
+    }
+
+    // No shift → plain click-to-seek. Use mouseup on the container so
+    // we don't fight the playhead-drag handler (which has its own
+    // mousedown on the playhead element + stopPropagation).
+    const srcSec = effectiveToSource(startEff, cutRanges);
     onSeek(srcSec);
-    // Keep "current segment" chip in sync if click lands inside a segment.
     if (variant) {
       for (let i = 0; i < variant.segments.length; i++) {
         const s = variant.segments[i];
@@ -671,10 +740,40 @@ export function HighlightTimeline({
       <div
         className="hl-timeline-canvas-wrap"
         ref={containerRef}
-        onClick={onContainerClick}
+        onMouseDown={onContainerMouseDown}
         onWheel={onWheel}
+        title={
+          variant && onMarkRange
+            ? '点击跳到该位置 · Shift+拖动 = 给当前变体加一段'
+            : '点击跳到该位置'
+        }
       >
         <canvas ref={canvasRef} className="hl-timeline-canvas" />
+        {/* Shift+drag visual feedback: translucent amber rect over the
+            range being marked. Disappears on mouseup (when markDrag is
+            cleared). Pointer-events: none so it doesn't eat the
+            mousemove the drag handler is listening for. */}
+        {markDrag && (() => {
+          const a = Math.min(markDrag.startEff, markDrag.endEff);
+          const b = Math.max(markDrag.startEff, markDrag.endEff);
+          const leftPct = effToLeftPct(a);
+          const widthPct = effToLeftPct(b) - leftPct;
+          return (
+            <div
+              style={{
+                position: 'absolute',
+                left: `${leftPct}%`,
+                top: 0,
+                bottom: 0,
+                width: `${widthPct}%`,
+                background: 'rgba(243, 156, 18, 0.25)',
+                border: '1.5px solid rgba(243, 156, 18, 0.9)',
+                pointerEvents: 'none',
+                zIndex: 5,
+              }}
+            />
+          );
+        })()}
         {/* Shared zoom-controls overlay (.tl-zoom-*) — used by both this
             timeline and the precision tab's Timeline.
             Wrapper-level stopPropagation: without it, any click in the

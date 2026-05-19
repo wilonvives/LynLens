@@ -47,6 +47,15 @@ const api: IpcApi = {
     ipcRenderer.invoke('reorder-highlight-variant-segment', pid, vid, from, to),
   addHighlightVariantSegment: (pid, vid, hint) =>
     ipcRenderer.invoke('add-highlight-variant-segment', pid, vid, hint),
+  addHighlightVariantSegmentRange: (pid, vid, startSec, endSec, reason) =>
+    ipcRenderer.invoke(
+      'add-highlight-variant-segment-range',
+      pid,
+      vid,
+      startSec,
+      endSec,
+      reason
+    ),
   addBlankHighlightVariant: (pid, hint, title) =>
     ipcRenderer.invoke('add-blank-highlight-variant', pid, hint, title),
   generatePackagingPlan: (pid, variantId, vibe) =>
