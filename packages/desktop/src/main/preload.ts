@@ -8,6 +8,8 @@ const api: IpcApi = {
   openProjectDialog: () => ipcRenderer.invoke('open-project-dialog'),
   openProjectByPath: (qcpPath) => ipcRenderer.invoke('open-project-by-path', qcpPath),
   saveDialog: (n) => ipcRenderer.invoke('save-dialog', n),
+  openDirectoryDialog: (defaultPath) =>
+    ipcRenderer.invoke('open-directory-dialog', defaultPath),
   addSegment: (req) => ipcRenderer.invoke('add-segment', req),
   removeSegment: (pid, sid) => ipcRenderer.invoke('remove-segment', pid, sid),
   eraseRange: (pid, s, e) => ipcRenderer.invoke('erase-range', pid, s, e),

@@ -118,6 +118,20 @@ export function HighlightPanel({
   const [markers, setMarkers] = useState<
     Array<{ id: string; srcSec: number; label?: string; color?: string }>
   >([]);
+  /**
+   * Batch-export selection. When the set is non-empty, a sticky action
+   * bar appears at the top of the variant list with 全选/清空/批量导出.
+   * Variants are referenced by their id.
+   */
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  /**
+   * Batch-export progress: which variant is currently exporting + how
+   * many done / total. null = no batch in flight.
+   */
+  const [batchProgress, setBatchProgress] = useState<
+    | { current: string; done: number; total: number; errors: string[] }
+    | null
+  >(null);
 
   const videoRef = useRef<HTMLVideoElement>(null);
   const playerWrapRef = useRef<HTMLDivElement | null>(null);
@@ -446,6 +460,91 @@ export function HighlightPanel({
     setExportingVariant(variant);
   }
 
+  /**
+   * Batch export — ask for a destination directory once, then iterate
+   * the selected variants and export each to `<dir>/<title>.mp4`.
+   *
+   * Sequential, not parallel: ffmpeg is CPU-bound + writes large files.
+   * Running N at once would either thrash the CPU or saturate disk
+   * IO. One-at-a-time is slower but predictable, and the user sees
+   * progress per item.
+   *
+   * Errors are collected and surfaced in a single summary alert at the
+   * end so a transient ffmpeg failure on item 3 doesn't kill items 4-N.
+   */
+  async function handleBatchExport(): Promise<void> {
+    if (!projectId || selectedIds.size === 0) return;
+    const targets = variants.filter((v) => selectedIds.has(v.id));
+    if (targets.length === 0) return;
+
+    // Pick destination dir. Start with the last-used dir if any.
+    const lastDir = (() => {
+      try {
+        return localStorage.getItem('lynlens.lastExportDir') || undefined;
+      } catch {
+        return undefined;
+      }
+    })();
+    const dir = await window.lynlens.openDirectoryDialog(lastDir);
+    if (!dir) return; // user cancelled
+    try {
+      localStorage.setItem('lynlens.lastExportDir', dir);
+    } catch {
+      /* ignore */
+    }
+    const sep = dir.includes('\\') ? '\\' : '/';
+
+    // Sanitize a variant title for use as a filename. Trim, replace
+    // path separators + control chars, cap length.
+    function safeFilename(name: string): string {
+      return (
+        name
+          .trim()
+          .replace(/[\\/:*?"<>| -]/g, '_')
+          .slice(0, 80) || 'highlight'
+      );
+    }
+
+    setBatchProgress({
+      current: targets[0].title,
+      done: 0,
+      total: targets.length,
+      errors: [],
+    });
+    const errors: string[] = [];
+    for (let i = 0; i < targets.length; i++) {
+      const v = targets[i];
+      setBatchProgress({
+        current: v.title,
+        done: i,
+        total: targets.length,
+        errors,
+      });
+      const outPath = `${dir}${sep}${safeFilename(v.title)}.mp4`;
+      try {
+        await window.lynlens.exportHighlight(
+          projectId,
+          v.id,
+          outPath,
+          'precise',
+          'original'
+        );
+      } catch (err) {
+        errors.push(`「${v.title}」: ${(err as Error).message}`);
+      }
+    }
+    setBatchProgress(null);
+    if (errors.length === 0) {
+      alert(`✅ 批量导出完成: ${targets.length} 个变体已保存到\n${dir}`);
+    } else if (errors.length === targets.length) {
+      alert(`❌ 批量导出失败:\n${errors.join('\n')}`);
+    } else {
+      alert(
+        `部分完成: ${targets.length - errors.length}/${targets.length} 成功\n失败:\n${errors.join('\n')}`
+      );
+    }
+  }
+
   if (!projectId) {
     return (
       <div className="highlight-empty">
@@ -733,6 +832,59 @@ export function HighlightPanel({
           {/* Generating banner is rendered at panel level above so it's
               visible without scrolling the card column. */}
 
+          {/* Batch-select bar — appears when at least one variant is
+              checked. 全选 / 清空 / 批量导出 actions. Sticky-ish at the
+              top of the scroll list so it stays in view while the user
+              scrolls through many variants. */}
+          {selectedIds.size > 0 && (
+            <div
+              style={{
+                position: 'sticky',
+                top: 0,
+                zIndex: 5,
+                marginBottom: 8,
+                padding: '8px 12px',
+                background: 'rgba(122, 162, 247, 0.18)',
+                border: '1px solid rgba(122, 162, 247, 0.6)',
+                borderRadius: 4,
+                display: 'flex',
+                alignItems: 'center',
+                gap: 8,
+                fontSize: 12,
+              }}
+            >
+              <span style={{ color: '#fff' }}>
+                已选 <b>{selectedIds.size}</b> / {variants.length}
+              </span>
+              <div style={{ flex: 1 }} />
+              <button
+                onClick={() => setSelectedIds(new Set(variants.map((v) => v.id)))}
+                disabled={!!batchProgress}
+                style={{ fontSize: 11, padding: '3px 8px' }}
+              >
+                全选
+              </button>
+              <button
+                onClick={() => setSelectedIds(new Set())}
+                disabled={!!batchProgress}
+                style={{ fontSize: 11, padding: '3px 8px' }}
+              >
+                清空
+              </button>
+              <button
+                className="primary"
+                onClick={() => void handleBatchExport()}
+                disabled={!!batchProgress}
+                style={{ fontSize: 11, padding: '3px 10px' }}
+                title="选个文件夹,批量导出选中的变体"
+              >
+                {batchProgress
+                  ? `📦 ${batchProgress.done}/${batchProgress.total} 导出中…`
+                  : '📦 批量导出'}
+              </button>
+            </div>
+          )}
+
           <div className="variant-list">
             {variants.map((v, i) => {
               const status: VariantStatus = getVariantStatus(v, cutRanges, transcript);
@@ -746,6 +898,15 @@ export function HighlightPanel({
                   status={status}
                   transcript={transcript}
                   projectId={projectId}
+                  selected={selectedIds.has(v.id)}
+                  onToggleSelect={(vv) => {
+                    setSelectedIds((prev) => {
+                      const next = new Set(prev);
+                      if (next.has(vv.id)) next.delete(vv.id);
+                      else next.add(vv.id);
+                      return next;
+                    });
+                  }}
                   onVariantChanged={async () => {
                     if (!projectId) return;
                     const latest = await window.lynlens.getHighlights(projectId);

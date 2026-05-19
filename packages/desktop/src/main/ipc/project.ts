@@ -107,6 +107,19 @@ export function registerProjectIpc(ctx: IpcContext): void {
     return result.filePath;
   });
 
+  /**
+   * Folder picker — used by batch export to pick a destination directory.
+   * Returns the absolute path, or null if the user cancelled.
+   */
+  ipcMain.handle('open-directory-dialog', async (_ev, defaultPath?: string) => {
+    const result = await dialog.showOpenDialog(getMainWindow()!, {
+      properties: ['openDirectory', 'createDirectory'],
+      defaultPath: defaultPath || undefined,
+    });
+    if (result.canceled || result.filePaths.length === 0) return null;
+    return result.filePaths[0];
+  });
+
   ipcMain.handle('get-state', async (_ev, projectId: string) => {
     return engine.projects.get(projectId).toQcp();
   });

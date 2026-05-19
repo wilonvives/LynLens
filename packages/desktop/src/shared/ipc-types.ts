@@ -76,6 +76,12 @@ export interface IpcApi {
   /** Open a .qcp project from a known file path (drag-and-drop entry point). */
   openProjectByPath(qcpPath: string): Promise<OpenVideoResult>;
   saveDialog(defaultName: string): Promise<string | null>;
+  /**
+   * Pick a destination directory (folder). Used by batch export to
+   * select the target folder for N variant files. Returns the abs
+   * path on success, null when user cancels.
+   */
+  openDirectoryDialog(defaultPath?: string): Promise<string | null>;
 
   addSegment(req: AddSegmentRequest): Promise<Segment>;
   removeSegment(projectId: string, segmentId: string): Promise<void>;

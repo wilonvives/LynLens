@@ -29,11 +29,24 @@ export function ExportDialog({ defaultPath, onClose, onConfirm, title }: Props) 
   const ex = useStore((s) => s.export);
 
   // If the caller passed a bare filename (no directory), upgrade it to
-  // ~/Downloads/<filename> so the saved file lands somewhere the user
-  // can find. Previously these paths resolved against process.cwd()
-  // which in dev mode is `packages/desktop/` — invisible to users.
+  // `<lastExportDir>/<filename>` if there's a saved one (sticky across
+  // sessions via localStorage), else fall back to `<Downloads>/<filename>`.
+  // Previously these paths resolved against process.cwd() which in dev
+  // mode is `packages/desktop/` — invisible to users.
   useEffect(() => {
     if (defaultPath.includes('/') || defaultPath.includes('\\')) return;
+    const stored = (() => {
+      try {
+        return localStorage.getItem('lynlens.lastExportDir') || null;
+      } catch {
+        return null;
+      }
+    })();
+    if (stored) {
+      const sep = stored.includes('\\') ? '\\' : '/';
+      setOutputPath(`${stored}${sep}${defaultPath}`);
+      return;
+    }
     let cancelled = false;
     void window.lynlens.getDownloadsDir().then((dir) => {
       if (cancelled) return;
@@ -49,6 +62,26 @@ export function ExportDialog({ defaultPath, onClose, onConfirm, title }: Props) 
     const base = outputPath.split(/[\\/]/).pop() ?? 'output.mp4';
     const p = await window.lynlens.saveDialog(base);
     if (p) setOutputPath(p);
+  }
+
+  function confirmAndRememberDir(): void {
+    // Persist the dir of the chosen path so the NEXT dialog opens to
+    // the same folder. Bare filenames are skipped (no dir to remember).
+    const lastSlash = Math.max(
+      outputPath.lastIndexOf('/'),
+      outputPath.lastIndexOf('\\')
+    );
+    if (lastSlash > 0) {
+      try {
+        localStorage.setItem(
+          'lynlens.lastExportDir',
+          outputPath.slice(0, lastSlash)
+        );
+      } catch {
+        /* quota or sandboxed — silently ignore */
+      }
+    }
+    onConfirm({ outputPath, mode: 'precise', quality });
   }
 
   return (
@@ -97,7 +130,7 @@ export function ExportDialog({ defaultPath, onClose, onConfirm, title }: Props) 
               <button onClick={onClose}>取消</button>
               <button
                 className="primary"
-                onClick={() => onConfirm({ outputPath, mode: 'precise', quality })}
+                onClick={confirmAndRememberDir}
               >
                 开始导出
               </button>

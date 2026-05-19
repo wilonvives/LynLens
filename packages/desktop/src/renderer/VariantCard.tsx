@@ -33,6 +33,13 @@ interface Props {
    * list so the UI reflects the new times / reason / order.
    */
   onVariantChanged: () => void | Promise<void>;
+  /**
+   * Batch-select state. When defined, the card renders a checkbox in
+   * its head — toggling it adds/removes the variant from the parent's
+   * selection set. Used by batch export. Undefined → no checkbox.
+   */
+  selected?: boolean;
+  onToggleSelect?: (variant: HighlightVariant) => void;
 }
 
 const STYLE_LABEL: Record<HighlightVariant['style'], string> = {
@@ -221,6 +228,8 @@ export function VariantCard({
   onTogglePin,
   onDelete,
   onVariantChanged,
+  selected,
+  onToggleSelect,
 }: Props) {
   const [expanded, setExpanded] = useState(false);
   const [exporting, setExporting] = useState(false);
@@ -526,6 +535,24 @@ export function VariantCard({
     >
       <div className="variant-card-head">
         <div className="variant-card-title-row">
+          {/* Batch-select checkbox — only present when parent passes
+              `onToggleSelect`. Click is stop-propagated so it doesn't
+              also trigger the card-select-and-seek behaviour. */}
+          {onToggleSelect && (
+            <input
+              type="checkbox"
+              checked={!!selected}
+              onClick={(e) => e.stopPropagation()}
+              onChange={() => onToggleSelect(variant)}
+              title={selected ? '取消选中' : '选中以批量操作'}
+              style={{
+                margin: 0,
+                marginRight: 4,
+                accentColor: 'var(--accent)',
+                cursor: 'pointer',
+              }}
+            />
+          )}
           <span className="variant-card-index">#{index}</span>
           {titleDraft !== null ? (
             // Inline title editor — autofocus on mount, blur or Enter to
@@ -600,18 +627,10 @@ export function VariantCard({
       )}
 
       <div className="variant-card-actions" onClick={(e) => e.stopPropagation()}>
-        {/* Compact button style — the chunky default size made the row
-            wrap when titles were long. fontSize 12 + tighter padding
-            keeps everything on one line in typical card widths. */}
-        <button
-          className="primary"
-          onClick={doExport}
-          disabled={exporting || isBroken}
-          title={isBroken ? '变体已失效,无法导出' : '导出这个变体为视频文件'}
-          style={{ fontSize: 12, padding: '4px 10px' }}
-        >
-          {exporting ? '导出中...' : '导出'}
-        </button>
+        {/* Order chosen so the rightmost slot is the most-common
+            destination ("导出"). Card scans left→right; the primary
+            click ends on the right. ⋯ trails further right for less-
+            common secondary actions. */}
         <button
           onClick={(e) => {
             e.stopPropagation();
@@ -629,6 +648,15 @@ export function VariantCard({
           style={{ fontSize: 12, padding: '4px 10px' }}
         >
           {copied ? '已复制' : '复制'}
+        </button>
+        <button
+          className="primary"
+          onClick={doExport}
+          disabled={exporting || isBroken}
+          title={isBroken ? '变体已失效,无法导出' : '导出这个变体为视频文件'}
+          style={{ fontSize: 12, padding: '4px 10px' }}
+        >
+          {exporting ? '导出中...' : '导出'}
         </button>
         {/* ⋯ overflow menu trigger. The menu itself is portaled to
             <body> and positioned with viewport-fixed coords so it
