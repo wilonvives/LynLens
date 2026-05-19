@@ -865,27 +865,39 @@ export class Project {
   }
 
   /**
-   * "Extract this segment as a new variant" — non-destructive copy.
-   * The source variant is untouched; a fresh variant is created with
-   * just the one segment + a derived title.
+   * "Move this segment out as its own new variant" — DESTRUCTIVE on
+   * the source (segment is removed from src + added to a fresh
+   * variant). User wanted move semantics, not copy: they're
+   * re-categorising the segment, not duplicating it.
    *
    * Title derivation:
-   *   - If segment has a non-empty reason, use it (clipped to 30 chars).
+   *   - If segment has a non-empty reason (not the default placeholder),
+   *     use it clipped to 30 chars.
    *   - Otherwise fall back to "{source-title} · 段 {idx+1}".
    *
-   * Like addBlankHighlightVariant, the new variant is auto-pinned so
-   * the user's explicit action survives the next "重新生成" sweep.
+   * Refuses when src has only 1 segment (would leave src empty).
+   * Caller should disable the UI when variant.segments.length <= 1.
    *
-   * Returns the new variant on success, null when src not found or
-   * segmentIdx is out of range.
+   * The new variant is auto-pinned so the user's explicit action
+   * survives the next "重新生成" sweep.
+   *
+   * Returns the new variant on success, null when src not found,
+   * segmentIdx is out of range, or src only has 1 segment.
    */
   extractHighlightSegmentAsVariant(
     sourceVariantId: string,
     segmentIdx: number
   ): HighlightVariant | null {
-    const src = this.highlightVariants.find((v) => v.id === sourceVariantId);
-    if (!src) return null;
+    const srcIdx = this.highlightVariants.findIndex(
+      (v) => v.id === sourceVariantId
+    );
+    if (srcIdx < 0) return null;
+    const src = this.highlightVariants[srcIdx];
     if (segmentIdx < 0 || segmentIdx >= src.segments.length) return null;
+    // MIN-1 guard: leaving the source with zero segments is invalid
+    // (renderer can't draw it, exports throw). User has to delete
+    // the variant entirely if that's what they want.
+    if (src.segments.length <= 1) return null;
     const seg = src.segments[segmentIdx];
 
     const rawReason = (seg.reason ?? '').trim();
@@ -894,7 +906,7 @@ export class Project {
         ? rawReason.slice(0, 30)
         : `${src.title} · 段 ${segmentIdx + 1}`;
 
-    const next: HighlightVariant = {
+    const created: HighlightVariant = {
       id: `hv_${uuid().slice(0, 8)}`,
       title: derivedTitle,
       style: src.style,
@@ -907,9 +919,23 @@ export class Project {
         transcriptFingerprint: fingerprintTranscript(this.transcript),
       },
     };
-    this.highlightVariants = [...this.highlightVariants, next];
+
+    // Strip the segment from src in the same immutable pass.
+    const remainingSegs = src.segments.filter((_, i) => i !== segmentIdx);
+    const updatedSrc: HighlightVariant = {
+      ...src,
+      segments: remainingSegs,
+      durationSeconds: remainingSegs.reduce(
+        (sum, s) => sum + (s.end - s.start),
+        0
+      ),
+    };
+
+    this.highlightVariants = this.highlightVariants
+      .map((v, i) => (i === srcIdx ? updatedSrc : v))
+      .concat(created);
     this.modifiedAt = new Date().toISOString();
-    return next;
+    return created;
   }
 
   // ---------- Packaging plans ----------

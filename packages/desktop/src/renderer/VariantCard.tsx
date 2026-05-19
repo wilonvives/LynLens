@@ -321,12 +321,18 @@ export function VariantCard({
   }
 
   /**
-   * Copy one segment out as its own new variant. Non-destructive — the
-   * source variant keeps the segment. Used for "分类出来" / "this
-   * piece is its own thing now" UX.
+   * MOVE one segment out as its own new variant. Source variant loses
+   * the segment (destructive). Used for "分类出来 / this piece is its
+   * own thing now" UX. Refused server-side when source only has 1
+   * segment — the button is also disabled in that case but the check
+   * is duplicated as defence.
    */
   async function extractSegment(segIdx: number): Promise<void> {
     if (!projectId) return;
+    if (variant.segments.length <= 1) {
+      setEditError('当前变体只剩一段,无法再剥离。想拆分整段视频请用「+ 加段」.');
+      return;
+    }
     try {
       const created = await window.lynlens.extractHighlightSegment(
         projectId,
@@ -337,9 +343,9 @@ export function VariantCard({
       await onVariantChanged();
       // Quick visible feedback — toast-style alert. Could be replaced
       // with a non-blocking banner later.
-      alert(`✓ 已提取为新变体: "${created.title}"`);
+      alert(`✓ 已移动这段到新变体: "${created.title}"`);
     } catch (err) {
-      setEditError(`提取失败: ${(err as Error).message}`);
+      setEditError(`移动失败: ${(err as Error).message}`);
     }
   }
 
@@ -584,13 +590,15 @@ export function VariantCard({
       )}
 
       <div className="variant-card-actions" onClick={(e) => e.stopPropagation()}>
-        {/* Primary row — kept short so cards don't wrap. Less-used
-            actions live in the ⋯ overflow menu next to it. */}
+        {/* Compact button style — the chunky default size made the row
+            wrap when titles were long. fontSize 12 + tighter padding
+            keeps everything on one line in typical card widths. */}
         <button
           className="primary"
           onClick={doExport}
           disabled={exporting || isBroken}
           title={isBroken ? '变体已失效,无法导出' : '导出这个变体为视频文件'}
+          style={{ fontSize: 12, padding: '4px 10px' }}
         >
           {exporting ? '导出中...' : '导出'}
         </button>
@@ -600,6 +608,7 @@ export function VariantCard({
             setExpanded((v) => !v);
           }}
           title={expanded ? '收起段落详情' : '展开看每段时间 + 备注'}
+          style={{ fontSize: 12, padding: '4px 10px' }}
         >
           {expanded ? '收起' : '段落'}
         </button>
@@ -607,6 +616,7 @@ export function VariantCard({
           onClick={doCopy}
           disabled={!transcript}
           title="把这个变体对应的字幕拼起来复制到剪贴板"
+          style={{ fontSize: 12, padding: '4px 10px' }}
         >
           {copied ? '已复制' : '复制'}
         </button>
@@ -620,6 +630,7 @@ export function VariantCard({
             title="更多操作"
             aria-haspopup="menu"
             aria-expanded={moreOpen}
+            style={{ fontSize: 12, padding: '4px 8px' }}
           >
             ⋯
           </button>
@@ -806,15 +817,23 @@ export function VariantCard({
                       e.stopPropagation();
                       void extractSegment(i);
                     }}
-                    title="把这段单独抽出来,做一个新变体(原变体不动)"
+                    disabled={variant.segments.length <= 1}
+                    title={
+                      variant.segments.length <= 1
+                        ? '当前变体只剩一段,无法再剥离'
+                        : '把这段拿走,变成一个独立的新变体 (原变体会失去这段)'
+                    }
                     style={{
-                      fontSize: 11,
-                      padding: '3px 8px',
+                      fontSize: 13,
+                      padding: '0 8px',
+                      width: 28,
+                      minWidth: 28,
                       color: 'var(--accent)',
                       borderColor: 'var(--accent)',
+                      lineHeight: 1,
                     }}
                   >
-                    → 新变体
+                    ⇲
                   </button>
                   <button
                     className="variant-seg-del"

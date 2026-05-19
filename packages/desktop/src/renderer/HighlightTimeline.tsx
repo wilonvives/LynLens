@@ -676,8 +676,17 @@ export function HighlightTimeline({
       >
         <canvas ref={canvasRef} className="hl-timeline-canvas" />
         {/* Shared zoom-controls overlay (.tl-zoom-*) — used by both this
-            timeline and the precision tab's Timeline. */}
-        <div className="tl-zoom-controls">
+            timeline and the precision tab's Timeline.
+            Wrapper-level stopPropagation: without it, any click in the
+            zoom bar bubbled up to the container's onContainerClick →
+            onSeek(srcSec) → video jumped to wherever on the timeline
+            the chip happened to sit (user saw it as "auto-play to
+            random position"). */}
+        <div
+          className="tl-zoom-controls"
+          onClick={(e) => e.stopPropagation()}
+          onMouseDown={(e) => e.stopPropagation()}
+        >
           <button
             className="tl-zoom-btn"
             onClick={() => zoomBy(1 / 1.5)}
