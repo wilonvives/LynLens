@@ -173,25 +173,33 @@ export class ExportService {
   }
 
   /**
-   * Single export pipeline: frame-accurate cuts via filter_complex + explicit
-   * color metadata forwarding. Two output regimes:
+   * Single export pipeline: frame-accurate cuts via filter_complex +
+   * **universally-compatible H.264 8-bit yuv420p** output.
    *
-   *   - HDR source (HLG / PQ / Dolby Vision) → tone-map to SDR BT.709 8-bit
-   *     via zscale + tonemap filters, encode with libx264. Reason: Windows
-   *     native player and most browsers can't decode HDR transfer functions
-   *     correctly and render BT.2020 as BT.709, producing visible color
-   *     shift (the user reported this with iPhone 15 Pro Dolby Vision
-   *     recordings — base layer shows washed-out / wrong color on Windows).
-   *     Tone-mapping sacrifices HDR highlight fidelity for universal
-   *     compatibility. For talking-head content this is the right tradeoff.
+   * Compatibility is the priority. iOS / iPadOS Photos + AirDrop pipeline
+   * rejects HEVC Main 10 10-bit even with the `hvc1` FourCC tag on older
+   * iPad models. Most users expect "exported video opens on my iPad" as
+   * baseline. We sacrifice 10-bit fidelity (talking-head content doesn't
+   * care about banding) + ~30% file size (HEVC was smaller for same
+   * quality) to gain "plays everywhere Apple has made in the last decade".
    *
-   *   - SDR source (BT.709 / BT.601, 8-bit OR 10-bit but not HDR) → forward
-   *     color tags as-is. Encoder picked from bit depth (libx265 for 10-bit
-   *     to preserve quality, libx264 otherwise).
+   * Two input regimes still differ:
+   *   - HDR source (HLG / PQ / Dolby Vision) → tone-map to SDR BT.709 via
+   *     zscale + tonemap filters, then encode H.264 8-bit. Otherwise
+   *     Windows / browser playback would render BT.2020 as BT.709 and
+   *     produce wrong colours.
+   *   - SDR source → forward color tags as-is. 10-bit sources get
+   *     dithered down to 8-bit at the pix_fmt boundary (free, by ffmpeg).
    *
-   * Color tags (primaries / transfer / matrix / range) are forwarded both
-   * at container level (-colorspace etc.) and baked into the bitstream via
-   * -x264-params / -x265-params so strict players don't guess.
+   * Color tags are still forwarded at both container (-colorspace etc.)
+   * and bitstream level (-x264-params) so strict downstream re-encoders
+   * pick them up correctly.
+   *
+   * libx265 was used previously for 10-bit SDR sources. Removed because
+   * iPhone-recorded SDR is almost always 10-bit HEVC → re-encode kept it
+   * 10-bit HEVC → output worked on Mac / QuickTime but iPad Photos
+   * silently rejected it. The `-tag:v hvc1` mitigation helps modern iPads
+   * but not older ones; H.264 8-bit is the only universally safe option.
    */
   private async exportFrameAccurate(
     projectId: string,
@@ -229,27 +237,23 @@ export class ExportService {
       options.subtitleBurnIn ?? null
     );
 
-    let encoder: 'libx264' | 'libx265';
-    let outPixFmt: string;
+    // Universal-compat output: H.264 8-bit yuv420p for EVERY source. See
+    // method comment for why HEVC / 10-bit was dropped.
+    const encoder: 'libx264' = 'libx264';
+    const outPixFmt = 'yuv420p';
     let colorPrimaries: string;
     let colorTransfer: string;
     let colorSpace: string;
     let colorRange: 'tv' | 'pc';
 
     if (isHdr) {
-      // Tone-mapped output: always SDR BT.709 8-bit, libx264 for universality.
-      encoder = 'libx264';
-      outPixFmt = 'yuv420p';
+      // Tone-mapped output: BT.709 SDR (tonemap filter chain handles colour).
       colorPrimaries = 'bt709';
       colorTransfer = 'bt709';
       colorSpace = 'bt709';
       colorRange = 'tv';
     } else {
-      // SDR passthrough: keep source bit depth, forward tags. "unknown" tags
-      // fall back to BT.709 SDR limited (safe default for missing metadata).
-      const use10Bit = colorMeta.bitDepth >= 10;
-      encoder = use10Bit ? 'libx265' : 'libx264';
-      outPixFmt = use10Bit ? 'yuv420p10le' : 'yuv420p';
+      // SDR: forward source tags. "unknown" → BT.709 SDR limited.
       colorPrimaries = colorMeta.colorPrimaries === 'unknown' ? 'bt709' : colorMeta.colorPrimaries;
       colorTransfer = colorMeta.colorTransfer === 'unknown' ? 'bt709' : colorMeta.colorTransfer;
       colorSpace = colorMeta.colorSpace === 'unknown' ? 'bt709' : colorMeta.colorSpace;
@@ -286,14 +290,33 @@ export class ExportService {
       '-color_trc', colorTransfer,
       '-color_range', colorRange,
     ];
-    // Bitstream-level color tags (so the encoder writes them into the SPS/VPS).
+    // Bitstream-level color tags (so the encoder writes them into the SPS).
     if (encParam) args.push(...encParam);
     args.push(
+      // High profile + Level 4.1 = the widest "decodes on every iOS device
+      // since iPhone 4S" profile. Higher levels (5.1, 5.2) are technically
+      // supported on recent iPads but older iPads silently fail decoding
+      // — same end result: file lands in Photos but won't play / can't
+      // import. Capping at 4.1 keeps the bitstream within every Apple
+      // hardware decoder's spec.
+      '-profile:v', 'high',
+      '-level:v', '4.1',
       '-c:a', 'aac',
       '-b:a', '192k',
+      // Force stereo. iPhone "spatial audio" recordings ship as multi-
+      // channel (ambisonic / 4ch) which AirDrop'd iPads silently drop —
+      // file plays but no sound. Stereo is the universal LCD.
+      '-ac', '2',
+      // Stable AAC sample rate. iOS strongly prefers 48kHz; some apps
+      // refuse non-standard rates.
+      '-ar', '48000',
       // Clear any legacy rotate tag / display matrix on the output so
       // players don't try to rotate our already-rotated pixels a second time.
       '-metadata:s:v:0', 'rotate=0',
+      // Explicit MP4 brand. ffmpeg's default `isom` works on most devices
+      // but `mp42` is what Apple's own exports use and is more strictly
+      // recognised by iOS's CMSampleBuffer pipeline.
+      '-brand', 'mp42',
       '-movflags', '+faststart',
       '-y',
       outputPath

@@ -110,6 +110,14 @@ export function HighlightPanel({
   const [exportingVariant, setExportingVariant] = useState<HighlightVariant | null>(null);
   const [generating, setGenerating] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  /**
+   * Project-level timeline markers (M-key bookmarks). Source seconds.
+   * Loaded on mount + after any mutation. Renders as small flags on the
+   * timeline; M shortcut adds at the current playhead.
+   */
+  const [markers, setMarkers] = useState<
+    Array<{ id: string; srcSec: number; label?: string; color?: string }>
+  >([]);
 
   const videoRef = useRef<HTMLVideoElement>(null);
   const playerWrapRef = useRef<HTMLDivElement | null>(null);
@@ -229,6 +237,47 @@ export function HighlightPanel({
     };
   }, [projectId]);
 
+  // Hydrate timeline markers on project load.
+  useEffect(() => {
+    if (!projectId) return;
+    let cancelled = false;
+    void window.lynlens.listMarkers(projectId).then((ms) => {
+      if (!cancelled) setMarkers(ms);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [projectId]);
+
+  // M-key shortcut: add a marker at the current playhead. Skipped when
+  // user is typing in an input/textarea (don't hijack literal-M
+  // typing). Skipped when no project loaded.
+  useEffect(() => {
+    if (!projectId) return;
+    function onKey(e: KeyboardEvent): void {
+      if (e.key !== 'm' && e.key !== 'M') return;
+      if (e.metaKey || e.ctrlKey || e.altKey) return;
+      const active = document.activeElement;
+      const tag = active?.tagName?.toLowerCase() ?? '';
+      if (
+        tag === 'input' ||
+        tag === 'textarea' ||
+        (active as HTMLElement | null)?.isContentEditable
+      ) {
+        return;
+      }
+      e.preventDefault();
+      const v = videoRef.current;
+      const srcSec = v?.currentTime ?? 0;
+      if (!projectId) return;
+      void window.lynlens.addMarker(projectId, srcSec).then((m) => {
+        setMarkers((prev) => [...prev, m].sort((a, b) => a.srcSec - b.srcSec));
+      });
+    }
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [projectId]);
+
 
   // RAF loop: keep `videoCurrentTime` + `elapsed` in sync, and when
   // `previewMode` is on, hop between variant segments so playback feels
@@ -273,14 +322,15 @@ export function HighlightPanel({
     setSelectedVariantId(variant.id);
     setPlayingSegIdx(0);
     setElapsed(0);
-    // Clicking a variant card on the right just SELECTS + seeks to the
-    // first segment; it doesn't auto-enter preview mode. Preview is now
-    // a separate explicit action (the 🎬 button) so the user is never
-    // surprised by what the player does next.
+    // Click on a variant card → just SELECT + park the playhead at the
+    // first segment's start. NO auto-play (user explicitly didn't want
+    // it: "点击选择变体的时候也不要自动播放视频"). The browser
+    // preserves play/pause state across currentTime writes — so if the
+    // user was already playing it keeps playing at the new spot, paused
+    // stays paused. To preview, the user hits the play button.
     const v = videoRef.current;
     if (v && variant.segments.length > 0) {
       v.currentTime = variant.segments[0].start;
-      void v.play().catch(() => {});
     }
   }, []);
 
@@ -779,6 +829,39 @@ export function HighlightPanel({
             const v = videoRef.current;
             if (!v) return;
             v.currentTime = srcSec;
+          }}
+          markers={markers}
+          onMarkerSeek={(srcSec) => {
+            const v = videoRef.current;
+            if (!v) return;
+            v.currentTime = srcSec;
+            // No auto-play — user's standing rule for click-to-seek.
+          }}
+          onMarkerMove={async (id, newSrcSec) => {
+            if (!projectId) return;
+            // Optimistic update — assume the move succeeds.
+            setMarkers((prev) =>
+              prev
+                .map((m) => (m.id === id ? { ...m, srcSec: newSrcSec } : m))
+                .sort((a, b) => a.srcSec - b.srcSec)
+            );
+            try {
+              await window.lynlens.moveMarker(projectId, id, newSrcSec);
+            } catch {
+              // Refetch on failure so optimistic state reverts.
+              const latest = await window.lynlens.listMarkers(projectId);
+              setMarkers(latest);
+            }
+          }}
+          onMarkerRemove={async (id) => {
+            if (!projectId) return;
+            setMarkers((prev) => prev.filter((m) => m.id !== id));
+            try {
+              await window.lynlens.removeMarker(projectId, id);
+            } catch {
+              const latest = await window.lynlens.listMarkers(projectId);
+              setMarkers(latest);
+            }
           }}
           onMarkRange={async (srcStart, srcEnd) => {
             // Shift+drag on the highlight timeline → add a new segment

@@ -225,6 +225,28 @@ export interface IpcApi {
     endSec: number,
     reason?: string
   ): Promise<{ start: number; end: number } | null>;
+
+  // ---- Timeline markers (Premiere-style bookmarks) ----
+  listMarkers(projectId: string): Promise<
+    Array<{ id: string; srcSec: number; label?: string; color?: string }>
+  >;
+  addMarker(
+    projectId: string,
+    srcSec: number,
+    label?: string,
+    color?: string
+  ): Promise<{ id: string; srcSec: number; label?: string; color?: string }>;
+  moveMarker(
+    projectId: string,
+    id: string,
+    newSrcSec: number
+  ): Promise<boolean>;
+  removeMarker(projectId: string, id: string): Promise<boolean>;
+  updateMarker(
+    projectId: string,
+    id: string,
+    patch: { label?: string | null; color?: string | null }
+  ): Promise<boolean>;
   /**
    * Create a fresh empty highlight variant the user fills in themselves.
    * Seeded with one 3-second segment centred at `hintSec` (or 0 if null),

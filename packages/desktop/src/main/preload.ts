@@ -56,6 +56,14 @@ const api: IpcApi = {
       endSec,
       reason
     ),
+  listMarkers: (pid) => ipcRenderer.invoke('list-markers', pid),
+  addMarker: (pid, srcSec, label, color) =>
+    ipcRenderer.invoke('add-marker', pid, srcSec, label, color),
+  moveMarker: (pid, id, newSrcSec) =>
+    ipcRenderer.invoke('move-marker', pid, id, newSrcSec),
+  removeMarker: (pid, id) => ipcRenderer.invoke('remove-marker', pid, id),
+  updateMarker: (pid, id, patch) =>
+    ipcRenderer.invoke('update-marker', pid, id, patch),
   addBlankHighlightVariant: (pid, hint, title) =>
     ipcRenderer.invoke('add-blank-highlight-variant', pid, hint, title),
   generatePackagingPlan: (pid, variantId, vibe) =>

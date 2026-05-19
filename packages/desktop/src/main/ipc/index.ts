@@ -22,6 +22,7 @@ import { registerAgentIpc } from './agent';
 import { registerAgentWindowIpc } from './agent-window';
 import { registerSettingsIpc } from './settings';
 import { registerLearningIpc } from './learning';
+import { registerMarkersIpc } from './markers';
 
 export type { IpcContext } from './_context';
 
@@ -37,4 +38,5 @@ export function registerAllIpc(ctx: IpcContext): void {
   registerAgentWindowIpc(ctx);
   registerSettingsIpc(ctx);
   registerLearningIpc(ctx);
+  registerMarkersIpc(ctx);
 }

@@ -62,6 +62,15 @@ interface Props {
    * Optional — if not provided, shift+drag falls back to plain seek.
    */
   onMarkRange?: (srcStart: number, srcEnd: number) => void;
+  /**
+   * Premiere-style timeline markers (M-key bookmarks). Source-time.
+   * Each rendered as a small flag above the segment area. Click flag
+   * → onMarkerSeek; drag flag → onMarkerMove; × button → onMarkerRemove.
+   */
+  markers?: Array<{ id: string; srcSec: number; label?: string; color?: string }>;
+  onMarkerSeek?: (srcSec: number) => void;
+  onMarkerMove?: (id: string, newSrcSec: number) => void;
+  onMarkerRemove?: (id: string) => void;
 }
 
 interface View {
@@ -100,6 +109,10 @@ export function HighlightTimeline({
   onResizeSegment,
   onDeleteSegment,
   onMarkRange,
+  markers,
+  onMarkerSeek,
+  onMarkerMove,
+  onMarkerRemove,
 }: Props): JSX.Element {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -345,38 +358,40 @@ export function HighlightTimeline({
     );
 
     if (e.shiftKey && onMarkRange) {
-      // SHIFT+drag → mark a range. Bail if there's no variant selected
-      // (parent shows a hint banner). Otherwise enter mark mode.
+      // SHIFT+drag → mark a range. Bail if there's no variant selected.
       if (!variant) {
-        // Fallback to seek when there's nothing to add to. User sees
-        // nothing happen visually — parent should disable this case
-        // via banner / tooltip.
         const srcSec = effectiveToSource(startEff, cutRanges);
         onSeek(srcSec);
         return;
       }
       e.preventDefault();
-      setMarkDrag({ startEff, endEff: startEff });
+      // CRITICAL: track the latest drag state in a CLOSURE LOCAL, not
+      // inside a setState updater. React 18 StrictMode runs updater
+      // functions twice in dev to catch impurity — putting onMarkRange()
+      // inside `setMarkDrag(d => {...; onMarkRange(); return null})`
+      // makes it fire TWICE per drag, creating duplicate segments
+      // (user reported "shift 拖一次, 会生成两个"). Side effects must
+      // live OUTSIDE the updater.
+      let latest = { startEff, endEff: startEff };
+      setMarkDrag(latest);
       const move = (ev: MouseEvent): void => {
         const x = ev.clientX - rect.left;
         const eff = Math.max(0, Math.min(effectiveDuration, xToEff(x)));
-        setMarkDrag({ startEff, endEff: eff });
+        latest = { startEff, endEff: eff };
+        setMarkDrag(latest);
       };
       const up = (): void => {
         window.removeEventListener('mousemove', move);
         window.removeEventListener('mouseup', up);
-        setMarkDrag((d) => {
-          if (!d) return null;
-          const a = Math.min(d.startEff, d.endEff);
-          const b = Math.max(d.startEff, d.endEff);
-          // Require at least 0.1s of drag — anything less is a misclick.
-          if (b - a >= 0.1) {
-            const srcA = effectiveToSource(a, cutRanges);
-            const srcB = effectiveToSource(b, cutRanges);
-            onMarkRange(srcA, srcB);
-          }
-          return null;
-        });
+        setMarkDrag(null);
+        const a = Math.min(latest.startEff, latest.endEff);
+        const b = Math.max(latest.startEff, latest.endEff);
+        // Require ≥ 0.1s of drag — anything less is a misclick.
+        if (b - a >= 0.1) {
+          const srcA = effectiveToSource(a, cutRanges);
+          const srcB = effectiveToSource(b, cutRanges);
+          onMarkRange(srcA, srcB);
+        }
       };
       window.addEventListener('mousemove', move);
       window.addEventListener('mouseup', up);
@@ -749,6 +764,30 @@ export function HighlightTimeline({
         }
       >
         <canvas ref={canvasRef} className="hl-timeline-canvas" />
+        {/* Timeline markers (Premiere-style bookmarks). Small flag at
+            each marker's source-time position. Hover shows tooltip +
+            × delete button. Drag the flag body to reposition. */}
+        {markers && markers.length > 0 && markers.map((m) => {
+          const effSec = sourceToEffective(m.srcSec, cutRanges);
+          if (effSec < view.offsetSec || effSec > view.offsetSec + view.visibleSec) {
+            return null; // off-screen, skip render
+          }
+          const leftPct = effToLeftPct(effSec);
+          return (
+            <TimelineMarker
+              key={m.id}
+              marker={m}
+              leftPct={leftPct}
+              containerRef={containerRef}
+              xToEff={xToEff}
+              cutRanges={cutRanges}
+              effectiveDuration={effectiveDuration}
+              onMarkerSeek={onMarkerSeek}
+              onMarkerMove={onMarkerMove}
+              onMarkerRemove={onMarkerRemove}
+            />
+          );
+        })}
         {/* Shift+drag visual feedback: translucent amber rect over the
             range being marked. Disappears on mouseup (when markDrag is
             cleared). Pointer-events: none so it doesn't eat the
@@ -908,4 +947,158 @@ export function HighlightTimeline({
       </div>
     </div>
   );
+}
+
+/**
+ * One Premiere-style flag on the timeline. Renders as a small triangle
+ * + colored stem at the marker's X position. Click body = seek; drag
+ * body = move (commits on mouseup); × button (on hover) = delete.
+ */
+function TimelineMarker({
+  marker,
+  leftPct,
+  containerRef,
+  xToEff,
+  cutRanges,
+  effectiveDuration,
+  onMarkerSeek,
+  onMarkerMove,
+  onMarkerRemove,
+}: {
+  marker: { id: string; srcSec: number; label?: string; color?: string };
+  leftPct: number;
+  containerRef: React.RefObject<HTMLDivElement | null>;
+  xToEff: (px: number) => number;
+  cutRanges: readonly Range[];
+  effectiveDuration: number;
+  onMarkerSeek?: (srcSec: number) => void;
+  onMarkerMove?: (id: string, newSrcSec: number) => void;
+  onMarkerRemove?: (id: string) => void;
+}): JSX.Element {
+  const [hover, setHover] = useState(false);
+  const accent = marker.color ?? '#7aa2f7';
+
+  const startDrag = (e: React.MouseEvent): void => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (!onMarkerMove) {
+      // No move handler → treat as plain click-to-seek.
+      onMarkerSeek?.(marker.srcSec);
+      return;
+    }
+    const container = containerRef.current;
+    if (!container) return;
+    const startClientX = e.clientX;
+    let moved = false;
+    let latestSrcSec = marker.srcSec;
+    const move = (ev: MouseEvent): void => {
+      const dx = Math.abs(ev.clientX - startClientX);
+      if (!moved && dx < 3) return; // jitter threshold
+      moved = true;
+      const rect = container.getBoundingClientRect();
+      const eff = Math.max(
+        0,
+        Math.min(effectiveDuration, xToEff(ev.clientX - rect.left))
+      );
+      // Convert back to source — markers are stored in source time.
+      // We don't have effectiveToSource here easily, so inline it:
+      // walk cutRanges and shift back.
+      let src = eff;
+      for (const c of cutRanges) {
+        if (src + (c.end - c.start) <= c.start) break;
+        src += c.end - c.start;
+      }
+      latestSrcSec = src;
+    };
+    const up = (): void => {
+      window.removeEventListener('mousemove', move);
+      window.removeEventListener('mouseup', up);
+      if (moved) {
+        onMarkerMove(marker.id, latestSrcSec);
+      } else {
+        onMarkerSeek?.(marker.srcSec);
+      }
+    };
+    window.addEventListener('mousemove', move);
+    window.addEventListener('mouseup', up);
+  };
+
+  return (
+    <div
+      onMouseEnter={() => setHover(true)}
+      onMouseLeave={() => setHover(false)}
+      style={{
+        position: 'absolute',
+        left: `${leftPct}%`,
+        top: 0,
+        bottom: 0,
+        width: 2,
+        background: accent,
+        pointerEvents: 'auto',
+        zIndex: 6,
+        transform: 'translateX(-50%)',
+      }}
+    >
+      {/* Flag head at the top — triangle pointing down */}
+      <div
+        onMouseDown={startDrag}
+        title={
+          marker.label
+            ? `🏷️ ${marker.label} · 点击跳到 · 拖动移动`
+            : `🏷️ ${formatSrcTime(marker.srcSec)} · 点击跳到 · 拖动移动`
+        }
+        style={{
+          position: 'absolute',
+          top: -2,
+          left: '50%',
+          transform: 'translateX(-50%)',
+          width: 12,
+          height: 14,
+          background: accent,
+          clipPath: 'polygon(0 0, 100% 0, 100% 60%, 50% 100%, 0 60%)',
+          cursor: 'grab',
+          pointerEvents: 'auto',
+        }}
+      />
+      {/* Hover × delete button */}
+      {hover && onMarkerRemove && (
+        <button
+          onClick={(e) => {
+            e.stopPropagation();
+            onMarkerRemove(marker.id);
+          }}
+          title="删除标签"
+          style={{
+            position: 'absolute',
+            top: 14,
+            left: '50%',
+            transform: 'translateX(-50%)',
+            width: 16,
+            height: 16,
+            border: 'none',
+            borderRadius: 8,
+            background: '#222',
+            color: '#fff',
+            fontSize: 10,
+            cursor: 'pointer',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            padding: 0,
+            lineHeight: 1,
+          }}
+        >
+          ×
+        </button>
+      )}
+    </div>
+  );
+}
+
+/** Formatter for marker tooltips. m:ss.cs at 100ms precision. */
+function formatSrcTime(s: number): string {
+  if (!Number.isFinite(s) || s < 0) s = 0;
+  const m = Math.floor(s / 60);
+  const sec = s - m * 60;
+  return `${m}:${sec.toFixed(2).padStart(5, '0')}`;
 }

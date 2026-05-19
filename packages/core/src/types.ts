@@ -166,6 +166,19 @@ export interface QcpProject {
    */
   diarizationEngine?: 'mock' | 'sherpa-onnx';
   /**
+   * User-placed timeline markers (Premiere-style bookmarks). Source time.
+   * Created by pressing M on the keyboard, draggable to reposition,
+   * deletable via hover X. Persist across sessions so the editor can
+   * remember positions of note. Optional label for future "name your
+   * marker" UX — undefined defaults to auto-numbered chip.
+   */
+  markers?: Array<{
+    id: string;
+    srcSec: number;
+    label?: string;
+    color?: string;
+  }>;
+  /**
    * Future: persisted voiceprint embeddings for cross-project speaker
    * identification ("this is 张三"). Not implemented in the MVP — field
    * left unreserved so when we add it no migration is needed.
