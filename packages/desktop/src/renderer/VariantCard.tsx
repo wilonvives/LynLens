@@ -623,8 +623,34 @@ export function VariantCard({
           )}
           {active && !isBroken && <span className="variant-card-playing">正在播放</span>}
         </div>
-        <div className="variant-card-meta">
-          {variant.durationSeconds.toFixed(1)} 秒 · {variant.segments.length} 段
+        <div
+          className="variant-card-meta"
+          style={{ display: 'flex', alignItems: 'center', gap: 8 }}
+        >
+          <span>
+            {variant.durationSeconds.toFixed(1)} 秒 · {variant.segments.length} 段
+          </span>
+          {/* Compact 导出 button next to meta — literally the rightmost
+              thing in the card head row, hugging the right edge.
+              Bigger affordance than burying it in the actions row, and
+              always one click away regardless of expanded state. */}
+          <button
+            className="primary"
+            onClick={(e) => {
+              e.stopPropagation();
+              void doExport(e);
+            }}
+            disabled={exporting || isBroken}
+            title={isBroken ? '变体已失效,无法导出' : '导出这个变体为视频文件'}
+            style={{
+              fontSize: 11,
+              padding: '2px 10px',
+              lineHeight: 1.4,
+              flexShrink: 0,
+            }}
+          >
+            {exporting ? '导出中…' : '导出'}
+          </button>
         </div>
       </div>
 
@@ -779,18 +805,9 @@ export function VariantCard({
             </>,
             document.body
           )}
-        {/* 导出 — placed AFTER the ⋯ button so it hugs the card's
-            right edge. User pointed out "rightmost = touching the
-            frame, not just last in array order". */}
-        <button
-          className="primary"
-          onClick={doExport}
-          disabled={exporting || isBroken}
-          title={isBroken ? '变体已失效,无法导出' : '导出这个变体为视频文件'}
-          style={{ fontSize: 12, padding: '4px 10px' }}
-        >
-          {exporting ? '导出中...' : '导出'}
-        </button>
+        {/* 导出 used to live here; moved to the card head next to the
+            duration/segments meta so it hugs the card's right edge
+            and is reachable without scanning a button row. */}
       </div>
 
       {expanded && (
