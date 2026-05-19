@@ -225,6 +225,13 @@ export function VariantCard({
   const [exporting, setExporting] = useState(false);
   const [copied, setCopied] = useState(false);
   const [editError, setEditError] = useState<string | null>(null);
+  // Title inline-rename state.
+  // null = not editing; string = draft text. We DON'T initialise to the
+  // current title because that would mean a stale snapshot if the variant
+  // gets renamed elsewhere; we seed on click instead.
+  const [titleDraft, setTitleDraft] = useState<string | null>(null);
+  // AI 🪄 enrich in-flight indicator.
+  const [enriching, setEnriching] = useState(false);
   const [editing, setEditing] = useState<
     | null
     | { segIdx: number; kind: 'start' | 'end' | 'reason'; draft: string }
@@ -385,6 +392,51 @@ export function VariantCard({
     }
   }
 
+  /**
+   * Commit the title draft via IPC. Empty / unchanged → revert silently.
+   * Errors surface in editError row.
+   */
+  async function commitTitleEdit(draft: string): Promise<void> {
+    const trimmed = draft.trim();
+    setTitleDraft(null);
+    if (!projectId) return;
+    if (!trimmed || trimmed === variant.title) return;
+    try {
+      const ok = await window.lynlens.renameHighlightVariant(
+        projectId,
+        variant.id,
+        trimmed
+      );
+      if (!ok) {
+        setEditError('改名失败 (空标题或变体已被删除)');
+        return;
+      }
+      setEditError(null);
+      await onVariantChanged();
+    } catch (err) {
+      setEditError(`改名失败: ${(err as Error).message}`);
+    }
+  }
+
+  /**
+   * 🪄 ask the AI to fill in the variant's title + per-segment reasons.
+   * Disabled if there's no transcript (server-side check will throw).
+   */
+  async function doEnrich(e: React.MouseEvent): Promise<void> {
+    e.stopPropagation();
+    if (enriching || !projectId) return;
+    setEnriching(true);
+    setEditError(null);
+    try {
+      await window.lynlens.enrichHighlightVariant(projectId, variant.id);
+      await onVariantChanged();
+    } catch (err) {
+      setEditError(`AI 整理失败: ${(err as Error).message}`);
+    } finally {
+      setEnriching(false);
+    }
+  }
+
   function collectVariantText(): string {
     if (!transcript) return '';
     const lines: string[] = [];
@@ -433,7 +485,52 @@ export function VariantCard({
       <div className="variant-card-head">
         <div className="variant-card-title-row">
           <span className="variant-card-index">#{index}</span>
-          <span className="variant-card-title">{variant.title}</span>
+          {titleDraft !== null ? (
+            // Inline title editor — autofocus on mount, blur or Enter to
+            // commit, Escape to cancel.
+            <input
+              autoFocus
+              className="variant-card-title-input"
+              value={titleDraft}
+              onClick={(e) => e.stopPropagation()}
+              onChange={(e) => setTitleDraft(e.target.value)}
+              onKeyDown={(e) => {
+                e.stopPropagation();
+                if (e.key === 'Enter') {
+                  void commitTitleEdit(titleDraft);
+                } else if (e.key === 'Escape') {
+                  setTitleDraft(null);
+                }
+              }}
+              onBlur={() => void commitTitleEdit(titleDraft)}
+              maxLength={40}
+              style={{
+                background: '#1a1a26',
+                border: '1px solid var(--accent)',
+                borderRadius: 4,
+                color: '#fff',
+                padding: '2px 6px',
+                fontSize: 'inherit',
+                fontWeight: 600,
+                minWidth: 180,
+                maxWidth: 320,
+              }}
+            />
+          ) : (
+            <span
+              className="variant-card-title"
+              onClick={(e) => {
+                // Inline rename — click steals from the row-level
+                // onSelect handler. Pencil cursor signals editability.
+                e.stopPropagation();
+                setTitleDraft(variant.title);
+              }}
+              title="点击改名"
+              style={{ cursor: 'text' }}
+            >
+              {variant.title}
+            </span>
+          )}
           <span className="variant-card-style">{STYLE_LABEL[variant.style]}</span>
           {isPinned && (
             <span className="variant-card-pin-badge" title="已收藏,不会被「生成新一批」覆盖">
@@ -489,6 +586,17 @@ export function VariantCard({
         </button>
         <button onClick={doCopy} disabled={!transcript} title="把这个变体对应的字幕拼起来复制到剪贴板">
           {copied ? '已复制' : '复制文案'}
+        </button>
+        <button
+          onClick={(e) => void doEnrich(e)}
+          disabled={enriching || !transcript || !projectId}
+          title={
+            transcript
+              ? 'AI 看每段说了什么, 自动起标题 + 写段落备注'
+              : '需要先生成字幕,AI 才有信息推断'
+          }
+        >
+          {enriching ? '🪄 AI 整理中...' : '🪄 AI 起名/备注'}
         </button>
         <button
           onClick={(e) => {

@@ -144,6 +144,28 @@ export interface IpcApi {
    */
   deleteHighlightVariant(projectId: string, variantId: string): Promise<boolean>;
   /**
+   * Inline-rename a variant. Empty / whitespace-only title is rejected
+   * (returns false). Caller does optimistic UI; on false revert.
+   */
+  renameHighlightVariant(
+    projectId: string,
+    variantId: string,
+    newTitle: string
+  ): Promise<boolean>;
+  /**
+   * 🪄 enrich — call the AI to fill in (or overwrite) the variant's
+   * title + each segment's reason based on transcript content. Throws
+   * when no transcript is available. Returns the AI proposal so the
+   * UI can optionally show "what changed" feedback.
+   */
+  enrichHighlightVariant(
+    projectId: string,
+    variantId: string
+  ): Promise<{
+    title: string | null;
+    reasons: Array<string | null>;
+  }>;
+  /**
    * Fine-tune the (start, end) of a segment inside a variant. Source
    * time. Returns false on validation failure (overlap / too short /
    * out of bounds). The variant's sourceSnapshot is cleared on success

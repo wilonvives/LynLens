@@ -989,6 +989,65 @@ export class Project {
   }
 
   /**
+   * Rename a variant. Title is trimmed; empty → falls back to the
+   * pre-existing title (refuses to wipe the field to '').
+   *
+   * Returns false when the variant id isn't found.
+   */
+  renameHighlightVariant(variantId: string, newTitle: string): boolean {
+    const trimmed = (newTitle ?? '').trim();
+    if (!trimmed) return false;
+    const vIdx = this.highlightVariants.findIndex((v) => v.id === variantId);
+    if (vIdx < 0) return false;
+    const variant = this.highlightVariants[vIdx];
+    if (variant.title === trimmed) return false; // no-op, save call elided
+    const nextVariant = { ...variant, title: trimmed };
+    this.highlightVariants = this.highlightVariants.map((v, i) =>
+      i === vIdx ? nextVariant : v
+    );
+    this.modifiedAt = new Date().toISOString();
+    return true;
+  }
+
+  /**
+   * Bulk-update a variant's title + per-segment reasons in one go. Used
+   * by the AI "🪄 enrich" flow so the renderer doesn't have to fire N
+   * separate IPCs (each of which would trigger an autosave). Reasons
+   * array indices align with variant.segments. Pass null for any reason
+   * the AI couldn't fill in (keeps the existing one).
+   *
+   * Returns false on bad variantId; partial updates (only title, only
+   * some reasons) are allowed.
+   */
+  enrichHighlightVariantMeta(
+    variantId: string,
+    nextTitle: string | null,
+    nextReasons: Array<string | null>
+  ): boolean {
+    const vIdx = this.highlightVariants.findIndex((v) => v.id === variantId);
+    if (vIdx < 0) return false;
+    const variant = this.highlightVariants[vIdx];
+    const titleNext =
+      nextTitle && nextTitle.trim() ? nextTitle.trim() : variant.title;
+    const segsNext = variant.segments.map((s, i) => {
+      const r = nextReasons[i];
+      if (r === null || r === undefined) return s;
+      const trimmed = r.trim();
+      return trimmed ? { ...s, reason: trimmed } : s;
+    });
+    const nextVariant = {
+      ...variant,
+      title: titleNext,
+      segments: segsNext,
+    };
+    this.highlightVariants = this.highlightVariants.map((v, i) =>
+      i === vIdx ? nextVariant : v
+    );
+    this.modifiedAt = new Date().toISOString();
+    return true;
+  }
+
+  /**
    * Append a new segment to a variant. Source time. Same validation as
    * updateHighlightVariantSegment (MIN_DUR, in-bounds, no overlap). Does
    * NOT sort — the segment lands at the end of the array, matching the

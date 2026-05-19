@@ -35,6 +35,10 @@ const api: IpcApi = {
     ipcRenderer.invoke('set-highlight-pinned', pid, vid, pinned),
   deleteHighlightVariant: (pid, vid) =>
     ipcRenderer.invoke('delete-highlight-variant', pid, vid),
+  renameHighlightVariant: (pid, vid, title) =>
+    ipcRenderer.invoke('rename-highlight-variant', pid, vid, title),
+  enrichHighlightVariant: (pid, vid) =>
+    ipcRenderer.invoke('enrich-highlight-variant', pid, vid),
   updateHighlightVariantSegment: (pid, vid, idx, s, e, reason) =>
     ipcRenderer.invoke('update-highlight-variant-segment', pid, vid, idx, s, e, reason),
   reorderHighlightVariantSegment: (pid, vid, from, to) =>

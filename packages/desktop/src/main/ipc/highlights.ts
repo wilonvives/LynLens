@@ -152,6 +152,95 @@ export function registerHighlightsIpc(ctx: IpcContext): void {
     }
   );
 
+  /**
+   * Inline-rename a variant from the variant card. Empty / whitespace
+   * titles are rejected (refuses to wipe the field). Returns the
+   * accepted title so the renderer can sync optimistic state.
+   */
+  ipcMain.handle(
+    'rename-highlight-variant',
+    async (_ev, projectId: string, variantId: string, newTitle: string) => {
+      const project = engine.projects.get(projectId);
+      const ok = project.renameHighlightVariant(variantId, newTitle);
+      if (ok && project.projectPath) {
+        await engine.projects.saveProject(projectId).catch(() => {});
+      }
+      return ok;
+    }
+  );
+
+  /**
+   * 🪄 enrich — ask Claude to look at the variant's segments + the
+   * transcript text inside each one, then propose a punchy variant
+   * title + per-segment one-line reason. Used to populate empty /
+   * auto-named variants (e.g. "自定义 #1") with meaningful metadata.
+   *
+   * Throws when there's no transcript (AI has nothing to work with).
+   * Otherwise returns the AI's proposal as { title, reasons } so the
+   * renderer can show "✓ updated" feedback even if the user wants to
+   * undo afterwards.
+   */
+  ipcMain.handle(
+    'enrich-highlight-variant',
+    async (_ev, projectId: string, variantId: string) => {
+      const {
+        buildEnrichSystemPrompt,
+        buildEnrichUserPrompt,
+        parseEnrichResponse,
+      } = await import('@lynlens/core');
+      const project = engine.projects.get(projectId);
+      if (!project.transcript || project.transcript.segments.length === 0) {
+        throw new Error('需要先生成字幕,AI 才有信息推断标题和段落备注。');
+      }
+      const variant = project.findHighlightVariant(variantId);
+      if (!variant) throw new Error(`找不到变体: ${variantId}`);
+      if (variant.segments.length === 0) {
+        throw new Error('变体没有段落,无法 enrich。');
+      }
+
+      // Pull transcript text inside each variant segment so the AI can
+      // see what's actually being said. Join word-boundary aware (CJK
+      // has no spaces, English does — transcripts already encode this).
+      const segInputs = variant.segments.map((s, segmentIdx) => {
+        const inside: string[] = [];
+        for (const t of project.transcript!.segments) {
+          if (t.end <= s.start || t.start >= s.end) continue;
+          const txt = t.text.trim();
+          if (txt) inside.push(txt);
+        }
+        return {
+          segmentIdx,
+          start: s.start,
+          end: s.end,
+          existingReason: s.reason ?? '',
+          transcriptText: inside.join(' '),
+        };
+      });
+
+      const systemPrompt = buildEnrichSystemPrompt();
+      const userPrompt = buildEnrichUserPrompt({
+        currentTitle: variant.title,
+        totalDurationSec: variant.durationSeconds,
+        styleHint: variant.style,
+        segments: segInputs,
+      });
+      const { text } = await runOneShotViaCurrentProvider(systemPrompt, userPrompt);
+      const enrich = parseEnrichResponse(text, variant.segments.length);
+
+      // Apply to project state in one shot (single autosave).
+      const ok = project.enrichHighlightVariantMeta(
+        variantId,
+        enrich.title,
+        enrich.reasons
+      );
+      if (!ok) throw new Error('应用 AI 建议失败 (变体已被删除?)');
+      if (project.projectPath) {
+        await engine.projects.saveProject(projectId).catch(() => {});
+      }
+      return enrich;
+    }
+  );
+
   ipcMain.handle(
     'update-highlight-variant-segment',
     async (

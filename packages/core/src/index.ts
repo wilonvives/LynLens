@@ -86,6 +86,14 @@ export {
   type HighlightVariant,
 } from './highlight-parser';
 export {
+  buildEnrichSystemPrompt,
+  buildEnrichUserPrompt,
+  parseEnrichResponse,
+  type EnrichInput,
+  type EnrichOutput,
+  type EnrichSegmentInput,
+} from './highlight-enrich';
+export {
   DEFAULT_SUBTITLE_STYLE,
   buildPackagingSystemPrompt,
   buildPackagingUserPrompt,
