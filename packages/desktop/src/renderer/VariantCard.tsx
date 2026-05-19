@@ -34,11 +34,17 @@ interface Props {
    */
   onVariantChanged: () => void | Promise<void>;
   /**
-   * Batch-select state. When defined, the card renders a checkbox in
-   * its head — toggling it adds/removes the variant from the parent's
-   * selection set. Used by batch export. Undefined → no checkbox.
+   * Batch-select state. The checkbox is HOVER-REVEALED by default —
+   * it only renders when:
+   *   - the user is hovering this card, OR
+   *   - this card is currently selected, OR
+   *   - `batchActive` is true (at least one OTHER card is already
+   *     selected → reveal all checkboxes so the user can keep
+   *     clicking without hover-hunting through every card).
+   * Toggle adds/removes from the parent's selection set.
    */
   selected?: boolean;
+  batchActive?: boolean;
   onToggleSelect?: (variant: HighlightVariant) => void;
 }
 
@@ -229,6 +235,7 @@ export function VariantCard({
   onDelete,
   onVariantChanged,
   selected,
+  batchActive,
   onToggleSelect,
 }: Props) {
   const [expanded, setExpanded] = useState(false);
@@ -253,6 +260,9 @@ export function VariantCard({
     | { x: number; y: number; placement: 'below' | 'above' }
     | null
   >(null);
+  // Hover state — drives hover-reveal of the batch-select checkbox so
+  // it doesn't clutter the UI by default. See `Props.batchActive`.
+  const [hovering, setHovering] = useState(false);
   const moreOpen = menuAnchor !== null;
   const [editing, setEditing] = useState<
     | null
@@ -531,14 +541,19 @@ export function VariantCard({
     <div
       className={cardClass}
       onClick={() => !isBroken && onSelect(variant)}
+      onMouseEnter={() => setHovering(true)}
+      onMouseLeave={() => setHovering(false)}
       role="button"
     >
       <div className="variant-card-head">
         <div className="variant-card-title-row">
-          {/* Batch-select checkbox — only present when parent passes
-              `onToggleSelect`. Click is stop-propagated so it doesn't
-              also trigger the card-select-and-seek behaviour. */}
-          {onToggleSelect && (
+          {/* Batch-select checkbox — HOVER-REVEALED to keep cards
+              clean by default. Becomes visible if user hovers, OR if
+              already selected, OR if batch mode is "active" (≥1 other
+              card selected somewhere → reveal all so multi-select
+              doesn't require hover-hunting). */}
+          {onToggleSelect &&
+            (hovering || selected || batchActive) && (
             <input
               type="checkbox"
               checked={!!selected}
@@ -627,10 +642,10 @@ export function VariantCard({
       )}
 
       <div className="variant-card-actions" onClick={(e) => e.stopPropagation()}>
-        {/* Order chosen so the rightmost slot is the most-common
-            destination ("导出"). Card scans left→right; the primary
-            click ends on the right. ⋯ trails further right for less-
-            common secondary actions. */}
+        {/* Order: [段落] [复制] [⋯ menu] [导出 (literally rightmost,
+            primary action hugging the card edge)]. User wanted 导出
+            touching the right frame, not just "last in the list" — so
+            ⋯ slots in BEFORE 导出, not after. */}
         <button
           onClick={(e) => {
             e.stopPropagation();
@@ -648,15 +663,6 @@ export function VariantCard({
           style={{ fontSize: 12, padding: '4px 10px' }}
         >
           {copied ? '已复制' : '复制'}
-        </button>
-        <button
-          className="primary"
-          onClick={doExport}
-          disabled={exporting || isBroken}
-          title={isBroken ? '变体已失效,无法导出' : '导出这个变体为视频文件'}
-          style={{ fontSize: 12, padding: '4px 10px' }}
-        >
-          {exporting ? '导出中...' : '导出'}
         </button>
         {/* ⋯ overflow menu trigger. The menu itself is portaled to
             <body> and positioned with viewport-fixed coords so it
@@ -773,6 +779,18 @@ export function VariantCard({
             </>,
             document.body
           )}
+        {/* 导出 — placed AFTER the ⋯ button so it hugs the card's
+            right edge. User pointed out "rightmost = touching the
+            frame, not just last in array order". */}
+        <button
+          className="primary"
+          onClick={doExport}
+          disabled={exporting || isBroken}
+          title={isBroken ? '变体已失效,无法导出' : '导出这个变体为视频文件'}
+          style={{ fontSize: 12, padding: '4px 10px' }}
+        >
+          {exporting ? '导出中...' : '导出'}
+        </button>
       </div>
 
       {expanded && (

@@ -545,6 +545,92 @@ export function HighlightPanel({
     }
   }
 
+  /**
+   * Batch delete — destructive, requires confirmation. Iterates the
+   * selection and calls deleteHighlightVariant for each, collecting
+   * errors. On completion, refetches the variant list so the UI
+   * reflects what survived.
+   */
+  async function handleBatchDelete(): Promise<void> {
+    if (!projectId || selectedIds.size === 0) return;
+    const targets = variants.filter((v) => selectedIds.has(v.id));
+    if (targets.length === 0) return;
+    if (!confirm(`确认永久删除 ${targets.length} 个变体? 此操作不可撤销.`)) {
+      return;
+    }
+    setBatchProgress({
+      current: targets[0].title,
+      done: 0,
+      total: targets.length,
+      errors: [],
+    });
+    const errors: string[] = [];
+    for (let i = 0; i < targets.length; i++) {
+      const v = targets[i];
+      setBatchProgress({
+        current: v.title,
+        done: i,
+        total: targets.length,
+        errors,
+      });
+      try {
+        const ok = await window.lynlens.deleteHighlightVariant(projectId, v.id);
+        if (!ok) errors.push(`「${v.title}」: 主进程返回 false`);
+      } catch (err) {
+        errors.push(`「${v.title}」: ${(err as Error).message}`);
+      }
+    }
+    setBatchProgress(null);
+    setSelectedIds(new Set());
+    const latest = await window.lynlens.getHighlights(projectId);
+    setVariants(latest);
+    if (errors.length > 0) {
+      alert(`部分删除失败:\n${errors.join('\n')}`);
+    }
+  }
+
+  /**
+   * Batch AI enrich — sequential because each call is a Claude LLM
+   * round-trip. Parallel would burn the user's quota and the wall-clock
+   * isn't dramatically faster anyway. Errors collected and surfaced.
+   */
+  async function handleBatchEnrich(): Promise<void> {
+    if (!projectId || selectedIds.size === 0) return;
+    if (!transcript) {
+      alert('需要先生成字幕,AI 才能推断标题和段落备注。');
+      return;
+    }
+    const targets = variants.filter((v) => selectedIds.has(v.id));
+    if (targets.length === 0) return;
+    setBatchProgress({
+      current: targets[0].title,
+      done: 0,
+      total: targets.length,
+      errors: [],
+    });
+    const errors: string[] = [];
+    for (let i = 0; i < targets.length; i++) {
+      const v = targets[i];
+      setBatchProgress({
+        current: v.title,
+        done: i,
+        total: targets.length,
+        errors,
+      });
+      try {
+        await window.lynlens.enrichHighlightVariant(projectId, v.id);
+      } catch (err) {
+        errors.push(`「${v.title}」: ${(err as Error).message}`);
+      }
+    }
+    setBatchProgress(null);
+    const latest = await window.lynlens.getHighlights(projectId);
+    setVariants(latest);
+    if (errors.length > 0) {
+      alert(`部分 AI 整理失败:\n${errors.join('\n')}`);
+    }
+  }
+
   if (!projectId) {
     return (
       <div className="highlight-empty">
@@ -872,6 +958,33 @@ export function HighlightPanel({
                 清空
               </button>
               <button
+                onClick={() => void handleBatchEnrich()}
+                disabled={!!batchProgress || !transcript}
+                style={{ fontSize: 11, padding: '3px 10px' }}
+                title={
+                  transcript
+                    ? '对选中的变体批量调用 AI 起名/写备注'
+                    : '需要先生成字幕'
+                }
+              >
+                {batchProgress
+                  ? `🪄 ${batchProgress.done}/${batchProgress.total} 整理中…`
+                  : '🪄 AI 起名/备注'}
+              </button>
+              <button
+                onClick={() => void handleBatchDelete()}
+                disabled={!!batchProgress}
+                style={{
+                  fontSize: 11,
+                  padding: '3px 10px',
+                  color: '#ff6b6b',
+                  borderColor: 'rgba(255, 107, 107, 0.5)',
+                }}
+                title="永久删除选中的变体"
+              >
+                🗑 删除
+              </button>
+              <button
                 className="primary"
                 onClick={() => void handleBatchExport()}
                 disabled={!!batchProgress}
@@ -899,6 +1012,7 @@ export function HighlightPanel({
                   transcript={transcript}
                   projectId={projectId}
                   selected={selectedIds.has(v.id)}
+                  batchActive={selectedIds.size > 0}
                   onToggleSelect={(vv) => {
                     setSelectedIds((prev) => {
                       const next = new Set(prev);
