@@ -240,7 +240,6 @@ export function VariantCard({
 }: Props) {
   const [expanded, setExpanded] = useState(false);
   const [exporting, setExporting] = useState(false);
-  const [copied, setCopied] = useState(false);
   const [editError, setEditError] = useState<string | null>(null);
   // Title inline-rename state.
   // null = not editing; string = draft text. We DON'T initialise to the
@@ -498,30 +497,63 @@ export function VariantCard({
     }
   }
 
-  function collectVariantText(): string {
+  /**
+   * Collect the variant's subtitle text. `withTimestamps` prefixes each
+   * line with its position in the VARIANT's own timeline (not the source
+   * video), e.g. "[00:04] …" — i.e. where the line actually appears in
+   * the exported variant clip.
+   *
+   * Why variant-relative: the variant is a re-cut + reordered subset of
+   * the source. The raw transcript-segment start times (which is what we
+   * used to print) are source-video seconds and are meaningless once the
+   * footage is concatenated into the highlight reel. We walk the variant
+   * segments in PLAYBACK order, accumulating elapsed duration, and place
+   * each line at `elapsed + (lineStart clamped into this segment) -
+   * segmentStart`.
+   */
+  function collectVariantText(withTimestamps: boolean): string {
     if (!transcript) return '';
     const lines: string[] = [];
+    let elapsed = 0; // variant-relative seconds before the current segment
     for (const vs of variant.segments) {
       for (const t of transcript.segments) {
         if (t.end <= vs.start || t.start >= vs.end) continue;
         const txt = t.text.trim();
-        if (txt) lines.push(txt);
+        if (!txt) continue;
+        if (withTimestamps) {
+          // Onset of this line, in source seconds. Whisper's segment.start
+          // tends to sit ~0.2-0.5s early (it marks the breath/onset, not
+          // the first spoken syllable), which makes the copied timestamp
+          // feel "ahead" of the audio. When word-level timing exists, use
+          // the first WORD that actually lands inside this segment — much
+          // closer to when the words are heard. Fall back to the clamped
+          // segment start otherwise.
+          let srcStart = Math.max(t.start, vs.start);
+          if (t.words && t.words.length > 0) {
+            const firstInSeg = t.words.find(
+              (w) => w.start >= vs.start && w.start < vs.end
+            );
+            if (firstInSeg) srcStart = firstInSeg.start;
+          }
+          const within = Math.max(0, srcStart - vs.start);
+          lines.push(`[${formatTime(elapsed + within)}] ${txt}`);
+        } else {
+          lines.push(txt);
+        }
       }
+      elapsed += vs.end - vs.start;
     }
     return lines.join('\n');
   }
 
-  async function doCopy(e: React.MouseEvent): Promise<void> {
-    e.stopPropagation();
-    const text = collectVariantText();
+  async function doCopy(withTimestamps: boolean): Promise<void> {
+    const text = collectVariantText(withTimestamps);
     if (!text) {
       alert('这个变体对应的字幕段为空。');
       return;
     }
     try {
       await navigator.clipboard.writeText(text);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 1800);
     } catch (err) {
       alert(`复制失败: ${(err as Error).message}`);
     }
@@ -547,6 +579,29 @@ export function VariantCard({
     >
       <div className="variant-card-head">
         <div className="variant-card-title-row">
+          {/* Expand toggle — leftmost icon. ▸ collapsed, ▾ expanded.
+              Replaces the old text "段落 / 收起" button; moved up here so
+              it's the row's leading affordance. */}
+          <button
+            className="variant-card-expand"
+            onClick={(e) => {
+              e.stopPropagation();
+              setExpanded((v) => !v);
+            }}
+            title={expanded ? '收起段落详情' : '展开看每段时间 + 备注'}
+            style={{
+              background: 'transparent',
+              border: 'none',
+              color: 'var(--text2)',
+              cursor: 'pointer',
+              fontSize: 11,
+              padding: '0 4px 0 0',
+              lineHeight: 1,
+              flexShrink: 0,
+            }}
+          >
+            {expanded ? '▾' : '▸'}
+          </button>
           {/* Batch-select checkbox — HOVER-REVEALED to keep cards
               clean by default. Becomes visible if user hovers, OR if
               already selected, OR if batch mode is "active" (≥1 other
@@ -569,6 +624,9 @@ export function VariantCard({
             />
           )}
           <span className="variant-card-index">#{index}</span>
+          {/* Pinned state is shown by the card's yellow left border
+              (.variant-card.pinned) — no separate star needed; it'd be
+              redundant. */}
           {titleDraft !== null ? (
             // Inline title editor — autofocus on mount, blur or Enter to
             // commit, Escape to cancel.
@@ -616,11 +674,6 @@ export function VariantCard({
             </span>
           )}
           <span className="variant-card-style">{STYLE_LABEL[variant.style]}</span>
-          {isPinned && (
-            <span className="variant-card-pin-badge" title="已收藏,不会被「生成新一批」覆盖">
-              已收藏
-            </span>
-          )}
           {active && !isBroken && <span className="variant-card-playing">正在播放</span>}
         </div>
         <div
@@ -628,12 +681,45 @@ export function VariantCard({
           style={{ display: 'flex', alignItems: 'center', gap: 8 }}
         >
           <span>
-            {variant.durationSeconds.toFixed(1)} 秒 · {variant.segments.length} 段
+            {variant.durationSeconds.toFixed(1)} 秒 · {variant.segments.length}
           </span>
-          {/* Compact 导出 button next to meta — literally the rightmost
-              thing in the card head row, hugging the right edge.
-              Bigger affordance than burying it in the actions row, and
-              always one click away regardless of expanded state. */}
+          {/* ⋯ overflow menu trigger — sits between the meta text and 导出
+              in the card head: "几秒几段  ⋯  导出". Small + understated so
+              it reads as a secondary affordance next to the primary 导出.
+              The menu itself is portaled to <body> (escapes the card's
+              stacking context so the waveform doesn't paint over it). */}
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              if (moreOpen) {
+                setMenuAnchor(null);
+                return;
+              }
+              const btn = e.currentTarget.getBoundingClientRect();
+              const ESTIMATED_MENU_H = 240;
+              const placeBelow =
+                btn.bottom + ESTIMATED_MENU_H < window.innerHeight - 16;
+              setMenuAnchor({
+                x: btn.right, // right-align
+                y: placeBelow ? btn.bottom + 4 : btn.top - 4,
+                placement: placeBelow ? 'below' : 'above',
+              });
+            }}
+            title="更多操作"
+            aria-haspopup="menu"
+            aria-expanded={moreOpen}
+            style={{
+              fontSize: 13,
+              padding: '2px 7px',
+              lineHeight: 1.2,
+              flexShrink: 0,
+              color: 'var(--text2)',
+            }}
+          >
+            ⋯
+          </button>
+          {/* Compact 导出 button — rightmost in the card head, hugging the
+              edge. Always one click away regardless of expanded state. */}
           <button
             className="primary"
             onClick={(e) => {
@@ -667,62 +753,11 @@ export function VariantCard({
         </div>
       )}
 
-      <div className="variant-card-actions" onClick={(e) => e.stopPropagation()}>
-        {/* Order: [段落] [复制] [⋯ menu] [导出 (literally rightmost,
-            primary action hugging the card edge)]. User wanted 导出
-            touching the right frame, not just "last in the list" — so
-            ⋯ slots in BEFORE 导出, not after. */}
-        <button
-          onClick={(e) => {
-            e.stopPropagation();
-            setExpanded((v) => !v);
-          }}
-          title={expanded ? '收起段落详情' : '展开看每段时间 + 备注'}
-          style={{ fontSize: 12, padding: '4px 10px' }}
-        >
-          {expanded ? '收起' : '段落'}
-        </button>
-        <button
-          onClick={doCopy}
-          disabled={!transcript}
-          title="把这个变体对应的字幕拼起来复制到剪贴板"
-          style={{ fontSize: 12, padding: '4px 10px' }}
-        >
-          {copied ? '已复制' : '复制'}
-        </button>
-        {/* ⋯ overflow menu trigger. The menu itself is portaled to
-            <body> and positioned with viewport-fixed coords so it
-            escapes the variant card's stacking context (the waveform
-            was painting on top of the previous absolute-positioned
-            version). */}
-        <button
-          onClick={(e) => {
-            e.stopPropagation();
-            // Toggle: if already open, close; else compute anchor from
-            // the button's viewport rect + flip up when there's not
-            // enough room below.
-            if (moreOpen) {
-              setMenuAnchor(null);
-              return;
-            }
-            const btn = e.currentTarget.getBoundingClientRect();
-            const ESTIMATED_MENU_H = 240;
-            const placeBelow =
-              btn.bottom + ESTIMATED_MENU_H < window.innerHeight - 16;
-            setMenuAnchor({
-              x: btn.right, // right-align
-              y: placeBelow ? btn.bottom + 4 : btn.top - 4,
-              placement: placeBelow ? 'below' : 'above',
-            });
-          }}
-          title="更多操作"
-          aria-haspopup="menu"
-          aria-expanded={moreOpen}
-          style={{ fontSize: 12, padding: '4px 8px' }}
-        >
-          ⋯
-        </button>
-        {moreOpen &&
+      {/* ⋯ menu portal. The 段落 toggle + ⋯ trigger + 导出 all live in the
+          card head row now; this is just the portal host (rendered into
+          <body>, so tree position is irrelevant). Rendered only when open
+          so it doesn't add an empty flex row + gap under the head. */}
+      {moreOpen &&
           menuAnchor &&
           createPortal(
             <>
@@ -783,6 +818,19 @@ export function VariantCard({
                   label={enriching ? '🪄 整理中…' : '🪄 AI 起名 / 备注'}
                   hint={transcript ? 'AI 看内容自动写标题和备注' : '需要先生成字幕'}
                 />
+                {/* 复制文案 → hover reveals a side flyout to pick plain
+                    text vs. timestamped text. Both close the menu after. */}
+                <CopyMenuItem
+                  disabled={!transcript}
+                  onCopyPlain={() => {
+                    setMenuAnchor(null);
+                    void doCopy(false);
+                  }}
+                  onCopyTimestamped={() => {
+                    setMenuAnchor(null);
+                    void doCopy(true);
+                  }}
+                />
                 <MenuItem
                   onClick={() => {
                     setMenuAnchor(null);
@@ -805,10 +853,6 @@ export function VariantCard({
             </>,
             document.body
           )}
-        {/* 导出 used to live here; moved to the card head next to the
-            duration/segments meta so it hugs the card's right edge
-            and is reachable without scanning a button row. */}
-      </div>
 
       {expanded && (
         <div className="variant-card-segments" onClick={(e) => e.stopPropagation()}>
@@ -971,6 +1015,87 @@ export function VariantCard({
               </div>
             );
           })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * "复制文案" menu row with a hover-reveal side flyout offering two copy
+ * formats: plain text or timestamped text. Flyout opens to the LEFT
+ * (right: 100%) because the parent ⋯ menu is right-aligned near the
+ * screen edge — a right-side flyout would overflow. Stays open while the
+ * cursor is anywhere over the row or the flyout (shared onMouseEnter/Leave
+ * on the wrapper).
+ */
+function CopyMenuItem({
+  disabled,
+  onCopyPlain,
+  onCopyTimestamped,
+}: {
+  disabled?: boolean;
+  onCopyPlain: () => void;
+  onCopyTimestamped: () => void;
+}): JSX.Element {
+  const [open, setOpen] = useState(false);
+  return (
+    <div
+      style={{ position: 'relative' }}
+      onMouseEnter={() => !disabled && setOpen(true)}
+      onMouseLeave={() => setOpen(false)}
+    >
+      <button
+        disabled={disabled}
+        title={disabled ? '需要先生成字幕' : '把这个变体的字幕拼起来复制'}
+        style={{
+          width: '100%',
+          textAlign: 'left',
+          padding: '6px 10px',
+          background: open && !disabled ? '#252533' : 'transparent',
+          border: 'none',
+          color: disabled ? 'var(--text3)' : 'var(--text1)',
+          cursor: disabled ? 'not-allowed' : 'pointer',
+          borderRadius: 4,
+          fontSize: 13,
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          gap: 6,
+        }}
+      >
+        <span>📋 复制文案</span>
+        <span style={{ color: 'var(--text3)', fontSize: 11 }}>▸</span>
+      </button>
+      {open && !disabled && (
+        <div
+          role="menu"
+          style={{
+            position: 'absolute',
+            right: '100%',
+            top: 0,
+            marginRight: 4,
+            minWidth: 150,
+            background: '#1a1a26',
+            border: '1px solid #2a2a2a',
+            borderRadius: 6,
+            boxShadow: '0 8px 24px rgba(0,0,0,0.6)',
+            padding: 4,
+            display: 'flex',
+            flexDirection: 'column',
+            gap: 2,
+          }}
+        >
+          <MenuItem
+            onClick={onCopyPlain}
+            label="纯文本"
+            hint="只复制字幕文字"
+          />
+          <MenuItem
+            onClick={onCopyTimestamped}
+            label="带时间戳"
+            hint="每行前面带 [时间]"
+          />
         </div>
       )}
     </div>

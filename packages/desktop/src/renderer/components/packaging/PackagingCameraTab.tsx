@@ -1,13 +1,31 @@
 /**
- * 画面 tab — placeholder for v0.6+ camera controls (zoom / focus / Ken Burns).
- *
- * The schema already supports `camera.zoom` + `focus` per segment (see
- * PackagingPlan.segments[].camera), but the v0.5 renderer ignores them
- * because preview is HTML overlay + the export uses a precise trim+concat
- * pipeline. Once we have a static "punch in" preview filter, this tab
- * will expose per-segment zoom + focus controls similar to 字幕.
+ * 画面 tab — camera-effect editing for the 商务讲解 template (when a
+ * templateSpec exists), else a placeholder for the 通用/高能 (libass) path
+ * which doesn't render camera moves yet.
  */
-export function PackagingCameraTab(): JSX.Element {
+import type { BusinessExplainerSpec } from '@lynlens/core';
+import { PackagingEffectsEditor } from './PackagingEffectsEditor';
+
+interface Props {
+  spec?: BusinessExplainerSpec;
+  onSpecChange?: (next: BusinessExplainerSpec) => void;
+  currentTimeSec?: number;
+}
+
+export function PackagingCameraTab({
+  spec,
+  onSpecChange,
+  currentTimeSec = 0,
+}: Props): JSX.Element {
+  if (spec && onSpecChange) {
+    return (
+      <PackagingEffectsEditor
+        spec={spec}
+        onSpecChange={onSpecChange}
+        currentTimeSec={currentTimeSec}
+      />
+    );
+  }
   return (
     <div
       style={{
@@ -20,16 +38,9 @@ export function PackagingCameraTab(): JSX.Element {
     >
       <div style={{ fontSize: 32, marginBottom: 8 }}>🎥</div>
       <div style={{ color: 'var(--text2)', marginBottom: 6 }}>画面节奏</div>
-      v0.6+ 会加这些:
+      镜头特效(推近 / 压暗 / 底盘 / 去色)是「商务讲解」模板的功能。
       <br />
-      · 每段画面 zoom (1.0–1.5x)
-      <br />
-      · 关键段 focus 点 (放大人脸 / 道具)
-      <br />
-      · Ken Burns 缓动 (zoom-in / zoom-out)
-      <br />
-      <br />
-      <span style={{ color: 'var(--text3)' }}>v0.5 暂时只做字幕花字。</span>
+      先选「商务讲解」模板并一键包装,这里就能编辑镜头特效线。
     </div>
   );
 }

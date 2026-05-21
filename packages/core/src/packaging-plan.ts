@@ -1,6 +1,7 @@
 import { v4 as uuid } from 'uuid';
 import { extractJsonObject } from './highlight-parser';
 import type { Transcript } from './types';
+import type { BusinessExplainerSpec } from './packaging-spec';
 
 /**
  * AI-driven 一键包装 / video packaging plan.
@@ -50,6 +51,15 @@ export interface PackagingPlan {
   createdAt: string;
   /** Which model emitted this plan, for debugging / future memory. */
   model?: string;
+  /**
+   * AI-authored spec for the `business-explainer` Remotion template
+   * (sentence/cross hero splits, CJK keyword substrings, curated camera +
+   * sound lines). When present, packaging-tab export renders this directly
+   * instead of the deterministic planToSpec mapping. Populated by the
+   * 一键包装 spec-author flow (see packaging-spec-author.ts); persisted in
+   * the .qcp as part of the plan. Renderer-agnostic plain data.
+   */
+  templateSpec?: BusinessExplainerSpec;
 }
 
 export interface BrandWatermark {
@@ -76,6 +86,20 @@ export interface SubtitleStyle {
   position?: 'bottom' | 'center' | 'top';
   /** v0.5: only 'none'. v0.6+: 'fade-in' / 'typewriter'. */
   animation?: 'none' | 'fade-in' | 'typewriter';
+  /**
+   * Bold weight toggle. Set true to render the entire line with
+   * heavier weight on top of whatever the font's natural weight is.
+   * Maps to CSS `font-weight: 900` for HTML preview and ASS `\b1`
+   * for burned-in export. Default: undefined (use font's natural weight).
+   */
+  bold?: boolean;
+  /**
+   * Drop shadow under the text. Defined as a flag + numeric depth so
+   * authors can toggle quickly. Depth is in source-resolution px;
+   * renderer scales to display. Maps to CSS multi-layer text-shadow
+   * and ASS `\shad{N}`. Default: undefined (no shadow).
+   */
+  shadow?: { depth: number; color?: string };
 }
 
 /**
@@ -170,7 +194,13 @@ export type PackagingVibe = 'default' | 'energetic' | 'calm';
 // ---------- Default values ----------
 
 export const DEFAULT_SUBTITLE_STYLE: SubtitleStyle = {
-  font: 'PingFang SC Heavy',
+  // Use the actual macOS family name. "PingFang SC Heavy" is NOT a
+  // valid family on stock macOS — Heavy is a weight inside the PingFang
+  // SC family, not a separate family. Putting it in font-family makes
+  // every browser silently fall back to system-ui, which is why the
+  // 字体 dropdown appeared to do nothing pre-fix (every option resolved
+  // to the same fallback).
+  font: '"PingFang SC", "Hiragino Sans GB", sans-serif',
   size: 56,
   color: '#ffffff',
   outline: { color: '#000000', width: 3 },
@@ -425,6 +455,24 @@ function sanitiseSubtitleStyle(input: unknown): SubtitleStyle | null {
   }
   if (v.animation === 'none' || v.animation === 'fade-in' || v.animation === 'typewriter') {
     out.animation = v.animation;
+  }
+  if (typeof v.bold === 'boolean') {
+    out.bold = v.bold;
+  }
+  if (typeof v.shadow === 'object' && v.shadow !== null) {
+    const s = v.shadow as Record<string, unknown>;
+    if (
+      typeof s.depth === 'number' &&
+      Number.isFinite(s.depth) &&
+      s.depth >= 0 &&
+      s.depth < 50
+    ) {
+      const shadowOut: { depth: number; color?: string } = { depth: s.depth };
+      if (typeof s.color === 'string' && /^#[0-9a-fA-F]{3,8}$/.test(s.color)) {
+        shadowOut.color = s.color;
+      }
+      out.shadow = shadowOut;
+    }
   }
   return Object.keys(out).length > 0 ? out : null;
 }

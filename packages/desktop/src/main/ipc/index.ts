@@ -16,6 +16,7 @@ import { registerSegmentsIpc } from './segments';
 import { registerTranscriptIpc } from './transcript';
 import { registerSpeakersIpc } from './speakers';
 import { registerHighlightsIpc } from './highlights';
+import { registerPackagingRemotionIpc } from './packaging-remotion';
 import { registerSocialIpc } from './social';
 import { registerExportIpc } from './export';
 import { registerAgentIpc } from './agent';
@@ -32,6 +33,7 @@ export function registerAllIpc(ctx: IpcContext): void {
   registerTranscriptIpc(ctx);
   registerSpeakersIpc(ctx);
   registerHighlightsIpc(ctx);
+  registerPackagingRemotionIpc(ctx);
   registerSocialIpc(ctx);
   registerExportIpc(ctx);
   registerAgentIpc(ctx);

@@ -35,7 +35,6 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type {
   HighlightVariant,
   PackagingPlan,
-  PackagingVibe,
   PreviewPlaylistEntry,
 } from '@lynlens/core';
 import { ExportDialog } from './ExportDialog';
@@ -43,11 +42,14 @@ import { PackagingSubtitleOverlay } from './components/PackagingSubtitleOverlay'
 import {
   PackagingAudioTab,
   PackagingCameraTab,
+  PackagingRemotionPlayer,
   PackagingRightPanel,
   PackagingSubtitlesTab,
   PackagingTemplatesTab,
   PackagingTimelineBar,
+  templateVibe,
   type PackagingTab,
+  type PackagingTemplateId,
 } from './components/packaging';
 import type { SubtitleTransform } from '@lynlens/core';
 import { useStore } from './store';
@@ -69,6 +71,8 @@ function toMediaUrl(absPath: string): string {
 
 interface PreviewState {
   videoUrl: string;
+  /** Absolute path to the trimmed clip — used to build the player's HTTP URL. */
+  rawPath: string;
   playlist: PreviewPlaylistEntry[];
   durationSeconds: number;
   /** Thumbnail absolute paths (0..24 frames) for the bottom timeline strip. */
@@ -86,7 +90,10 @@ export function PackagingPanel({ effectiveDuration }: Props): JSX.Element {
   const [selectedKey, setSelectedKey] = useState<string>(ROOT_KEY);
   const [plan, setPlan] = useState<PackagingPlan | null>(null);
   const [generating, setGenerating] = useState(false);
-  const [vibe, setVibe] = useState<PackagingVibe>('default');
+  // Selected packaging template. 'business-explainer' renders via Remotion
+  // on export; 'default' / 'energetic' use the original libass花字 path.
+  // Default to the rich template — it's the headline packaging look.
+  const [template, setTemplate] = useState<PackagingTemplateId>('business-explainer');
   // Landing tab = 模板 (the user-chosen design baseline). After picking
   // one, they typically drill into 字幕 for keyword tweaks — that
   // transition happens via onSubtitleClick / 一键包装 button.
@@ -111,6 +118,20 @@ export function PackagingPanel({ effectiveDuration }: Props): JSX.Element {
   const [preparingPreview, setPreparingPreview] = useState(false);
   const [previewError, setPreviewError] = useState<string | null>(null);
 
+  // Base URL of the localhost media server (the live Remotion player streams
+  // the clip over HTTP — it can't load the lynlens-media:// scheme). Fetched
+  // once; null until ready.
+  const [mediaHttpBase, setMediaHttpBase] = useState<string | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    void window.lynlens.getMediaHttpBase().then((base) => {
+      if (!cancelled) setMediaHttpBase(base);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   const [currentTimeSec, setCurrentTimeSec] = useState(0);
   const [isPlaying, setIsPlaying] = useState(false);
 
@@ -127,6 +148,24 @@ export function PackagingPanel({ effectiveDuration }: Props): JSX.Element {
     defaultPath: string;
   };
   const [exportTarget, setExportTarget] = useState<ExportTarget | null>(null);
+
+  /**
+   * "✓ 预览真实导出" toggle state.
+   *
+   * - mode='fast' (default): video.src is the bare variant preview mp4
+   *   + HTML overlay paints subtitles on top. Updates in real-time as
+   *   the user edits the plan.
+   * - mode='verify': video.src swaps to a libass-burned-in render that
+   *   matches the export pixel-for-pixel. HTML overlay is hidden.
+   *
+   * `verifyUrl` caches the burned-in mp4 URL so toggling back and forth
+   * doesn't re-render. Cleared whenever the plan changes (the verify
+   * MP4 would be stale).
+   */
+  const [previewMode, setPreviewMode] = useState<'fast' | 'verify'>('fast');
+  const [verifyUrl, setVerifyUrl] = useState<string | null>(null);
+  const [verifyLoading, setVerifyLoading] = useState(false);
+  const [verifyError, setVerifyError] = useState<string | null>(null);
 
   const videoRef = useRef<HTMLVideoElement>(null);
   /**
@@ -199,6 +238,15 @@ export function PackagingPanel({ effectiveDuration }: Props): JSX.Element {
     };
   }, [projectId, selectedVariantId]);
 
+  // Switching variant invalidates the cached verify render (it was
+  // burned in for a different timeline). Drop back to fast mode so the
+  // user doesn't see a stale libass mp4 on top of a different variant.
+  useEffect(() => {
+    setVerifyUrl(null);
+    setPreviewMode('fast');
+    setVerifyError(null);
+  }, [selectedVariantId]);
+
   // Prepare preview mp4 on variant change.
   useEffect(() => {
     if (!projectId) {
@@ -214,6 +262,7 @@ export function PackagingPanel({ effectiveDuration }: Props): JSX.Element {
         if (cancelled) return;
         setPreview({
           videoUrl: toMediaUrl(result.outputPath),
+          rawPath: result.outputPath,
           playlist: result.playlist,
           durationSeconds: result.durationSeconds,
           thumbnails: result.thumbnails ?? [],
@@ -279,22 +328,55 @@ export function PackagingPanel({ effectiveDuration }: Props): JSX.Element {
 
   /**
    * Debounce plan saves: the 字幕 tab fires onPlanChange on every color
-   * picker stroke, which spams IPC + .qcp writes. 200ms after the last
-   * change we flush. Keeps preview reactive (already updated locally)
-   * and persistence eventually-consistent.
+   * picker stroke / chip toggle, which would spam IPC + .qcp writes.
+   * 200ms after the last edit we flush. Keeps preview reactive (state
+   * updated locally on every edit) and persistence eventually-consistent.
+   *
+   * `pendingPlanRef` tracks the latest-edited plan that hasn't yet been
+   * persisted. Required because the export flow needs to FLUSH this
+   * pending change synchronously before kicking off ffmpeg — otherwise
+   * a user who edits a chip then immediately clicks 导出 sees the OLD
+   * plan baked into the mp4 (the timer hadn't fired yet).
    */
   const planSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const pendingPlanRef = useRef<PackagingPlan | null>(null);
+
+  const flushPlanSave = useCallback(async (): Promise<void> => {
+    if (planSaveTimerRef.current) {
+      clearTimeout(planSaveTimerRef.current);
+      planSaveTimerRef.current = null;
+    }
+    const pending = pendingPlanRef.current;
+    if (!pending || !projectId) return;
+    pendingPlanRef.current = null;
+    try {
+      await window.lynlens.setPackagingPlan(projectId, pending);
+    } catch (err) {
+      console.error('[packaging] flush plan failed', err);
+    }
+  }, [projectId]);
+
   const handlePlanChange = useCallback(
     (next: PackagingPlan) => {
       setPlan(next);
       if (!projectId) return;
+      pendingPlanRef.current = next;
       if (planSaveTimerRef.current) clearTimeout(planSaveTimerRef.current);
       planSaveTimerRef.current = setTimeout(() => {
-        void window.lynlens.setPackagingPlan(projectId, next).catch((err) => {
-          // eslint-disable-next-line no-console
+        const toSave = pendingPlanRef.current;
+        planSaveTimerRef.current = null;
+        if (!toSave) return;
+        pendingPlanRef.current = null;
+        void window.lynlens.setPackagingPlan(projectId, toSave).catch((err) => {
           console.error('[packaging] save plan failed', err);
         });
       }, 200);
+      // Editing the plan invalidates any cached "verify" render — the
+      // burned-in mp4 no longer matches the plan. Drop back to fast
+      // mode so the user keeps seeing live updates instead of a stale
+      // libass render.
+      setVerifyUrl(null);
+      setPreviewMode('fast');
     },
     [projectId]
   );
@@ -303,16 +385,77 @@ export function PackagingPanel({ effectiveDuration }: Props): JSX.Element {
     if (!projectId) return;
     setGenerating(true);
     try {
-      const next = await window.lynlens.generatePackagingPlan(
-        projectId,
-        selectedVariantId,
-        vibe
-      );
+      // 商务讲解 = Remotion template → AI authors the rich BusinessExplainer
+      // spec (sentence/cross/keywords/effects/sounds). 通用/高能 = the
+      // original keyword-花字 plan.
+      const next =
+        template === 'business-explainer'
+          ? await window.lynlens.generatePackagingSpec(projectId, selectedVariantId)
+          : await window.lynlens.generatePackagingPlan(
+              projectId,
+              selectedVariantId,
+              templateVibe(template)
+            );
       setPlan(next);
     } catch (err) {
       alert(`一键包装失败: ${(err as Error).message}`);
     } finally {
       setGenerating(false);
+    }
+  }
+
+  /**
+   * Toggle the "fast HTML preview" ↔ "real export verify" mode.
+   *
+   * Fast mode is the default: an MP4 with no burn-in plays underneath
+   * the HTML/CSS subtitle overlay. Edits are reflected in real-time.
+   *
+   * Verify mode requests a ffmpeg + libass render of the same playlist
+   * but with the ASS subtitles burned in pixel-for-pixel. This matches
+   * what 🎬 导出成品 will produce. It takes 5-15s on first request and
+   * is cached by ASS content hash (re-toggling is instant; editing the
+   * plan invalidates and forces re-render next toggle).
+   *
+   * 整片 is not supported — the full-video burn-in would take minutes,
+   * defeating the "interactive preview" purpose.
+   */
+  async function togglePreviewMode(): Promise<void> {
+    if (!projectId || !selectedVariantId) return;
+    if (previewMode === 'verify') {
+      // Cheap toggle back: video.src swap, no IPC.
+      setPreviewMode('fast');
+      return;
+    }
+    // Entering verify mode. If we already have a cached URL for the
+    // current plan, just swap. Otherwise fetch one.
+    if (verifyUrl) {
+      setPreviewMode('verify');
+      return;
+    }
+    // Make sure the latest in-flight edit is persisted before the main
+    // process reads the plan — same race as the export path.
+    await flushPlanSave();
+    setVerifyLoading(true);
+    setVerifyError(null);
+    try {
+      // 商务讲解 → render the real Remotion pipeline (first ~20s, pixel-
+      // identical to 导出成品). 通用/高能 → the libass burn-in preview.
+      const result =
+        template === 'business-explainer'
+          ? await window.lynlens.preparePackagingVerifyRemotion(
+              projectId,
+              selectedVariantId
+            )
+          : await window.lynlens.preparePackagingVerifyPreview(
+              projectId,
+              selectedVariantId
+            );
+      setVerifyUrl(toMediaUrl(result.outputPath));
+      setPreviewMode('verify');
+    } catch (err) {
+      setVerifyError((err as Error).message);
+    } finally {
+      setVerifyLoading(false);
     }
   }
 
@@ -341,6 +484,11 @@ export function PackagingPanel({ effectiveDuration }: Props): JSX.Element {
         ? 'landscape'
         : 'portrait'
       : 'unknown';
+
+  // 商务讲解 template → show the LIVE Remotion player (the real composition)
+  // once a spec has been authored. The HTML overlay + libass verify button
+  // only apply to the 通用/高能 templates now.
+  const showLivePlayer = template === 'business-explainer';
 
   return (
     <div className="highlight-panel">
@@ -382,6 +530,31 @@ export function PackagingPanel({ effectiveDuration }: Props): JSX.Element {
         </label>
         {plan && (
           <>
+            {/* "Verify export" toggle — only for 通用/高能 (libass). The
+                商务讲解 template shows a LIVE player, so verify is redundant. */}
+            {selectedVariantId && !showLivePlayer && (
+              <button
+                onClick={() => void togglePreviewMode()}
+                disabled={verifyLoading || exportState.active}
+                title={
+                  previewMode === 'verify'
+                    ? '返回 HTML 快速预览(实时反映编辑)'
+                    : '渲染一段烧字的真实视频,看到的就是导出像素效果(5-15 秒)'
+                }
+                style={{
+                  background:
+                    previewMode === 'verify' ? 'rgba(122,162,247,0.18)' : undefined,
+                  borderColor:
+                    previewMode === 'verify' ? 'rgba(122,162,247,0.6)' : undefined,
+                }}
+              >
+                {verifyLoading
+                  ? '⏳ 渲染中...'
+                  : previewMode === 'verify'
+                    ? '← 返回快速预览'
+                    : '✓ 预览真实导出'}
+              </button>
+            )}
             <button
               className="primary"
               onClick={() => {
@@ -511,6 +684,30 @@ export function PackagingPanel({ effectiveDuration }: Props): JSX.Element {
           </div>
         )}
 
+        {verifyError && (
+          <div
+            style={{
+              padding: '8px 12px',
+              fontSize: 12,
+              color: '#ff6b6b',
+              background: 'rgba(255,107,107,0.08)',
+              border: '1px solid rgba(255,107,107,0.3)',
+              borderRadius: 4,
+              display: 'flex',
+              alignItems: 'center',
+              gap: 8,
+            }}
+          >
+            <span style={{ flex: 1 }}>真实导出预览失败: {verifyError}</span>
+            <button
+              onClick={() => setVerifyError(null)}
+              style={{ fontSize: 11, padding: '2px 8px' }}
+            >
+              知道了
+            </button>
+          </div>
+        )}
+
         {/* Main 2-column area: video preview (left) + tabbed editor (right). */}
         <div
           style={{
@@ -544,7 +741,36 @@ export function PackagingPanel({ effectiveDuration }: Props): JSX.Element {
                 overflow: 'hidden',
               }}
             >
-              {preview && videoMeta ? (
+              {preview && videoMeta && showLivePlayer ? (
+                /* Live Remotion player — the real composition, real-time,
+                   data-driven. Renders exactly what 导出成品 produces.
+                   NOTE: a full-size box (not an aspectRatio wrapper) — the
+                   Player has no intrinsic size to drive an aspectRatio box,
+                   so that collapses to 0px. The Player letterboxes the 9:16
+                   composition inside this box itself. */
+                <div
+                  style={{
+                    position: 'absolute',
+                    inset: 0,
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                  }}
+                >
+                  <PackagingRemotionPlayer
+                    videoSrc={
+                      mediaHttpBase
+                        ? `${mediaHttpBase}/media?p=${encodeURIComponent(preview.rawPath)}`
+                        : preview.videoUrl
+                    }
+                    spec={plan?.templateSpec ?? { cues: [] }}
+                    durationInSeconds={preview.durationSeconds}
+                    fps={videoMeta.fps}
+                    width={videoMeta.width}
+                    height={videoMeta.height}
+                  />
+                </div>
+              ) : preview && videoMeta ? (
                 <div
                   ref={videoWrapRef}
                   style={{
@@ -559,7 +785,11 @@ export function PackagingPanel({ effectiveDuration }: Props): JSX.Element {
                 >
                   <video
                     ref={videoRef}
-                    src={preview.videoUrl}
+                    src={
+                      previewMode === 'verify' && verifyUrl
+                        ? verifyUrl
+                        : preview.videoUrl
+                    }
                     onTimeUpdate={(e) => setCurrentTimeSec(e.currentTarget.currentTime)}
                     onPlay={() => setIsPlaying(true)}
                     onPause={() => setIsPlaying(false)}
@@ -572,6 +802,11 @@ export function PackagingPanel({ effectiveDuration }: Props): JSX.Element {
                       cursor: 'pointer',
                     }}
                   />
+                  {/* HTML subtitle overlay — only in fast mode. In verify
+                      mode subtitles are already burned into the mp4 by
+                      libass and a second HTML layer would double-paint
+                      them. */}
+                  {previewMode === 'fast' && (
                   <PackagingSubtitleOverlay
                     transcript={transcript}
                     plan={plan}
@@ -614,6 +849,7 @@ export function PackagingPanel({ effectiveDuration }: Props): JSX.Element {
                       });
                     }}
                   />
+                  )}
                 </div>
               ) : sourceVideoUrl ? (
                 <div style={{ color: 'var(--text3)' }}>
@@ -690,13 +926,57 @@ export function PackagingPanel({ effectiveDuration }: Props): JSX.Element {
                   </div>
                 </div>
               )}
+
+              {verifyLoading && (
+                <div
+                  style={{
+                    position: 'absolute',
+                    inset: 0,
+                    background: 'rgba(0, 0, 0, 0.78)',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    gap: 12,
+                    zIndex: 11,
+                    color: '#fff',
+                  }}
+                >
+                  <div
+                    style={{
+                      width: 44,
+                      height: 44,
+                      border: '3px solid rgba(255,255,255,0.2)',
+                      borderTopColor: 'rgba(122,162,247,1)',
+                      borderRadius: '50%',
+                      animation: 'lynlens-spin 1s linear infinite',
+                    }}
+                  />
+                  <div style={{ fontSize: 14, fontWeight: 500 }}>
+                    ✓ 渲染真实导出预览中...
+                  </div>
+                  <div
+                    style={{
+                      fontSize: 11,
+                      color: 'rgba(255,255,255,0.6)',
+                      textAlign: 'center',
+                      maxWidth: 320,
+                      lineHeight: 1.6,
+                    }}
+                  >
+                    {template === 'business-explainer'
+                      ? '用 Remotion 渲染前 ~20 秒真实预览,通常 10-15 秒。'
+                      : '用导出引擎渲染一段字幕预览,通常 5-15 秒。'}
+                    <br />
+                    渲完显示的就是 🎬 导出成品的像素效果。
+                  </div>
+                </div>
+              )}
             </div>
 
-            {/* Combined playback controls + visual scrubber. The previous
-                row-style playbar + separate thumbnail strip were redundant
-                (user feedback); now one bar shows ▶/⏸ + time + frame
-                thumbs + playhead all in a single 56px row. */}
-            {preview && (
+            {/* Combined playback controls + visual scrubber. Hidden when the
+                live Remotion player is shown — it has its own scrubber. */}
+            {preview && !showLivePlayer && (
               <PackagingTimelineBar
                 thumbnails={preview.thumbnails}
                 durationSeconds={preview.durationSeconds}
@@ -715,8 +995,8 @@ export function PackagingPanel({ effectiveDuration }: Props): JSX.Element {
             onTabChange={setActiveTab}
             templatesContent={
               <PackagingTemplatesTab
-                vibe={vibe}
-                onVibeChange={setVibe}
+                selected={template}
+                onSelect={setTemplate}
                 onGenerate={() => void handleGeneratePlan()}
                 generating={generating}
                 hasPlan={!!plan}
@@ -750,13 +1030,35 @@ export function PackagingPanel({ effectiveDuration }: Props): JSX.Element {
                 </div>
               )
             }
-            cameraContent={<PackagingCameraTab />}
-            audioContent={<PackagingAudioTab />}
+            cameraContent={
+              <PackagingCameraTab
+                spec={plan?.templateSpec}
+                currentTimeSec={currentTimeSec}
+                onSpecChange={
+                  plan
+                    ? (next) => handlePlanChange({ ...plan, templateSpec: next })
+                    : undefined
+                }
+              />
+            }
+            audioContent={
+              <PackagingAudioTab
+                spec={plan?.templateSpec}
+                currentTimeSec={currentTimeSec}
+                onSpecChange={
+                  plan
+                    ? (next) => handlePlanChange({ ...plan, templateSpec: next })
+                    : undefined
+                }
+              />
+            }
           />
         </div>
       </div>
 
-      {/* Final export with花字 burned in. Bound to the snapshotted target. */}
+      {/* Final export via the Remotion business-explainer template
+          (vertical CJK / gradient keywords / camera punch / sfx). Scope:
+          packaging tab only — other tabs keep the ffmpeg+libass path. */}
       {exportTarget && plan && (
         <ExportDialog
           title={`导出包装成品 — ${exportTarget.title}`}
@@ -764,12 +1066,28 @@ export function PackagingPanel({ effectiveDuration }: Props): JSX.Element {
           onClose={() => setExportTarget(null)}
           onConfirm={async ({ outputPath, quality }) => {
             try {
-              await window.lynlens.exportPackaged(
-                projectId,
-                exportTarget.variantId,
-                outputPath,
-                quality
-              );
+              // Critical: flush ANY pending plan edit before kicking off
+              // the render. Without this, a user who edits a chip then
+              // immediately clicks 导出 races the 200ms debounce — the
+              // export would render a stale plan.
+              await flushPlanSave();
+              // Route by the selected template: 商务讲解 → Remotion
+              // (vertical CJK / gradient / camera punch / sfx); 通用/高能
+              // → the original libass花字 export.
+              if (template === 'business-explainer') {
+                await window.lynlens.exportPackagedRemotion(
+                  projectId,
+                  exportTarget.variantId,
+                  outputPath
+                );
+              } else {
+                await window.lynlens.exportPackaged(
+                  projectId,
+                  exportTarget.variantId,
+                  outputPath,
+                  quality
+                );
+              }
               setExportTarget(null);
               alert(`✅ 导出完成: ${outputPath}`);
             } catch (err) {

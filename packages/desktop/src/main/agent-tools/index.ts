@@ -23,6 +23,7 @@ import { segmentTools } from './segments';
 import { transcriptTools } from './transcript';
 import { speakerTools } from './speakers';
 import { highlightTools } from './highlights';
+import { packagingTools } from './packaging';
 import { socialTools } from './social';
 import { exportTools } from './export';
 import { learningTools } from './learning';
@@ -33,6 +34,7 @@ export const ALL_TOOLS: LynLensToolDef[] = [
   ...transcriptTools,
   ...speakerTools,
   ...highlightTools,
+  ...packagingTools,
   ...socialTools,
   ...exportTools,
   ...learningTools,

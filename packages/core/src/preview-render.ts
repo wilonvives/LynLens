@@ -23,7 +23,11 @@ import { promises as fs } from 'node:fs';
 import crypto from 'node:crypto';
 import os from 'node:os';
 import path from 'node:path';
-import { buildConcatFilter, type HdrToSdrTags } from './export-service';
+import {
+  buildConcatFilter,
+  type HdrToSdrTags,
+  type SubtitleBurnIn,
+} from './export-service';
 import { resolveFfmpegPaths, runFfmpeg, type FfmpegPaths, type VideoColorMeta } from './ffmpeg';
 import type { Range } from './types';
 
@@ -40,6 +44,15 @@ export interface PreviewRenderOptions {
   ffmpegPaths?: FfmpegPaths;
   signal?: AbortSignal;
   onProgress?: (percent: number) => void;
+  /**
+   * Optional ASS subtitle burn-in. When provided, libass overlays the
+   * subtitle file into the video frames during render — the resulting
+   * mp4 is what the export will look like at full quality. Used by the
+   * 包装 tab's "✓ 预览真实导出" button to give pixel-accurate preview.
+   * The cacheKey caller passes should include the ASS file's content
+   * hash, otherwise switching plans will reuse a stale render.
+   */
+  subtitleBurnIn?: SubtitleBurnIn;
 }
 
 export interface PreviewRenderResult {
@@ -154,7 +167,12 @@ export async function renderPackagingPreview(
         inRange: colorMeta.colorRange === 'unknown' ? 'tv' : colorMeta.colorRange,
       }
     : false;
-  const filter = buildConcatFilter(ranges, rotation, hdrTags);
+  const filter = buildConcatFilter(
+    ranges,
+    rotation,
+    hdrTags,
+    opts.subtitleBurnIn ?? null
+  );
 
   // Try hardware encoder first; if it fails (no VideoToolbox, weird
   // codec/profile mismatch), fall back to libx264 ultrafast which is

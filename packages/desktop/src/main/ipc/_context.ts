@@ -25,6 +25,9 @@ export interface IpcContext {
   getActiveProjectId: () => string | null;
   setActiveProjectId: (pid: string | null) => void;
 
+  // ---- Localhost media server base (for the in-app Remotion player) ----
+  getMediaHttpBase: () => string | null;
+
   // ---- Cross-window broadcast ----
   broadcast: (channel: string, payload: unknown) => void;
 

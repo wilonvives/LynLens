@@ -39,6 +39,9 @@ win:
     - from: resources/whisper/win
       to: whisper
       filter: ["**/*"]
+    - from: .remotion-bundle
+      to: remotion
+      filter: ["**/*"]
 
 nsis:
   oneClick: false
@@ -79,4 +82,11 @@ mac:
       filter: ["**/*"]
     - from: resources/whisper/mac-${arch}
       to: whisper
+      filter: ["**/*"]
+    # Remotion render engine (packaging-tab export). pnpm-deployed,
+    # symlink-free, chromium-EXCLUDED copy (see `deploy:remotion` script);
+    # the headless Chromium downloads to a writable userData cache on first
+    # export. remotionPackageDir() resolves to Resources/remotion in prod.
+    - from: .remotion-bundle
+      to: remotion
       filter: ["**/*"]

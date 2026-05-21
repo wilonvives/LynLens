@@ -26,6 +26,8 @@ import type {
   Transcript,
 } from '@lynlens/core';
 import { PackagingSegmentCard } from './PackagingSegmentCard';
+import { PackagingSpecEditor } from './PackagingSpecEditor';
+import { PackagingStyleToolbar } from './PackagingStyleToolbar';
 
 interface Props {
   transcript: Transcript;
@@ -128,6 +130,20 @@ export function PackagingSubtitlesTab({
     return rows.sort((a, b) => a.variantStart - b.variantStart);
   }, [transcript.segments, playlist]);
 
+  // 商务讲解 template path: edit the AI-authored spec directly (style /
+  // keywords / hero splits / text per line). The live player reflects edits
+  // instantly. The old keyword-chip editor + style toolbar below are for the
+  // 通用/高能 (libass) templates only.
+  if (plan.templateSpec) {
+    return (
+      <PackagingSpecEditor
+        spec={plan.templateSpec}
+        currentTimeSec={currentTimeSec}
+        onSpecChange={(next) => onPlanChange({ ...plan, templateSpec: next })}
+      />
+    );
+  }
+
   const defaultColor = plan.defaults.subtitle?.color ?? FALLBACK_COLOR;
 
   function upsertSegment(
@@ -167,96 +183,25 @@ export function PackagingSubtitlesTab({
     onPlanChange({ ...plan, segments: nextSegments });
   }
 
-  function setDefaultColor(color: string): void {
-    onPlanChange({
-      ...plan,
-      defaults: {
-        ...plan.defaults,
-        subtitle: { ...(plan.defaults.subtitle ?? {}), color },
-      },
-    });
-  }
-
-  function setDefaultPosition(position: 'top' | 'center' | 'bottom'): void {
-    onPlanChange({
-      ...plan,
-      defaults: {
-        ...plan.defaults,
-        subtitle: { ...(plan.defaults.subtitle ?? {}), position },
-      },
-    });
-  }
-
-  const defaultPosition = plan.defaults.subtitle?.position ?? 'bottom';
-
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-      {/* Plan-level default style — applies to every line unless that
-          line has its own override. */}
-      <div
-        style={{
-          padding: 10,
-          background: '#181820',
-          border: '1px solid #2a2a2a',
-          borderRadius: 6,
-        }}
-      >
-        <div style={{ fontSize: 11, color: 'var(--text2)', marginBottom: 8 }}>
+      {/* Plan-level default style — applies to every line. Now driven
+          by the full text toolbar (font/size/color/outline/position/
+          bold/shadow). PackagingStyleToolbar handles dispatch and
+          state read from plan.defaults.subtitle directly. */}
+      <div>
+        <div style={{ fontSize: 11, color: 'var(--text2)', marginBottom: 6 }}>
           默认样式 (所有段共用)
         </div>
+        <PackagingStyleToolbar plan={plan} onPlanChange={onPlanChange} />
         <div
           style={{
-            display: 'flex',
-            alignItems: 'center',
-            gap: 16,
-            fontSize: 12,
-            color: 'var(--text2)',
-            flexWrap: 'wrap',
+            color: 'var(--text3)',
+            fontSize: 10,
+            marginTop: 6,
           }}
         >
-          <label style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-            位置
-            <div style={{ display: 'inline-flex', border: '1px solid #333', borderRadius: 4, overflow: 'hidden' }}>
-              {(['top', 'center', 'bottom'] as const).map((p) => (
-                <button
-                  key={p}
-                  onClick={() => setDefaultPosition(p)}
-                  style={{
-                    padding: '4px 10px',
-                    fontSize: 11,
-                    background: defaultPosition === p ? 'var(--accent)' : '#181820',
-                    color: defaultPosition === p ? '#fff' : 'var(--text2)',
-                    border: 'none',
-                    borderRight: p !== 'bottom' ? '1px solid #333' : 'none',
-                    cursor: 'pointer',
-                  }}
-                  title={p === 'top' ? '顶部' : p === 'center' ? '中间' : '底部'}
-                >
-                  {p === 'top' ? '↑' : p === 'center' ? '●' : '↓'}
-                </button>
-              ))}
-            </div>
-          </label>
-          <label style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-            颜色
-            <input
-              type="color"
-              value={defaultColor}
-              onChange={(e) => setDefaultColor(e.target.value)}
-              style={{
-              width: 40,
-              height: 24,
-              padding: 0,
-              border: '1px solid #333',
-              borderRadius: 3,
-              cursor: 'pointer',
-              background: 'transparent',
-            }}
-          />
-          </label>
-          <span style={{ color: 'var(--text3)', fontSize: 10, flexBasis: '100%' }}>
-            字号 / 字体 / 每段单独定位留给 v0.6+。当前所有段共用一个位置 + 颜色。
-          </span>
+          每段单独定位留给 v0.6+ (可在视频里拖拽字幕调位置)。每段的关键词花字下面单独编辑。
         </div>
       </div>
 

@@ -12,8 +12,12 @@ import {
   loadSavedProvider,
 } from './agent-dispatcher';
 import { startMcpHttpServer, type McpHttpServer } from './mcp-http-server';
+import { startMediaHttpServer } from './media-http-server';
 import { setupAutoUpdater } from './auto-updater';
 import { registerAllIpc, type IpcContext } from './ipc';
+
+/** Base URL of the localhost media server (set once on app ready). */
+let mediaHttpBase: string | null = null;
 
 // ============================================================================
 // Custom protocol + dev/prod boot decision
@@ -407,7 +411,14 @@ function createAgentWindow(): void {
 // Custom protocol handler (lynlens-media:///f/<encoded-abs-path>)
 // ============================================================================
 
-app.whenReady().then(() => {
+/** CORS headers so Remotion OffthreadVideo (canvas-based) can use the media. */
+const MEDIA_CORS_HEADERS: Record<string, string> = {
+  'Access-Control-Allow-Origin': '*',
+  'Cross-Origin-Resource-Policy': 'cross-origin',
+  'Timing-Allow-Origin': '*',
+};
+
+app.whenReady().then(async () => {
   // Use the modern protocol.handle API (Electron 25+). registerFileProtocol is
   // deprecated and has range-request issues in Electron 33.
   protocol.handle('lynlens-media', async (request) => {
@@ -443,6 +454,12 @@ app.whenReady().then(() => {
               'Accept-Ranges': 'bytes',
               'Content-Length': String(chunkSize),
               'Content-Type': mime,
+              // CORS: Remotion's <OffthreadVideo> draws the video to a canvas
+              // in the @remotion/player preview, which taints the canvas (and
+              // silently fails to render) unless the media is served with
+              // cross-origin headers. A plain <video> doesn't need these, so
+              // the fast preview worked without them.
+              ...MEDIA_CORS_HEADERS,
             },
           });
         }
@@ -457,6 +474,7 @@ app.whenReady().then(() => {
           'Content-Length': String(fileSize),
           'Accept-Ranges': 'bytes',
           'Content-Type': mime,
+          ...MEDIA_CORS_HEADERS,
         },
       });
     } catch (err) {
@@ -464,6 +482,15 @@ app.whenReady().then(() => {
       return new Response(String(err), { status: 500 });
     }
   });
+
+  // Start the localhost media server for the in-app Remotion player (the
+  // player can't load our lynlens-media:// scheme; it needs HTTP).
+  try {
+    const mediaServer = await startMediaHttpServer();
+    mediaHttpBase = mediaServer.base;
+  } catch (err) {
+    console.error('[media-http] failed to start:', err);
+  }
 
   createWindow();
   setupAutoUpdater(mainWindow);
@@ -521,6 +548,7 @@ const ipcCtx: IpcContext = {
   setAgentWindow: (w) => { agentWindow = w; },
   getActiveProjectId: () => activeProjectId,
   setActiveProjectId: (pid) => { activeProjectId = pid; },
+  getMediaHttpBase: () => mediaHttpBase,
   broadcast,
   qcpPathForVideo,
   attachProjectWatcher,

@@ -110,6 +110,24 @@ export {
   type WordEffect,
 } from './packaging-plan';
 export {
+  planToSpec,
+  segmentVariantStart,
+  SPEC_SOUND_IDS,
+  type BusinessExplainerSpec,
+  type SpecCue,
+  type SpecCueStyle,
+  type SpecEffect,
+  type SpecEffectType,
+  type SpecSound,
+} from './packaging-spec';
+export {
+  buildSpecAuthorLines,
+  buildSpecAuthorSystemPrompt,
+  buildSpecAuthorUserPrompt,
+  parseSpecAuthorResponse,
+  type SpecAuthorLine,
+} from './packaging-spec-author';
+export {
   fingerprintTranscript,
   getVariantStatus,
   hashCutRanges,

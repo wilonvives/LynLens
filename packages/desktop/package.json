@@ -1,6 +1,6 @@
 {
   "name": "@lynlens/desktop",
-  "version": "0.4.10",
+  "version": "0.5.0",
   "description": "LynLens desktop app (Electron) - UI for talking-video quick-cut editing",
   "license": "MIT",
   "homepage": "https://github.com/wilonvives/LynLens",
@@ -18,15 +18,21 @@
     "dev:renderer": "vite",
     "dev:electron": "cross-env LYNLENS_DEV=1 wait-on http://localhost:5173 && cross-env LYNLENS_DEV=1 electron .",
     "start": "electron .",
-    "package": "pnpm build && electron-builder",
+    "deploy:remotion": "rm -rf .remotion-bundle && pnpm --filter @lynlens/remotion deploy --prod --legacy .remotion-bundle && rm -rf .remotion-bundle/node_modules/.remotion",
+    "package": "pnpm build && pnpm deploy:remotion && electron-builder",
     "typecheck": "tsc -p tsconfig.main.json --noEmit && tsc -p tsconfig.renderer.json --noEmit"
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.2.116",
     "@lynlens/core": "workspace:*",
+    "@lynlens/remotion": "workspace:*",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "@openai/codex-sdk": "^0.124.0",
+    "@remotion/fonts": "4.0.463",
+    "@remotion/layout-utils": "4.0.463",
+    "@remotion/player": "4.0.463",
     "electron-updater": "^6.8.3",
+    "remotion": "4.0.463",
     "zod": "^3.23.8"
   },
   "devDependencies": {

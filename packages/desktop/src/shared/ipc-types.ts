@@ -277,6 +277,17 @@ export interface IpcApi {
     variantId: string | null,
     vibe?: PackagingVibe
   ): Promise<PackagingPlan>;
+  /**
+   * AI-author a BusinessExplainerSpec for the 商务讲解 (Remotion) template
+   * and store it on the variant's plan (templateSpec). The model decides
+   * style / keywords / hero-splits / camera + sound editorial lines per
+   * RULES.md; timing + text are fixed from the transcript. Returns the
+   * updated plan. Used by 一键包装 when the 商务讲解 template is selected.
+   */
+  generatePackagingSpec(
+    projectId: string,
+    variantId: string | null
+  ): Promise<PackagingPlan>;
   /** Read the saved packaging plan for a variant (or root). */
   getPackagingPlan(
     projectId: string,
@@ -312,6 +323,34 @@ export interface IpcApi {
     thumbnails: string[];
   }>;
   /**
+   * Render the variant WITH subtitles burned in by libass. Used by the
+   * 包装 tab's "✓ 预览真实导出" button to give pixel-accurate preview.
+   * Requires an existing PackagingPlan + transcript + variant (throws
+   * if any is missing). 整片 not supported (full-video render with
+   * burn-in is too slow for interactive preview).
+   */
+  preparePackagingVerifyPreview(
+    projectId: string,
+    variantId: string
+  ): Promise<{
+    outputPath: string;
+    playlist: PreviewPlaylistEntry[];
+    durationSeconds: number;
+    cached: boolean;
+    thumbnails: string[];
+  }>;
+  /**
+   * "✓ 预览真实导出" for the 商务讲解 (Remotion) template: renders the first
+   * ~20s of the variant through the REAL Remotion export pipeline to a temp
+   * mp4 and returns its path. Pixel-identical to 导出成品 (same renderer),
+   * so the packaging tab can show a true-to-export preview without the cost
+   * of a full render. variantId null = 整片.
+   */
+  preparePackagingVerifyRemotion(
+    projectId: string,
+    variantId: string | null
+  ): Promise<{ outputPath: string; durationSeconds: number }>;
+  /**
    * Remove one segment from a variant. Refuses to delete the last remaining
    * segment (variant would be empty). Returns false on refusal / failure.
    */
@@ -346,6 +385,26 @@ export interface IpcApi {
     outputPath: string,
     quality?: 'original' | 'high' | 'medium' | 'low'
   ): Promise<ExportResultDto>;
+  /**
+   * Packaging-tab export via the Remotion `business-explainer` template
+   * (vertical CJK / per-char gradient / spring camera punch — effects the
+   * libass path can't render). Maps the PackagingPlan → BusinessExplainerSpec,
+   * renders the trimmed variant clip through headless Chromium + ffmpeg,
+   * and stamps BT.709 color. Progress arrives on the same `export.progress`
+   * event channel as the other exports. Scope: packaging tab only.
+   */
+  exportPackagedRemotion(
+    projectId: string,
+    variantId: string | null,
+    outputPath: string
+  ): Promise<{ outputPath: string; sizeBytes: number }>;
+  /**
+   * Base URL of the localhost media server, e.g. http://127.0.0.1:PORT/TOKEN.
+   * The live Remotion player builds video URLs as `${base}/media?p=<encoded
+   * abs path>` — the player can't load the lynlens-media:// scheme. Null if
+   * the server failed to start.
+   */
+  getMediaHttpBase(): Promise<string | null>;
   /**
    * Absolute path to the OS Downloads dir. Renderer uses this so the
    * ExportDialog can pre-fill a full path instead of a bare filename

@@ -2,10 +2,29 @@ import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 import path from 'node:path';
 
+const repoRoot = path.resolve(__dirname, '../..');
+
 export default defineConfig({
   plugins: [react()],
   root: path.resolve(__dirname, 'src/renderer'),
   base: './',
+  resolve: {
+    // The 商务讲解 Remotion template is rendered LIVE in the packaging tab
+    // via @remotion/player. We import its SOURCE (not the node_modules
+    // symlink) so Vite's React plugin compiles the TSX — importing the
+    // compiled package entry would (a) skip JSX transform and (b) run
+    // registerRoot(), which only belongs in the render bundle.
+    alias: {
+      '@remotion-template': path.resolve(
+        __dirname,
+        '../remotion/src/templates/business-explainer'
+      ),
+    },
+    // Single instance of each — the template (authored against React 19 in
+    // its own package) must share the renderer's React 18 + the one remotion
+    // runtime that @remotion/player provides, or hooks/context break.
+    dedupe: ['react', 'react-dom', 'remotion'],
+  },
   build: {
     outDir: path.resolve(__dirname, 'dist/renderer'),
     emptyOutDir: true,
@@ -33,5 +52,10 @@ export default defineConfig({
   server: {
     port: 5173,
     strictPort: true,
+    // Allow importing the template source from the sibling packages/remotion
+    // (outside the renderer root). Without this Vite blocks the fs read.
+    fs: {
+      allow: [repoRoot],
+    },
   },
 });

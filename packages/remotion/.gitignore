@@ -1,0 +1,7 @@
+node_modules/
+out/
+.DS_Store
+# PoC test video (69MB) — only used by `remotion studio` defaultProps. The
+# app drives the composition with real inputProps, so this isn't needed in
+# the repo. Keep the small ep8 spec source; ignore the heavy fixture.
+public/*.mp4

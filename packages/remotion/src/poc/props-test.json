@@ -1,0 +1,15 @@
+{
+  "videoSrc": "ep8.mp4",
+  "durationInSeconds": 2,
+  "fps": 30,
+  "width": 1080,
+  "height": 1920,
+  "spec": {
+    "cues": [
+      { "start": 0, "text": "动态 props 测试", "style": "strong" },
+      { "start": 1, "text": "he became a money mule", "style": "strongWord", "highlight": ["money"] }
+    ],
+    "effects": [{ "type": "vignetteFocus", "start": 0, "end": 2 }],
+    "sounds": [{ "id": "suspense-boom", "start": 0.2 }]
+  }
+}

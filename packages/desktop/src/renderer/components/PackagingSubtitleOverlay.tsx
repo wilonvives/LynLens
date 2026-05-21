@@ -139,6 +139,11 @@ export function PackagingSubtitleOverlay({
   const baseOutline = merged.outline ?? FALLBACK_STYLE.outline!;
   const bgColor = merged.bgColor;
   const position = merged.position ?? 'bottom';
+  // Bold + shadow — mirror the ASS-export defaults (see ass-generator).
+  // bold defaults to TRUE because video subtitles look weak at regular
+  // weight. Shadow is opt-in.
+  const isBold = merged.bold ?? true;
+  const shadowSpec = merged.shadow;
 
   // Per-role visual treatment.
   //
@@ -344,7 +349,19 @@ export function PackagingSubtitleOverlay({
   const topHighlight = rolePalette.topHighlight
     ? `0 -${Math.max(1, effOutlineWidth * 0.5).toFixed(1)}px 0 #ffffff`
     : '';
-  const textShadow = [topHighlight, outlineRing].filter(Boolean).join(', ') || 'none';
+  // Drop shadow — mirrors ASS \shad. Offset down+right, scaled by
+  // display ratio so it looks consistent across preview/export sizes.
+  // depth=0 (or no shadow specified) → omitted.
+  const shadowLayer = shadowSpec
+    ? (() => {
+        const d = Math.max(0, shadowSpec.depth * scale);
+        const c = shadowSpec.color ?? '#000000';
+        return `${d.toFixed(1)}px ${d.toFixed(1)}px ${(d * 0.6).toFixed(1)}px ${c}`;
+      })()
+    : '';
+  const textShadow =
+    [topHighlight, outlineRing, shadowLayer].filter(Boolean).join(', ') ||
+    'none';
 
   // Resolve transform to actually apply (null = use flex baseline).
   const renderTransform = effectiveTransform;
@@ -468,7 +485,7 @@ export function PackagingSubtitleOverlay({
                 color: tokColor,
                 textShadow,
                 marginRight: i < tokens.length - 1 ? '0.25em' : 0,
-                fontWeight: 900,
+                fontWeight: isBold ? 900 : 400,
                 display: 'inline-block',
                 verticalAlign: 'baseline',
               }}

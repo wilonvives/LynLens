@@ -4,6 +4,16 @@ import { App } from './App';
 import { AgentWindowShell } from './AgentWindowShell';
 import './styles.css';
 
+// Remotion staticFile() base. Dev loads from http://localhost:5173 where the
+// default ('/...') resolves against the origin. The PACKAGED app loads the
+// renderer via file://, where a leading '/' points at the filesystem root —
+// so the template's font/sfx staticFile() URLs 404. Setting the base to '.'
+// makes them resolve relative to index.html (dist/renderer/business-explainer
+// /...). Harmless in dev but only needed under file://.
+if (window.location.protocol === 'file:') {
+  (window as unknown as { remotion_staticBase?: string }).remotion_staticBase = '.';
+}
+
 /**
  * Dual-mode renderer entry.
  *

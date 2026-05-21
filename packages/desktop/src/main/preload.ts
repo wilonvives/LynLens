@@ -70,6 +70,8 @@ const api: IpcApi = {
     ipcRenderer.invoke('add-blank-highlight-variant', pid, hint, title),
   generatePackagingPlan: (pid, variantId, vibe) =>
     ipcRenderer.invoke('generate-packaging-plan', pid, variantId, vibe),
+  generatePackagingSpec: (pid, variantId) =>
+    ipcRenderer.invoke('generate-packaging-spec', pid, variantId),
   getPackagingPlan: (pid, variantId) =>
     ipcRenderer.invoke('get-packaging-plan', pid, variantId),
   setPackagingPlan: (pid, plan) =>
@@ -78,8 +80,15 @@ const api: IpcApi = {
     ipcRenderer.invoke('clear-packaging-plan', pid, variantId),
   preparePackagingPreview: (pid, variantId) =>
     ipcRenderer.invoke('prepare-packaging-preview', pid, variantId),
+  preparePackagingVerifyPreview: (pid, variantId) =>
+    ipcRenderer.invoke('prepare-packaging-verify-preview', pid, variantId),
+  preparePackagingVerifyRemotion: (pid, variantId) =>
+    ipcRenderer.invoke('prepare-packaging-verify-remotion', pid, variantId),
   exportPackaged: (pid, variantId, outputPath, quality) =>
     ipcRenderer.invoke('export-packaged', pid, variantId, outputPath, quality),
+  exportPackagedRemotion: (pid, variantId, outputPath) =>
+    ipcRenderer.invoke('export-packaged-remotion', pid, variantId, outputPath),
+  getMediaHttpBase: () => ipcRenderer.invoke('get-media-http-base'),
   getDownloadsDir: () => ipcRenderer.invoke('get-downloads-dir'),
   deleteHighlightVariantSegment: (pid, vid, idx) =>
     ipcRenderer.invoke('delete-highlight-variant-segment', pid, vid, idx),

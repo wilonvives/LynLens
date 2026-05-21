@@ -217,11 +217,23 @@ export function generatePackagingAss(opts: AssGeneratorOptions): string {
     color: plan?.defaults.subtitle?.color ?? FALLBACK.color,
     outline: plan?.defaults.subtitle?.outline ?? FALLBACK.outline,
     position: plan?.defaults.subtitle?.position ?? FALLBACK.position,
+    // bold defaults to TRUE — video subtitles look anaemic at regular
+    // weight. The user can turn it off via the toolbar if they want.
+    bold: plan?.defaults.subtitle?.bold ?? true,
+    shadow: plan?.defaults.subtitle?.shadow,
   };
 
   const primaryColour = hexToAssColor(defaults.color);
   const outlineColour = hexToAssColor(defaults.outline.color);
   const bord = defaults.outline.width.toFixed(1);
+  // ASS Style fields: Bold (position 8 = 1/0) + Shadow depth (position 18)
+  // + BackColour (position 7) which is the shadow's own colour. When
+  // shadow is off, depth=0 and BackColour is irrelevant.
+  const boldFlag = defaults.bold ? 1 : 0;
+  const shadowDepth = defaults.shadow ? defaults.shadow.depth.toFixed(1) : '0';
+  const shadowColour = defaults.shadow?.color
+    ? hexToAssColor(defaults.shadow.color)
+    : '&H00000000'; // opaque black default
 
   // Vertical margin from the alignment edge: ~8% of video height matches
   // PackagingSubtitleOverlay's padding-bottom: 12% / padding-top: 8% spec.
@@ -239,7 +251,7 @@ export function generatePackagingAss(opts: AssGeneratorOptions): string {
     '',
     '[V4+ Styles]',
     'Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding',
-    `Style: Default,${defaults.font},${Math.round(defaults.size)},${primaryColour},&H000000FF,${outlineColour},&H00000000,1,0,0,0,100,100,0,0,1,${bord},0,${alignFor(defaults.position)},40,40,${marginV},1`,
+    `Style: Default,${defaults.font},${Math.round(defaults.size)},${primaryColour},&H000000FF,${outlineColour},${shadowColour},${boldFlag},0,0,0,100,100,0,0,1,${bord},${shadowDepth},${alignFor(defaults.position)},40,40,${marginV},1`,
     '',
     '[Events]',
     'Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text',

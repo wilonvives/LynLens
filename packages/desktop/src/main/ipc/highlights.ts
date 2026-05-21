@@ -7,6 +7,7 @@
  * `export.ts`.
  */
 
+import crypto from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -591,6 +592,121 @@ export function registerHighlightsIpc(ctx: IpcContext): void {
       return {
         outputPath: result.outputPath,
         playlist: buildPreviewPlaylist(ranges),
+        durationSeconds: result.durationSeconds,
+        cached: result.cached,
+        thumbnails: result.thumbnails,
+      };
+    }
+  );
+
+  /**
+   * "✓ 预览真实导出" — render the variant WITH subtitles burned in by
+   * libass, so the user sees a pixel-accurate preview of what the
+   * final export will look like (font, outline, shadow, keyword
+   * highlights, position — everything that the HTML overlay only
+   * approximates).
+   *
+   * Same shape as prepare-packaging-preview but additionally:
+   *   1. Loads the current PackagingPlan for the variant
+   *   2. Generates an ASS file from the plan + transcript + playlist
+   *   3. Writes the ASS to a hashed temp path
+   *   4. Calls renderPackagingPreview with subtitleBurnIn set
+   *   5. cacheKey includes the ASS content hash so editing the plan
+   *      invalidates the cached mp4
+   *
+   * 整片 (variantId=null) not supported — full-video render with
+   * burn-in is too slow for an interactive preview. UI hides the
+   * button in that case.
+   */
+  ipcMain.handle(
+    'prepare-packaging-verify-preview',
+    async (
+      _ev,
+      projectId: string,
+      variantId: string
+    ): Promise<{
+      outputPath: string;
+      playlist: PreviewPlaylistEntry[];
+      durationSeconds: number;
+      cached: boolean;
+      thumbnails: string[];
+    }> => {
+      if (!variantId) {
+        throw new Error('真实预览仅支持高光变体,整片暂不支持');
+      }
+      const project = engine.projects.get(projectId);
+      const variant = project.findHighlightVariant(variantId);
+      if (!variant) throw new Error(`找不到高光变体: ${variantId}`);
+      if (variant.segments.length === 0) {
+        throw new Error('变体没有片段');
+      }
+      if (!project.transcript) {
+        throw new Error('请先生成字幕');
+      }
+      const plan = project.getPackagingPlan(variantId);
+      if (!plan) {
+        throw new Error('请先生成包装方案');
+      }
+
+      const videoPath = project.videoPath;
+      const videoMeta = project.videoMeta;
+      const ranges: Range[] = variant.segments.map((s) => ({
+        start: s.start,
+        end: s.end,
+      }));
+
+      // Build playlist (source → preview time mapping) used both by
+      // the ASS time-calibration and as the return value.
+      const playlist = buildPreviewPlaylist(ranges);
+      const dims = outputDimensions(videoMeta);
+
+      // Generate ASS. AssPlaylistEntry has {srcStart, srcEnd, outStart,
+      // outEnd} — same shape as PreviewPlaylistEntry's variantStart/
+      // variantEnd renamed.
+      const assPlaylist: AssPlaylistEntry[] = playlist.map((p) => ({
+        srcStart: p.srcStart,
+        srcEnd: p.srcEnd,
+        outStart: p.variantStart,
+        outEnd: p.variantEnd,
+      }));
+      const assContent = generatePackagingAss({
+        transcript: project.transcript,
+        plan,
+        playlist: assPlaylist,
+        videoWidth: dims.w,
+        videoHeight: dims.h,
+      });
+
+      // Hash ASS content → fold into cacheKey so editing the plan
+      // invalidates the cached mp4 automatically.
+      const assHash = crypto
+        .createHash('sha1')
+        .update(assContent)
+        .digest('hex')
+        .slice(0, 8);
+      const assDir = path.join(os.tmpdir(), 'lynlens-packaging-ass');
+      await fs.mkdir(assDir, { recursive: true });
+      const assPath = path.join(
+        assDir,
+        `verify-${plan.id}-${assHash}.ass`
+      );
+      await fs.writeFile(assPath, assContent, 'utf-8');
+
+      const baseKey = previewCacheKey(videoPath, ranges);
+      const cacheKey = `verify-${baseKey}-${assHash}`;
+      const colorMeta = await probeColorMeta(videoPath, engine.ffmpegPaths);
+      const result = await renderPackagingPreview({
+        videoPath,
+        ranges,
+        cacheKey,
+        rotation: videoMeta.rotation ?? 0,
+        colorMeta,
+        ffmpegPaths: engine.ffmpegPaths,
+        subtitleBurnIn: { path: assPath },
+      });
+      return {
+        outputPath: result.outputPath,
+        playlist,
         durationSeconds: result.durationSeconds,
         cached: result.cached,
         thumbnails: result.thumbnails,
