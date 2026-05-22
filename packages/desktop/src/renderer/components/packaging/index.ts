@@ -8,7 +8,10 @@ export { PackagingAudioTab } from './PackagingAudioTab';
 export { PackagingCameraTab } from './PackagingCameraTab';
 // PackagingInlineEditor removed — replaced by direct-manipulation
 // handles on the subtitle overlay (PackagingSubtitleOverlay edit mode).
-export { PackagingRemotionPlayer } from './PackagingRemotionPlayer';
+export {
+  PackagingRemotionPlayer,
+  type PackagingPlayerRef,
+} from './PackagingRemotionPlayer';
 export { PackagingRightPanel, type PackagingTab } from './PackagingRightPanel';
 export { PackagingEffectsEditor } from './PackagingEffectsEditor';
 export { PackagingSegmentCard } from './PackagingSegmentCard';
@@ -18,7 +21,6 @@ export { PackagingStyleToolbar } from './PackagingStyleToolbar';
 export { PackagingSubtitlesTab } from './PackagingSubtitlesTab';
 export {
   PackagingTemplatesTab,
-  templateVibe,
   type PackagingTemplateId,
 } from './PackagingTemplatesTab';
 export { PackagingTimelineBar } from './PackagingTimelineBar';

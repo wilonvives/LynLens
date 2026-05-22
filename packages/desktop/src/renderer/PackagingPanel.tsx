@@ -47,7 +47,7 @@ import {
   PackagingSubtitlesTab,
   PackagingTemplatesTab,
   PackagingTimelineBar,
-  templateVibe,
+  type PackagingPlayerRef,
   type PackagingTab,
   type PackagingTemplateId,
 } from './components/packaging';
@@ -168,6 +168,32 @@ export function PackagingPanel({ effectiveDuration }: Props): JSX.Element {
   const [verifyError, setVerifyError] = useState<string | null>(null);
 
   const videoRef = useRef<HTMLVideoElement>(null);
+  // Imperative handle to the live Remotion player (seekTo). Lets clicking /
+  // editing a cue in the 字幕 tab jump the player to that line's time.
+  const playerRef = useRef<PackagingPlayerRef>(null);
+  const seekPlayerToSec = useCallback(
+    (sec: number) => {
+      const fps = videoMeta?.fps ?? 30;
+      playerRef.current?.seekTo(Math.max(0, Math.round(sec * fps)));
+    },
+    [videoMeta]
+  );
+  // Space toggles play/pause on the live player — but ONLY when not typing in
+  // a text field (so editing a cue can still type spaces). Works anywhere in
+  // the packaging tab, not just when the player is focused.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent): void => {
+      if (e.code !== 'Space' && e.key !== ' ') return;
+      const t = e.target as HTMLElement | null;
+      const tag = t?.tagName;
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || t?.isContentEditable) return;
+      if (!playerRef.current) return; // player not mounted
+      e.preventDefault();
+      playerRef.current.toggle();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, []);
   /**
    * Video-wrap size + observer wired via a CALLBACK REF (not
    * useEffect + mutable ref). The wrap div only mounts AFTER the
@@ -385,17 +411,13 @@ export function PackagingPanel({ effectiveDuration }: Props): JSX.Element {
     if (!projectId) return;
     setGenerating(true);
     try {
-      // 商务讲解 = Remotion template → AI authors the rich BusinessExplainer
-      // spec (sentence/cross/keywords/effects/sounds). 通用/高能 = the
-      // original keyword-花字 plan.
+      // Both templates render via Remotion (live player + export). 商务讲解
+      // → AI authors the rich spec; 通用 → plain `simple` cues (no AI), user
+      // marks keywords + edits text afterward.
       const next =
         template === 'business-explainer'
           ? await window.lynlens.generatePackagingSpec(projectId, selectedVariantId)
-          : await window.lynlens.generatePackagingPlan(
-              projectId,
-              selectedVariantId,
-              templateVibe(template)
-            );
+          : await window.lynlens.generatePackagingSpecSimple(projectId, selectedVariantId);
       setPlan(next);
     } catch (err) {
       alert(`一键包装失败: ${(err as Error).message}`);
@@ -485,10 +507,10 @@ export function PackagingPanel({ effectiveDuration }: Props): JSX.Element {
         : 'portrait'
       : 'unknown';
 
-  // 商务讲解 template → show the LIVE Remotion player (the real composition)
-  // once a spec has been authored. The HTML overlay + libass verify button
-  // only apply to the 通用/高能 templates now.
-  const showLivePlayer = template === 'business-explainer';
+  // Both templates (商务讲解 + 通用) now render via Remotion, so the live
+  // player is the preview for both. (The HTML overlay + libass verify path
+  // is retired for the packaging tab.)
+  const showLivePlayer = true;
 
   return (
     <div className="highlight-panel">
@@ -758,6 +780,7 @@ export function PackagingPanel({ effectiveDuration }: Props): JSX.Element {
                   }}
                 >
                   <PackagingRemotionPlayer
+                    playerRef={playerRef}
                     videoSrc={
                       mediaHttpBase
                         ? `${mediaHttpBase}/media?p=${encodeURIComponent(preview.rawPath)}`
@@ -1012,6 +1035,7 @@ export function PackagingPanel({ effectiveDuration }: Props): JSX.Element {
                   scrollToSegmentIdx={jumpToIdx}
                   scrollToken={jumpToken}
                   onSeek={seekTo}
+                  onSeekToSec={seekPlayerToSec}
                   onPlanChange={handlePlanChange}
                 />
               ) : (
@@ -1064,30 +1088,21 @@ export function PackagingPanel({ effectiveDuration }: Props): JSX.Element {
           title={`导出包装成品 — ${exportTarget.title}`}
           defaultPath={exportTarget.defaultPath}
           onClose={() => setExportTarget(null)}
-          onConfirm={async ({ outputPath, quality }) => {
+          onConfirm={async ({ outputPath }) => {
             try {
               // Critical: flush ANY pending plan edit before kicking off
               // the render. Without this, a user who edits a chip then
               // immediately clicks 导出 races the 200ms debounce — the
               // export would render a stale plan.
               await flushPlanSave();
-              // Route by the selected template: 商务讲解 → Remotion
-              // (vertical CJK / gradient / camera punch / sfx); 通用/高能
-              // → the original libass花字 export.
-              if (template === 'business-explainer') {
-                await window.lynlens.exportPackagedRemotion(
-                  projectId,
-                  exportTarget.variantId,
-                  outputPath
-                );
-              } else {
-                await window.lynlens.exportPackaged(
-                  projectId,
-                  exportTarget.variantId,
-                  outputPath,
-                  quality
-                );
-              }
+              // Both templates render via Remotion (商务讲解 full / 通用
+              // simple-outline). Same export path; the stored templateSpec
+              // selects per-cue styling.
+              await window.lynlens.exportPackagedRemotion(
+                projectId,
+                exportTarget.variantId,
+                outputPath
+              );
               setExportTarget(null);
               alert(`✅ 导出完成: ${outputPath}`);
             } catch (err) {

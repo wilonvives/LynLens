@@ -49,6 +49,7 @@ export const BusinessExplainer: React.FC<BusinessExplainerProps> = ({videoSrc, s
               highlight={cue.highlight}
               segments={cue.segments}
               durationInFrames={length}
+              style={spec.subtitleStyle}
             />
           </Sequence>
         );

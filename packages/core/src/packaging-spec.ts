@@ -30,7 +30,10 @@ export type SpecCueStyle =
   | 'strong'
   | 'strongWord'
   | 'sentence'
-  | 'cross';
+  | 'cross'
+  // 通用 template: white Regular + black outline; keywords yellow Heavy +
+  // outline. One treatment per line; keywords come from `highlight`.
+  | 'simple';
 
 export interface SpecCue {
   /** Appearance time in VARIANT seconds (0-based, matches the clip). */
@@ -63,10 +66,30 @@ export interface SpecSound {
   volume?: number;
 }
 
+/**
+ * Global subtitle style for the 通用 (simple) template. Drives the
+ * SimpleSubtitle renderer: normal text color/outline + bottom position +
+ * size. Keyword words (from cue.highlight) render yellow Heavy on top.
+ */
+export interface SimpleSubtitleStyle {
+  /** Bottom distance as a fraction of frame height (0..1). */
+  positionFromBottom: number;
+  /** Font size in px at the composition resolution. */
+  size: number;
+  /** Normal-text color (hex). */
+  color: string;
+  /** Outline (stroke) color (hex). */
+  outlineColor: string;
+  /** Outline width in px. */
+  outlineWidth: number;
+}
+
 export interface BusinessExplainerSpec {
   cues: SpecCue[];
   effects?: SpecEffect[];
   sounds?: SpecSound[];
+  /** 通用-template global subtitle style (SimpleSubtitle reads this). */
+  subtitleStyle?: SimpleSubtitleStyle;
 }
 
 /** Valid sound ids (mirror of templates/business-explainer/sound/sounds.ts). */
@@ -134,6 +157,42 @@ function isLongLatinLine(text: string): boolean {
   const latin = (t.match(/[A-Za-z]/g) ?? []).length;
   const cjk = (t.match(/[㐀-鿿]/g) ?? []).length;
   return latin > cjk * 2;
+}
+
+/**
+ * Build a 通用-template spec: every transcript line in the variant becomes a
+ * `simple` cue (white Regular + outline) with NO keywords. No AI — the user
+ * marks keywords + edits text in the spec editor afterward. Keywords they
+ * add render yellow Heavy via the SimpleSubtitle component.
+ */
+export function buildSimpleSpec(
+  transcript: Transcript,
+  playlist: PreviewPlaylistEntry[],
+  orientation: 'portrait' | 'landscape' | 'unknown' = 'portrait'
+): BusinessExplainerSpec {
+  const cues: SpecCue[] = [];
+  transcript.segments.forEach((seg) => {
+    const vStart = segmentVariantStart(seg.start, seg.end, playlist);
+    if (vStart === null) return;
+    const text = seg.text.trim();
+    if (!text) return;
+    cues.push({ start: Number(vStart.toFixed(3)), text, style: 'simple' });
+  });
+  cues.sort((a, b) => a.start - b.start);
+  return {
+    cues,
+    effects: [],
+    sounds: [],
+    // Default bottom distance per orientation: portrait sits higher (35%)
+    // to clear phone UI; landscape closer to the bottom (20%).
+    subtitleStyle: {
+      positionFromBottom: orientation === 'landscape' ? 0.2 : 0.35,
+      size: 64,
+      color: '#ffffff',
+      outlineColor: '#000000',
+      outlineWidth: 4,
+    },
+  };
 }
 
 interface PlanToSpecInput {

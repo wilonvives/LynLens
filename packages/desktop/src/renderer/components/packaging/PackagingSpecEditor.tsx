@@ -17,6 +17,7 @@
 import { useMemo } from 'react';
 import type {
   BusinessExplainerSpec,
+  SimpleSubtitleStyle,
   SpecCue,
   SpecCueStyle,
 } from '@lynlens/core';
@@ -26,6 +27,8 @@ interface Props {
   onSpecChange: (next: BusinessExplainerSpec) => void;
   /** Player time (variant seconds) — highlights the active cue. */
   currentTimeSec: number;
+  /** Seek the live player to a cue's time (on click / edit). */
+  onSeekToCue?: (sec: number) => void;
 }
 
 const STYLES: Array<{ id: SpecCueStyle; label: string; hint: string }> = [
@@ -47,6 +50,7 @@ export function PackagingSpecEditor({
   spec,
   onSpecChange,
   currentTimeSec,
+  onSeekToCue,
 }: Props): JSX.Element {
   // Active cue index: last cue whose start <= now.
   const activeIdx = useMemo(() => {
@@ -84,14 +88,24 @@ export function PackagingSpecEditor({
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+      {/* 通用模板的全局字幕外观(位置/字号/颜色/描边)。商务讲解没有这块。 */}
+      {spec.subtitleStyle && (
+        <SimpleStyleBar
+          value={spec.subtitleStyle}
+          onChange={(next) => onSpecChange({ ...spec, subtitleStyle: next })}
+        />
+      )}
       <div style={{ fontSize: 11, color: 'var(--text3)', lineHeight: 1.6 }}>
-        逐行改样式/关键词/拆节,改完左边预览实时变。镜头特效在「画面」、音效在「声音」。
+        {spec.subtitleStyle
+          ? '逐行改文字、画重点(标的词变黄加粗),改完左边实时变。'
+          : '逐行改样式/关键词/拆节,改完左边预览实时变。镜头特效在「画面」、音效在「声音」。'}
       </div>
       {spec.cues.map((cue, idx) => (
         <CueCard
           key={idx}
           cue={cue}
           active={idx === activeIdx}
+          onSeek={() => onSeekToCue?.(cue.start)}
           onText={(text) => patchCue(idx, { text })}
           onStyle={(s) => setStyle(idx, s)}
           onHighlight={(highlight) => patchCue(idx, { highlight })}
@@ -115,9 +129,122 @@ function padSegments(
   return out.slice(0, n);
 }
 
+/** Global subtitle-look controls for the 通用 template (spec.subtitleStyle). */
+function SimpleStyleBar({
+  value,
+  onChange,
+}: {
+  value: SimpleSubtitleStyle;
+  onChange: (next: SimpleSubtitleStyle) => void;
+}): JSX.Element {
+  const patch = (p: Partial<SimpleSubtitleStyle>): void => onChange({ ...value, ...p });
+  return (
+    <div
+      style={{
+        display: 'flex',
+        flexWrap: 'wrap',
+        alignItems: 'center',
+        gap: 10,
+        rowGap: 6,
+        padding: 8,
+        background: '#181820',
+        border: '1px solid #2a2a2a',
+        borderRadius: 6,
+      }}
+    >
+      <Field label="位置">
+        <input
+          type="range"
+          min={0}
+          max={50}
+          step={1}
+          value={Math.round(value.positionFromBottom * 100)}
+          onChange={(e) => patch({ positionFromBottom: Number(e.target.value) / 100 })}
+          style={{ width: 90, accentColor: 'var(--accent)' }}
+        />
+        <span style={{ fontSize: 10, color: 'var(--text3)', width: 30 }}>
+          {Math.round(value.positionFromBottom * 100)}%
+        </span>
+      </Field>
+      <Field label="字号">
+        <input
+          type="number"
+          min={24}
+          max={140}
+          step={1}
+          value={value.size}
+          onChange={(e) => patch({ size: clampNum(parseInt(e.target.value, 10), 24, 140) })}
+          style={numInput}
+        />
+      </Field>
+      <Field label="字色">
+        <input
+          type="color"
+          value={value.color}
+          onChange={(e) => patch({ color: e.target.value })}
+          style={colorInput}
+        />
+      </Field>
+      <Field label="描边色">
+        <input
+          type="color"
+          value={value.outlineColor}
+          onChange={(e) => patch({ outlineColor: e.target.value })}
+          style={colorInput}
+        />
+      </Field>
+      <Field label="描边粗">
+        <input
+          type="number"
+          min={0}
+          max={16}
+          step={0.5}
+          value={value.outlineWidth}
+          onChange={(e) => patch({ outlineWidth: clampNum(parseFloat(e.target.value), 0, 16) })}
+          style={numInput}
+        />
+      </Field>
+    </div>
+  );
+}
+
+function Field({ label, children }: { label: string; children: React.ReactNode }): JSX.Element {
+  return (
+    <label style={{ display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 11, color: 'var(--text2)' }}>
+      <span>{label}</span>
+      {children}
+    </label>
+  );
+}
+
+function clampNum(v: number, lo: number, hi: number): number {
+  if (!Number.isFinite(v)) return lo;
+  return Math.max(lo, Math.min(hi, v));
+}
+
+const numInput: React.CSSProperties = {
+  width: 52,
+  fontSize: 12,
+  padding: '2px 4px',
+  background: '#0f0f14',
+  color: 'var(--text1)',
+  border: '1px solid #333',
+  borderRadius: 4,
+};
+const colorInput: React.CSSProperties = {
+  width: 28,
+  height: 22,
+  padding: 0,
+  border: '1px solid #333',
+  borderRadius: 3,
+  background: 'transparent',
+  cursor: 'pointer',
+};
+
 interface CueCardProps {
   cue: SpecCue;
   active: boolean;
+  onSeek: () => void;
   onText: (text: string) => void;
   onStyle: (style: SpecCueStyle) => void;
   onHighlight: (highlight: string[]) => void;
@@ -127,6 +254,7 @@ interface CueCardProps {
 function CueCard({
   cue,
   active,
+  onSeek,
   onText,
   onStyle,
   onHighlight,
@@ -134,6 +262,7 @@ function CueCard({
 }: CueCardProps): JSX.Element {
   return (
     <div
+      onClick={onSeek}
       style={{
         padding: 10,
         background: active ? 'rgba(243,156,18,0.08)' : '#181820',
@@ -151,6 +280,7 @@ function CueCard({
         <input
           value={cue.text}
           onChange={(e) => onText(e.target.value)}
+          onFocus={onSeek}
           style={{
             flex: 1,
             fontSize: 12,
@@ -163,45 +293,55 @@ function CueCard({
         />
       </div>
 
-      {/* Style segmented control */}
-      <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
-        {STYLES.map((s) => {
-          const on = cue.style === s.id;
-          return (
-            <button
-              key={s.id}
-              onClick={() => onStyle(s.id)}
-              title={s.hint}
-              style={{
-                fontSize: 11,
-                padding: '3px 8px',
-                background: on ? 'var(--accent)' : 'transparent',
-                color: on ? '#fff' : 'var(--text2)',
-                border: `1px solid ${on ? 'var(--accent)' : '#333'}`,
-                borderRadius: 4,
-                cursor: 'pointer',
-              }}
-            >
-              {s.label}
-            </button>
-          );
-        })}
-      </div>
-
-      {/* Style-specific fields */}
-      {cue.style === 'strongWord' && (
+      {/* 通用 (simple) cues: no style picker — every line is the same
+          treatment, the user just marks keywords. 商务讲解 cues: full
+          5-style picker + style-specific fields. */}
+      {cue.style === 'simple' ? (
         <KeywordEditor
           text={cue.text}
           highlight={cue.highlight ?? []}
           onChange={onHighlight}
         />
-      )}
-      {(cue.style === 'sentence' || cue.style === 'cross') && (
-        <SegmentEditor
-          style={cue.style}
-          segments={cue.segments ?? []}
-          onChange={onSegments}
-        />
+      ) : (
+        <>
+          <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
+            {STYLES.map((s) => {
+              const on = cue.style === s.id;
+              return (
+                <button
+                  key={s.id}
+                  onClick={() => onStyle(s.id)}
+                  title={s.hint}
+                  style={{
+                    fontSize: 11,
+                    padding: '3px 8px',
+                    background: on ? 'var(--accent)' : 'transparent',
+                    color: on ? '#fff' : 'var(--text2)',
+                    border: `1px solid ${on ? 'var(--accent)' : '#333'}`,
+                    borderRadius: 4,
+                    cursor: 'pointer',
+                  }}
+                >
+                  {s.label}
+                </button>
+              );
+            })}
+          </div>
+          {cue.style === 'strongWord' && (
+            <KeywordEditor
+              text={cue.text}
+              highlight={cue.highlight ?? []}
+              onChange={onHighlight}
+            />
+          )}
+          {(cue.style === 'sentence' || cue.style === 'cross') && (
+            <SegmentEditor
+              style={cue.style}
+              segments={cue.segments ?? []}
+              onChange={onSegments}
+            />
+          )}
+        </>
       )}
     </div>
   );

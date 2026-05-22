@@ -1,27 +1,19 @@
 /**
  * 模板 tab — pick ONE template, then 一键包装.
  *
- * Three templates, flat list (no separate "intensity" axis — that was a
- * confusing over-abstraction):
+ * Two templates, flat list:
  *   - 商务讲解 (business-explainer): the Remotion template — 思源宋体 +
  *     黄字 + 竖排/逐字渐变/镜头推近/音效. Packaging-tab export renders
  *     through Remotion.
- *   - 通用 / 高能: the original keyword-花字 looks (libass-rendered on
- *     export). They differ in keyword density / color.
+ *   - 通用 (default): plain burned-in subtitles only — no AI keyword 花字,
+ *     just the transcript in a clean style (font/size/color adjustable in
+ *     the 字幕 tab). Export uses the libass pipeline.
  *
- * The selected template drives BOTH the 一键包装 AI keyword pass AND which
- * renderer 导出成品 uses. Selection is the single source of truth.
+ * Selection drives both 一键包装 and which renderer 导出成品 uses.
  */
-import type { PackagingVibe } from '@lynlens/core';
 
-/** Template ids. 'business-explainer' = Remotion; others = libass花字. */
-export type PackagingTemplateId = 'business-explainer' | 'default' | 'energetic';
-
-/** The AI-keyword vibe each template uses when generating a plan. */
-export function templateVibe(id: PackagingTemplateId): PackagingVibe {
-  if (id === 'energetic') return 'energetic';
-  return 'default';
-}
+/** Template ids. 'business-explainer' = Remotion; 'default' = libass subtitles. */
+export type PackagingTemplateId = 'business-explainer' | 'default';
 
 interface Props {
   selected: PackagingTemplateId;
@@ -54,17 +46,9 @@ const TEMPLATES: TemplateOption[] = [
     key: 'default',
     icon: '🅰️',
     label: '通用',
-    desc: '每段 1-2 个关键词,黄色 +20%',
-    tag: '基础花字',
+    desc: '单纯上字幕 · 干净白字,字体/字号/颜色在「字幕」tab 调',
+    tag: '纯字幕',
     accent: '#7aa2f7',
-  },
-  {
-    key: 'energetic',
-    icon: '🔥',
-    label: '高能',
-    desc: '关键词更密,红黄轮换 +30%',
-    tag: '基础花字',
-    accent: '#ff6b6b',
   },
 ];
 
@@ -88,7 +72,7 @@ export function PackagingTemplatesTab({
           lineHeight: 1.6,
         }}
       >
-        选一张模板 → 点「{hasPlan ? '✨ 重新包装' : '✨ 一键包装'}」让 AI 配花字 → 头部「🎬 导出成品」用选中的模板渲染出片。
+        选一张模板 → 点「{hasPlan ? '✨ 重新包装' : '✨ 一键包装'}」生成方案(商务讲解会 AI 编排;通用直接上干净字幕)→ 头部「🎬 导出成品」出片。
       </div>
 
       {/* Flat template list — one card per template, single selection. */}

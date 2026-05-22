@@ -47,6 +47,8 @@ interface Props {
   scrollToken?: number;
   /** Seek the player to a specific variant time. */
   onSeek: (variantSec: number) => void;
+  /** Seek the live Remotion player to a variant time (cue click/edit). */
+  onSeekToSec?: (variantSec: number) => void;
   /** Bubble up plan edits. Parent persists via setPackagingPlan IPC. */
   onPlanChange: (next: PackagingPlan) => void;
 }
@@ -79,6 +81,7 @@ export function PackagingSubtitlesTab({
   scrollToSegmentIdx,
   scrollToken,
   onSeek,
+  onSeekToSec,
   onPlanChange,
 }: Props): JSX.Element {
   // Card-DOM map for scroll-into-view when user clicks the preview subtitle.
@@ -140,6 +143,7 @@ export function PackagingSubtitlesTab({
         spec={plan.templateSpec}
         currentTimeSec={currentTimeSec}
         onSpecChange={(next) => onPlanChange({ ...plan, templateSpec: next })}
+        onSeekToCue={onSeekToSec}
       />
     );
   }

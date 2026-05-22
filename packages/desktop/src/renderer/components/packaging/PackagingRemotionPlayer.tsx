@@ -28,10 +28,19 @@ import type { BusinessExplainerSpec } from '@lynlens/core';
 // is on @types/react@18. The two ReactElement/ReactNode shapes are
 // structurally incompatible, so tsc rejects <Player> as a JSX element. The
 // runtime is fine (one React instance via Vite dedupe) — cast to a
-// permissive component type to bypass the cross-version typing only here.
-const Player = RemotionPlayer as unknown as React.ComponentType<
-  Record<string, unknown>
+// permissive forwardRef component to bypass the cross-version typing
+// (and still accept a ref for imperative seekTo).
+const Player = RemotionPlayer as unknown as React.ForwardRefExoticComponent<
+  Record<string, unknown> & React.RefAttributes<PackagingPlayerRef>
 >;
+
+/** Minimal slice of @remotion/player's PlayerRef we use (avoids its types). */
+export interface PackagingPlayerRef {
+  seekTo: (frame: number) => void;
+  pause: () => void;
+  play: () => void;
+  toggle: () => void;
+}
 
 interface Props {
   /** HTTP URL (localhost media server) to the trimmed variant clip. */
@@ -41,6 +50,8 @@ interface Props {
   fps: number;
   width: number;
   height: number;
+  /** Imperative handle so the editor can seek the player to a cue. */
+  playerRef?: React.Ref<PackagingPlayerRef>;
 }
 
 type BusinessExplainerProps = {
@@ -76,11 +87,13 @@ export function PackagingRemotionPlayer({
   fps,
   width,
   height,
+  playerRef,
 }: Props): JSX.Element {
   const durationInFrames = Math.max(1, Math.round(durationInSeconds * fps));
   const inputProps: BusinessExplainerProps = { videoSrc, spec };
   return (
     <Player
+      ref={playerRef}
       component={BusinessExplainer}
       inputProps={inputProps}
       durationInFrames={durationInFrames}
@@ -91,6 +104,10 @@ export function PackagingRemotionPlayer({
       controls
       acknowledgeRemotionLicense
       numberOfSharedAudioTags={25}
+      // Space is handled globally in PackagingPanel (so it works anywhere in
+      // the tab, not only when the player is focused, and yields to text
+      // inputs). Disable the player's built-in handler to avoid double-toggle.
+      spaceKeyToPlayOrPause={false}
       errorFallback={ErrorFallback}
     />
   );

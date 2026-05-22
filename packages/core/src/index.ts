@@ -110,10 +110,12 @@ export {
   type WordEffect,
 } from './packaging-plan';
 export {
+  buildSimpleSpec,
   planToSpec,
   segmentVariantStart,
   SPEC_SOUND_IDS,
   type BusinessExplainerSpec,
+  type SimpleSubtitleStyle,
   type SpecCue,
   type SpecCueStyle,
   type SpecEffect,

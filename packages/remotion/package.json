@@ -1,6 +1,6 @@
 {
   "name": "@lynlens/remotion",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "private": true,
   "type": "module",
   "description": "Remotion render engine for LynLens packaging-tab export (business-explainer template). Scoped to the packaging tab only — other tabs keep the ffmpeg+libass pipeline.",

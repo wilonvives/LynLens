@@ -288,6 +288,16 @@ export interface IpcApi {
     projectId: string,
     variantId: string | null
   ): Promise<PackagingPlan>;
+  /**
+   * 通用 template: build a plain-subtitle spec (every line a `simple` cue,
+   * no AI). The user edits text + marks keywords in the 字幕 tab; keywords
+   * render yellow Heavy, normal lines white + black outline. Returns the
+   * updated plan (templateSpec set).
+   */
+  generatePackagingSpecSimple(
+    projectId: string,
+    variantId: string | null
+  ): Promise<PackagingPlan>;
   /** Read the saved packaging plan for a variant (or root). */
   getPackagingPlan(
     projectId: string,

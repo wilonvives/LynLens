@@ -32,6 +32,7 @@ import crypto from 'node:crypto';
 import { app, ipcMain } from 'electron';
 import {
   buildPreviewPlaylist,
+  buildSimpleSpec,
   buildSpecAuthorLines,
   buildSpecAuthorSystemPrompt,
   buildSpecAuthorUserPrompt,
@@ -273,7 +274,38 @@ export async function generatePackagingSpecFor(
 }
 
 /**
- * Render the packaging tab's final mp4 via Remotion (商务讲解 template).
+ * Build a 通用-template spec (plain `simple` cues, no AI keyword pass) and
+ * store it on the variant's plan. The user marks keywords + edits text in
+ * the spec editor; the SimpleSubtitle renderer paints normal lines white +
+ * outlined and keywords yellow Heavy.
+ */
+export async function generateSimpleSpecFor(
+  engine: LynLensEngine,
+  projectId: string,
+  variantId: string | null
+): Promise<PackagingPlan> {
+  const project = engine.projects.get(projectId);
+  if (!project.transcript || project.transcript.segments.length === 0) {
+    throw new Error('请先生成字幕,然后才能上字幕');
+  }
+  const ranges = keepRangesFor(project, variantId);
+  const playlist = buildPreviewPlaylist(ranges);
+  const m = project.videoMeta;
+  const orientation: 'portrait' | 'landscape' | 'unknown' = m
+    ? m.width >= m.height
+      ? 'landscape'
+      : 'portrait'
+    : 'unknown';
+  const spec = buildSimpleSpec(project.transcript, playlist, orientation);
+  if (spec.cues.length === 0) throw new Error('该对象内没有可显示的字幕段');
+  const existing = project.getPackagingPlan(variantId) ?? emptyPackagingPlan(variantId);
+  const nextPlan: PackagingPlan = { ...existing, templateSpec: spec };
+  project.setPackagingPlan(nextPlan);
+  return nextPlan;
+}
+
+/**
+ * Render the packaging tab's final mp4 via Remotion (商务讲解 / 通用 template).
  * Shared by the IPC handler and the MCP tool. Emits export.* events on the
  * engine bus so the UI progress banner works regardless of trigger. Pass a
  * signal to support cancellation (UI export); the MCP tool omits it.
@@ -396,6 +428,13 @@ export function registerPackagingRemotionIpc(ctx: IpcContext): void {
     'generate-packaging-spec',
     async (_ev, projectId: string, variantId: string | null): Promise<PackagingPlan> =>
       generatePackagingSpecFor(engine, projectId, variantId)
+  );
+
+  // 通用 template: plain subtitles (simple cues, no AI), user marks keywords.
+  ipcMain.handle(
+    'generate-packaging-spec-simple',
+    async (_ev, projectId: string, variantId: string | null): Promise<PackagingPlan> =>
+      generateSimpleSpecFor(engine, projectId, variantId)
   );
 
   /**

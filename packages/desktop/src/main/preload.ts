@@ -72,6 +72,8 @@ const api: IpcApi = {
     ipcRenderer.invoke('generate-packaging-plan', pid, variantId, vibe),
   generatePackagingSpec: (pid, variantId) =>
     ipcRenderer.invoke('generate-packaging-spec', pid, variantId),
+  generatePackagingSpecSimple: (pid, variantId) =>
+    ipcRenderer.invoke('generate-packaging-spec-simple', pid, variantId),
   getPackagingPlan: (pid, variantId) =>
     ipcRenderer.invoke('get-packaging-plan', pid, variantId),
   setPackagingPlan: (pid, plan) =>
