@@ -145,7 +145,11 @@ export function displaySpeakerName(
 export interface MockDiarizationOptions {
   /**
    * How many speakers the mock pretends to detect. Clamped to [1, 5].
-   * Default: 2 (most common interview case).
+   * Default: 1 — the mock does NOT analyse audio, it only fabricates
+   * alternating speakers. For LynLens's primary use case (single-person
+   * talking-head), inventing a 2nd speaker is actively wrong, so when no
+   * count is given we assume ONE speaker. Real multi-speaker footage should
+   * pass an explicit count or install the sherpa-onnx engine.
    */
   speakerCount?: number;
 }
@@ -161,7 +165,7 @@ export function runMockDiarization(
   transcript: Transcript,
   opts: MockDiarizationOptions = {}
 ): DiarizationResult {
-  const speakerCount = Math.max(1, Math.min(5, Math.floor(opts.speakerCount ?? 2)));
+  const speakerCount = Math.max(1, Math.min(5, Math.floor(opts.speakerCount ?? 1)));
   const segments: DiarizationSegment[] = [];
   const speakers = new Set<string>();
 
@@ -202,7 +206,11 @@ export function runMockDiarization(
 
 export class MockDiarizationEngine implements DiarizationEngine {
   readonly kind = 'mock' as const;
-  constructor(private readonly transcriptProvider: () => Transcript | null) {}
+  constructor(
+    private readonly transcriptProvider: () => Transcript | null,
+    /** Forced speaker count; undefined → mock assumes a single speaker. */
+    private readonly speakerCount?: number
+  ) {}
 
   async diarize(_audioPath: string): Promise<DiarizationResult> {
     // The mock doesn't touch audio — it reads the transcript provided by
@@ -212,6 +220,6 @@ export class MockDiarizationEngine implements DiarizationEngine {
     if (!t) {
       return { engine: 'mock', segments: [], speakers: [] };
     }
-    return runMockDiarization(t);
+    return runMockDiarization(t, { speakerCount: this.speakerCount });
   }
 }

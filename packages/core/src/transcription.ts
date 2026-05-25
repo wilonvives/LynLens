@@ -2,7 +2,10 @@ import { spawn } from 'node:child_process';
 import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { StringDecoder } from 'node:string_decoder';
 import { v4 as uuid } from 'uuid';
+import { isMainlyCJK } from './subtitle';
+import { cutFingerprint, effectiveToSource } from './ripple';
 import { mkTmpDir, resolveFfmpegPaths, type FfmpegPaths } from './ffmpeg';
 import { applyCorrectionsToText, isPathologicalCorrection } from './learning-memory';
 import type { Transcript, TranscriptSegment, TranscriptWord } from './types';
@@ -36,6 +39,17 @@ export interface TranscribeOptions {
    * post-cut transcript automatically.
    */
   cutRanges?: ReadonlyArray<{ start: number; end: number }>;
+  /**
+   * Transcription scope relative to cuts:
+   *   'full'   (default) — transcribe the whole source video; result is
+   *                        source-time and survives cut changes (display
+   *                        remaps). Partial-overlap segments kept whole.
+   *   'edited' — transcribe ONLY the kept audio (source minus `cutRanges`),
+   *              then map times back to source. Matches the final cut exactly
+   *              (no 已剪 clutter, no cut-region hallucinations), but is stamped
+   *              with the cut fingerprint and goes stale when cuts change.
+   */
+  scope?: 'full' | 'edited';
   /**
    * Learned auto-corrections from LearningMemory. Applied AFTER whisper
    * (and after cut-range filtering) so the same correction the user kept
@@ -75,25 +89,30 @@ export class NullTranscriptionService implements TranscriptionService {
 export async function toWav16kMono(
   input: string,
   ffmpegPaths: FfmpegPaths = resolveFfmpegPaths(),
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  /**
+   * If provided (Mode B), extract+concatenate ONLY these source-time ranges
+   * into the wav — i.e. the kept audio after cuts. Cheap (audio-only, no video
+   * re-encode). When omitted, the whole input audio is used (Mode A).
+   */
+  keeps?: ReadonlyArray<{ start: number; end: number }>
 ): Promise<{ wavPath: string; cleanup: () => Promise<void> }> {
   const dir = await mkTmpDir('lynlens-wav-');
   const wavPath = path.join(dir, 'audio.wav');
+  const args =
+    keeps && keeps.length > 0
+      ? (() => {
+          const parts = keeps.map(
+            (k, i) => `[0:a]atrim=start=${k.start}:end=${k.end},asetpts=PTS-STARTPTS[a${i}]`
+          );
+          const labels = keeps.map((_, i) => `[a${i}]`).join('');
+          const filter = `${parts.join(';')};${labels}concat=n=${keeps.length}:v=0:a=1[out]`;
+          return ['-v', 'error', '-i', input, '-filter_complex', filter, '-map', '[out]',
+            '-ar', '16000', '-ac', '1', '-c:a', 'pcm_s16le', '-y', wavPath];
+        })()
+      : ['-v', 'error', '-i', input, '-vn', '-ar', '16000', '-ac', '1', '-c:a', 'pcm_s16le', '-y', wavPath];
   await new Promise<void>((resolve, reject) => {
-    const proc = spawn(
-      ffmpegPaths.ffmpeg,
-      [
-        '-v', 'error',
-        '-i', input,
-        '-vn',
-        '-ar', '16000',
-        '-ac', '1',
-        '-c:a', 'pcm_s16le',
-        '-y',
-        wavPath,
-      ],
-      { windowsHide: true }
-    );
+    const proc = spawn(ffmpegPaths.ffmpeg, args, { windowsHide: true });
     const onAbort = () => proc.kill('SIGKILL');
     signal?.addEventListener('abort', onAbort, { once: true });
     let stderr = '';
@@ -134,10 +153,18 @@ export class WhisperLocalService implements TranscriptionService {
   async transcribe(input: string, options: TranscribeOptions = {}): Promise<Transcript> {
     await assertExists(this.opts.binaryPath, 'whisper binary');
     await assertExists(this.opts.modelPath, 'whisper model');
+    const cuts = options.cutRanges ?? [];
+    // Mode B: transcribe ONLY the kept audio (source minus cuts). We feed
+    // whisper the concatenated kept ranges, so the result is in EFFECTIVE
+    // (post-cut) time and contains no cut-region content; we map it back to
+    // source-time at the end.
+    const editedMode = options.scope === 'edited' && cuts.length > 0;
+    const keeps = editedMode ? invertCutsToKeeps(cuts) : undefined;
     const { wavPath, cleanup } = await toWav16kMono(
       input,
       this.opts.ffmpegPaths ?? resolveFfmpegPaths(),
-      options.signal
+      options.signal,
+      keeps
     );
 
     try {
@@ -152,12 +179,13 @@ export class WhisperLocalService implements TranscriptionService {
         '--split-on-word',
         '--print-progress',
       ];
-      // Subtitle line-length cap. Whisper's natural segmentation can run
-      // 19+ chars even for portrait video; --max-len enforces a hard
-      // limit (whisper splits at the next word boundary that fits).
-      if (options.maxLen && options.maxLen > 0) {
-        args.push('--max-len', String(Math.floor(options.maxLen)));
-      }
+      // NOTE: we deliberately do NOT pass `--max-len`. whisper's own length
+      // cap chops segments mid-phrase (and mid-English-word: "signboard" →
+      // "sign"/"board", "all in" → "all"/"in"), and those boundaries are baked
+      // in BEFORE our segmenter sees them — which only re-splits WITHIN a
+      // segment, never merges across. Instead we let whisper produce natural
+      // segments, then `mergeIntoUtterances` + `splitSegmentsToMaxLen` own all
+      // line breaking with a proper cost model.
 
       await new Promise<void>((resolve, reject) => {
         const proc = spawn(this.opts.binaryPath, args, { windowsHide: true });
@@ -184,12 +212,27 @@ export class WhisperLocalService implements TranscriptionService {
       });
 
       const jsonPath = `${outputBase}.json`;
-      const raw = await fs.readFile(jsonPath, 'utf-8');
-      const parsed = JSON.parse(raw);
+      // Read as raw bytes and parse via latin1 (lossless 1 byte → 1 char).
+      // whisper.cpp byte-splits CJK chars across BPE tokens; decoding the file
+      // as utf-8 here would turn the partial-byte tokens into U+FFFD (�) before
+      // we get a chance to stitch them back together. latin1 preserves the
+      // bytes so parseWhisperCppJson can reassemble valid characters.
+      const rawBuf = await fs.readFile(jsonPath);
+      const parsed = JSON.parse(rawBuf.toString('latin1'));
       options.onProgress?.(100);
       let transcript = parseWhisperCppJson(parsed, options.model ?? 'base');
-      if (options.cutRanges && options.cutRanges.length > 0) {
-        transcript = filterTranscriptByCuts(transcript, options.cutRanges);
+      // Mode A only: post-filter the full-video transcript against cuts. Mode B
+      // already transcribed just the kept audio, so there's nothing to filter.
+      if (!editedMode && cuts.length > 0) {
+        transcript = filterTranscriptByCuts(transcript, cuts);
+      }
+      // Undo whisper's arbitrary fine-grained chopping: merge adjacent
+      // segments (no pause, no sentence-end) back into whole utterances, so
+      // cross-segment splits like "all"/"in" or "sign"/"board" are reunited
+      // BEFORE we segment. Then the cost-based splitter owns all line breaks.
+      transcript = mergeIntoUtterances(transcript);
+      if (options.maxLen && options.maxLen > 0) {
+        transcript = splitSegmentsToMaxLen(transcript, options.maxLen);
       }
       if (options.autoCorrections && Object.keys(options.autoCorrections).length > 0) {
         transcript = applyAutoCorrections(transcript, options.autoCorrections);
@@ -197,15 +240,58 @@ export class WhisperLocalService implements TranscriptionService {
       if (options.properNouns && Object.keys(options.properNouns).length > 0) {
         transcript = applyProperNouns(transcript, options.properNouns);
       }
-      // English fragments ("and the" / "section" / "sixty eight" as separate
-      // cards) are unreadable as subtitles; merge them. CJK is left alone —
-      // it has its own per-orientation max-len cap from whisper.cpp.
-      transcript = mergeShortEnglishSegments(transcript);
+      if (editedMode) {
+        // Times are currently effective (post-cut). Map back to source-time so
+        // the rest of the app (player seek, ripple, export) stays consistent,
+        // and stamp the cut fingerprint so the UI can lock it when cuts change.
+        transcript = mapTranscriptToSource(transcript, cuts);
+        transcript = { ...transcript, scope: 'edited', cutFingerprint: cutFingerprint(cuts) };
+      } else {
+        transcript = { ...transcript, scope: 'full' };
+      }
       return transcript;
     } finally {
       await cleanup();
     }
   }
+}
+
+/** Invert a cut set into the kept source-time ranges. The final range runs to
+ *  a sentinel end (ffmpeg's atrim clamps it to the real audio end), so we don't
+ *  need to know the video duration here. */
+function invertCutsToKeeps(
+  cuts: ReadonlyArray<{ start: number; end: number }>
+): Array<{ start: number; end: number }> {
+  const sorted = [...cuts].filter((c) => c.end > c.start).sort((a, b) => a.start - b.start);
+  const keeps: Array<{ start: number; end: number }> = [];
+  let cursor = 0;
+  for (const c of sorted) {
+    if (cursor < c.start) keeps.push({ start: cursor, end: c.start });
+    cursor = Math.max(cursor, c.end);
+  }
+  keeps.push({ start: cursor, end: 10_000_000 }); // sentinel → clamped to audio end
+  return keeps;
+}
+
+/** Map an effective-time (post-cut) transcript back to source-time. */
+function mapTranscriptToSource(
+  transcript: Transcript,
+  cuts: ReadonlyArray<{ start: number; end: number }>
+): Transcript {
+  const c = cuts.map((r) => ({ start: r.start, end: r.end }));
+  return {
+    ...transcript,
+    segments: transcript.segments.map((s) => ({
+      ...s,
+      start: effectiveToSource(s.start, c),
+      end: effectiveToSource(s.end, c),
+      words: (s.words ?? []).map((w) => ({
+        w: w.w,
+        start: effectiveToSource(w.start, c),
+        end: effectiveToSource(w.end, c),
+      })),
+    })),
+  };
 }
 
 /**
@@ -328,40 +414,267 @@ export function mergeShortEnglishSegments(
 }
 
 /**
- * Drop / trim transcript segments that overlap any cut range. Operates
- * on word-level timing so partial overlaps trim down to just the kept
- * portion of the sentence — neither the segment timing nor the visible
- * text crosses a cut after this runs. Result: zero "spans across cut"
- * warnings, and downstream copy generation gets a clean post-cut
- * transcript without further work.
+ * Re-segment subtitles to a readable, human-friendly shape and enforce the
+ * per-orientation character cap (`maxLen`). whisper.cpp can't do this for CJK:
+ * its `--max-len` only splits on word boundaries (`--split-on-word`) and
+ * Chinese has no spaces, so 30+ char lines slip through. Worse, a naive
+ * character cap chops mid-word (`投/資`, `再/做`), which is unreadable.
  *
- * Algorithm per segment:
- *   1. Drop words that fall fully inside any cut range.
- *   2. If no words remain, drop the whole segment.
- *   3. Otherwise rebuild segment.start = first kept word.start,
- *      segment.end = last kept word.end, segment.text = kept words joined.
+ * Rules (in priority order):
+ *   1. Break at punctuation — whisper's commas/periods mark natural phrase
+ *      boundaries. Punctuation is stripped from the displayed text afterwards.
+ *   2. Never break inside a word — `Intl.Segmenter` (ICU dictionary) gives
+ *      real word units (投資 / 非法 / 再做 stay whole). Words are atomic.
+ *   3. Pack whole words up to `maxLen` display characters per line.
  *
- * Edge case: a segment whose word-level timing is missing (defensive —
- * shouldn't happen with --output-json-full + --split-on-word) falls back
- * to the simpler "fully inside cut → drop, otherwise keep as-is" rule.
+ * Line TEXT is always taken from the authoritative `seg.text` (never rebuilt
+ * from tokens — see buildCharTimeline), so nothing the user spoke is dropped.
+ * Timing is proportional across the segment. Always runs (even for short
+ * segments) so punctuation is stripped consistently for display.
+ */
+export function splitSegmentsToMaxLen(transcript: Transcript, maxLen: number): Transcript {
+  if (!maxLen || maxLen <= 0) return transcript;
+  const out: TranscriptSegment[] = [];
+  for (const seg of transcript.segments) {
+    for (const piece of resegmentByWords(seg, maxLen)) out.push(piece);
+  }
+  return { ...transcript, segments: out };
+}
+
+interface TimedChar {
+  ch: string;
+  start: number;
+  end: number;
+}
+
+/**
+ * Per-code-point timeline for a segment. Two competing requirements:
+ *
+ *   - TEXT integrity: the line text must equal `seg.text` exactly. Rebuilding
+ *     subtitles from per-token text silently dropped characters that WERE in
+ *     seg.text ("做" vanished, "fighting" → "ighting").
+ *   - TIMING accuracy: each split line needs its REAL spoken time. If we smear
+ *     the segment duration proportionally, lines of a cut-spanning segment land
+ *     inside the cut region and get falsely flagged "已剪" — content the user
+ *     never cut looks deleted.
+ *
+ * So: prefer the real per-word timings, but ONLY when the words reconstruct
+ * `seg.text` exactly (the common case — whisper tokens usually match char for
+ * char). When they disagree, fall back to `seg.text` with proportional timing
+ * — integrity always wins over precision.
+ */
+function buildCharTimeline(seg: TranscriptSegment): TimedChar[] {
+  const words = seg.words ?? [];
+  if (words.length > 0) {
+    const chars: TimedChar[] = [];
+    for (const w of words) {
+      const cps = [...w.w];
+      const n = cps.length || 1;
+      const dur = Math.max(0, w.end - w.start);
+      cps.forEach((ch, k) =>
+        chars.push({ ch, start: w.start + (dur * k) / n, end: w.start + (dur * (k + 1)) / n })
+      );
+    }
+    // Trust the real timings only if the tokens reproduce seg.text exactly.
+    if (chars.map((c) => c.ch).join('') === seg.text) return chars;
+  }
+  // Fallback: authoritative text, proportional timing.
+  const cps = [...seg.text];
+  const n = cps.length || 1;
+  const dur = Math.max(0, seg.end - seg.start);
+  return cps.map((ch, k) => ({
+    ch,
+    start: seg.start + (dur * k) / n,
+    end: seg.start + (dur * (k + 1)) / n,
+  }));
+}
+
+/**
+ * Reunite whisper segments that were split in the MIDDLE OF LATIN TEXT
+ * ("all"/"in", "sign"/"board", "a"/"balance"). whisper's CJK boundaries are
+ * pause/prosody-based and usually good, so we must NOT merge those — doing so
+ * erases real phrase boundaries and the cost splitter (which has no
+ * punctuation to lean on in Chinese) would then break mid-phrase (e.g.
+ * 很好睡 → 很好/睡). So we merge ONLY when the seam sits between two Latin
+ * word-chars and there's no pause — i.e. whisper clearly cut an English word
+ * or phrase. A space (+ matching space "word") is inserted at the seam so
+ * "…all"+"in…" → "…all in…".
+ */
+export function mergeIntoUtterances(transcript: Transcript): Transcript {
+  const segs = transcript.segments;
+  if (segs.length < 2) return transcript;
+  const GAP_SEC = 0.4;
+  const out: TranscriptSegment[] = [];
+  let cur: TranscriptSegment = { ...segs[0], words: [...(segs[0].words ?? [])] };
+  for (let i = 1; i < segs.length; i++) {
+    const next = segs[i];
+    const gap = next.start - cur.end;
+    const latinSeam = /[A-Za-z0-9]$/.test(cur.text) && /^[A-Za-z0-9]/.test(next.text);
+    if (latinSeam && gap <= GAP_SEC) {
+      const words = [...(cur.words ?? []), { w: ' ', start: cur.end, end: next.start }, ...(next.words ?? [])];
+      cur = { ...cur, end: next.end, text: cur.text + ' ' + next.text, words };
+    } else {
+      out.push(cur);
+      cur = { ...next, words: [...(next.words ?? [])] };
+    }
+  }
+  out.push(cur);
+  return { ...transcript, segments: out };
+}
+
+/**
+ * Re-segment one utterance into subtitle cards using a GLOBAL cost-minimising
+ * break (Knuth–Plass style), not greedy "fill to the limit". This follows the
+ * professional subtitle principle that breaks should land on the strongest
+ * available linguistic boundary and lines should be balanced — never orphaning
+ * a trailing word (`投資` / `答案` / `老師`) just because the previous line hit
+ * the char cap.
+ *
+ * Atomic units = dictionary words (Intl.Segmenter) — we never break inside one.
+ * We minimise:  Σ (maxLen − cardWidth)²   ← balance / no-orphan (squared → even)
+ *             + Σ breakPenalty(boundary)  ← prefer punctuation > clause > word
+ * subject to every card's visual width ≤ maxLen.
+ */
+function resegmentByWords(seg: TranscriptSegment, maxLen: number): TranscriptSegment[] {
+  const chars = buildCharTimeline(seg);
+  if (chars.length === 0) return [];
+  const text = chars.map((c) => c.ch).join('');
+
+  // Fast path: whole utterance already fits (by visual width) → one card.
+  if (displayWidth(chars, 0, chars.length) <= maxLen) {
+    return finalizePiece(chars, 0, chars.length);
+  }
+
+  // Atomic units (word / punctuation / space runs) with their char ranges.
+  const locale = isMainlyCJK(text) ? 'zh' : 'en';
+  const units: Array<{ a: number; b: number }> = [];
+  let pos = 0;
+  for (const u of new Intl.Segmenter(locale, { granularity: 'word' }).segment(text)) {
+    const len = [...u.segment].length;
+    units.push({ a: pos, b: pos + len });
+    pos += len;
+  }
+  const N = units.length;
+  if (N === 0) return finalizePiece(chars, 0, chars.length);
+
+  const cardWidth = (j: number, i: number) => displayWidth(chars, units[j].a, units[i - 1].b);
+  const dp = new Array<number>(N + 1).fill(Infinity);
+  const prev = new Array<number>(N + 1).fill(0);
+  dp[0] = 0;
+  for (let i = 1; i <= N; i++) {
+    for (let j = i - 1; j >= 0; j--) {
+      const w = cardWidth(j, i);
+      if (w > maxLen && i - j > 1) break; // wider as j↓; a lone oversized unit is allowed
+      if (dp[j] === Infinity) continue;
+      const breakBefore = j === 0 ? 0 : breakPenaltyAfter(chars, units, j - 1);
+      const fit = Math.min(w, maxLen);
+      const badness = (maxLen - fit) ** 2;
+      const cost = dp[j] + breakBefore + badness;
+      if (cost < dp[i]) {
+        dp[i] = cost;
+        prev[i] = j;
+      }
+    }
+  }
+
+  // Backtrack into card boundaries (unit indices) and emit each card.
+  const bounds: number[] = [];
+  for (let i = N; i > 0; i = prev[i]) bounds.push(i);
+  bounds.push(0);
+  bounds.reverse();
+  const out: TranscriptSegment[] = [];
+  for (let k = 0; k + 1 < bounds.length; k++) {
+    out.push(...finalizePiece(chars, units[bounds[k]].a, units[bounds[k + 1] - 1].b));
+  }
+  return out;
+}
+
+/** Conjunctions a line should start WITH (break before them). */
+const CONJUNCTIONS = new Set([
+  '但是', '可是', '不過', '不过', '然後', '然后', '所以', '因為', '因为', '如果',
+  '而且', '並且', '并且', '於是', '于是', '接著', '接着', '那麼', '那么', '雖然',
+  '虽然', '儘管', '尽管', '因此', '除非', '不然', '否則', '否则',
+]);
+
+/**
+ * Penalty for breaking right AFTER unit k. Lower = stronger / more natural
+ * boundary. Encodes the "break at the highest syntactic node" principle:
+ * sentence-end punctuation ≫ clause punctuation ≫ before a conjunction ≫
+ * after a particle (的/了/嗎…) ≫ a bare word boundary.
+ */
+function breakPenaltyAfter(
+  chars: TimedChar[],
+  units: Array<{ a: number; b: number }>,
+  k: number
+): number {
+  const lastCh = chars[units[k].b - 1]?.ch ?? '';
+  if (/[。！？.!?…]/u.test(lastCh)) return 0;
+  if (/[，、,；;：:]/u.test(lastCh)) return 3;
+  const next = units[k + 1];
+  if (next) {
+    const nextText = chars.slice(next.a, next.b).map((c) => c.ch).join('');
+    if (CONJUNCTIONS.has(nextText)) return 6;
+  }
+  if (/[的了嗎吗呢吧啊呀喔哦嘛地得]/u.test(lastCh)) return 12;
+  return 40;
+}
+
+/** Visual width of chars[a, b) — CJK=1, Latin/digit/space≈0.27, punctuation=0. */
+function displayWidth(chars: TimedChar[], a: number, b: number): number {
+  let w = 0;
+  for (let i = a; i < b; i++) w += charWidth(chars[i].ch);
+  return w;
+}
+
+/** Build a clean subtitle piece from chars[a, b): strip punctuation for the
+ *  displayed text, and trim leading/trailing punctuation+space so the timing
+ *  brackets the spoken words. Returns [] if the range has no real text. */
+function finalizePiece(chars: TimedChar[], a: number, b: number): TranscriptSegment[] {
+  let s = a;
+  let e = b;
+  const trim = (ch: string) => isPunctChar(ch) || /\s/.test(ch);
+  while (s < e && trim(chars[s].ch)) s++;
+  while (e > s && trim(chars[e - 1].ch)) e--;
+  if (e <= s) return [];
+  const text = stripPunctuation(chars.slice(a, b).map((c) => c.ch).join(''));
+  if (text.length === 0) return [];
+  // Keep per-character timings (punctuation excluded so words match the
+  // displayed text). Used for word-level sync / future cut alignment.
+  const words: TranscriptWord[] = [];
+  for (let i = s; i < e; i++) {
+    const c = chars[i];
+    if (isPunctChar(c.ch) || /\s/.test(c.ch)) continue;
+    words.push({ w: c.ch, start: c.start, end: c.end });
+  }
+  return [
+    {
+      id: `t_${uuid().slice(0, 8)}`,
+      start: chars[s].start,
+      end: chars[e - 1].end,
+      text,
+      words,
+    },
+  ];
+}
+
+/**
+ * Drop transcript segments that fall ENTIRELY inside a cut range (a fully
+ * deleted utterance — e.g. a filler "嗯" that was cut out). Segments that only
+ * PARTIALLY overlap a cut are kept WHOLE, with their original text and timing.
+ *
+ * We deliberately do NOT trim partial-overlap segments at the word level.
+ * Word-level trimming used to chop whichever character a cut boundary happened
+ * to land on (cut 1.0–1.5s of "所以一定要去做一个败人子" → "所以一定要去⎯一个败人子",
+ * the「做」silently vanished). With dense filler cuts this produced unreadable,
+ * misaligned subtitles full of swallowed characters and fragments ("ighting").
+ * Keeping the spoken phrase intact is far more important than avoiding the
+ * cosmetic "spans across cut" badge.
  */
 export function filterTranscriptByCuts(
   transcript: Transcript,
   cutRanges: ReadonlyArray<{ start: number; end: number }>
 ): Transcript {
   const cuts = [...cutRanges].sort((a, b) => a.start - b.start);
-  const wordInsideCut = (start: number, end: number): boolean => {
-    for (const c of cuts) {
-      if (start >= c.start && end <= c.end) return true;
-    }
-    return false;
-  };
-  const segOverlapsCut = (start: number, end: number): boolean => {
-    for (const c of cuts) {
-      if (!(end <= c.start || start >= c.end)) return true;
-    }
-    return false;
-  };
   const segFullyInsideCut = (start: number, end: number): boolean => {
     for (const c of cuts) {
       if (start >= c.start && end <= c.end) return true;
@@ -371,26 +684,8 @@ export function filterTranscriptByCuts(
 
   const out: TranscriptSegment[] = [];
   for (const seg of transcript.segments) {
-    if (segFullyInsideCut(seg.start, seg.end)) continue;
-    if (!segOverlapsCut(seg.start, seg.end)) {
-      out.push(seg);
-      continue;
-    }
-    // Partial overlap. Drop words that fall inside any cut, then rebuild.
-    const keptWords = (seg.words ?? []).filter(
-      (w) => !wordInsideCut(w.start, w.end)
-    );
-    if (keptWords.length === 0) {
-      // No word-level data, or every word ended up inside a cut. Drop seg.
-      continue;
-    }
-    out.push({
-      ...seg,
-      start: keptWords[0].start,
-      end: keptWords[keptWords.length - 1].end,
-      text: keptWords.map((w) => w.w).join('').trim(),
-      words: keptWords,
-    });
+    if (segFullyInsideCut(seg.start, seg.end)) continue; // entirely cut → drop
+    out.push(seg); // partial overlap or no overlap → keep the whole phrase
   }
   return { ...transcript, segments: out };
 }
@@ -414,7 +709,43 @@ function stripPunctuation(s: string): string {
   return s.replace(PUNCT_RE, '').replace(/\s+/g, ' ').trim();
 }
 
-function parseWhisperCppJson(json: unknown, model: string): Transcript {
+/** Collapse whitespace but KEEP punctuation (punctuation marks subtitle break
+ *  boundaries; it's only stripped at the very end, in splitSegmentsToMaxLen). */
+function normalizeWs(s: string): string {
+  return s.replace(/\s+/g, ' ').trim();
+}
+
+const PUNCT_CHAR_RE = /[.,;:!?，。；：！？、"'"''「」『』()（）<>《》…]/u;
+function isPunctChar(ch: string): boolean {
+  return PUNCT_CHAR_RE.test(ch);
+}
+
+// Visual width units for line-length: a CJK character ≈ 1; a Latin letter,
+// digit, or space ≈ 12/45 of that (the 中12/英45 subtitle spec — one CJK char
+// is ~3.75 Latin chars wide). Counting raw code points instead made English
+// words/numbers consume CJK-sized slots and forced ugly mid-word line breaks
+// ("signboard" → "sign"/"board", "all in" → "all"/"in"). Punctuation → 0
+// (it's stripped from the displayed text anyway).
+const LATIN_WIDTH = 12 / 45;
+const WIDE_CHAR_RE = /[぀-ヿ㐀-鿿豈-﫿가-힯！-｠￠-￦]/u;
+function charWidth(ch: string): number {
+  if (isPunctChar(ch)) return 0;
+  return WIDE_CHAR_RE.test(ch) ? 1 : LATIN_WIDTH;
+}
+
+/**
+ * Parse whisper.cpp `--output-json-full` output into our Transcript.
+ *
+ * IMPORTANT: `json` must come from `JSON.parse(buffer.toString('latin1'))`,
+ * NOT a utf-8 decode. whisper.cpp byte-splits CJK characters across BPE
+ * tokens, so a single 3-byte char (e.g. "唐") arrives as two partial-byte
+ * tokens. latin1 carries each original byte 1:1 as a char code; we recover
+ * real UTF-8 from those bytes here — `decodeLatin1` for whole strings and
+ * `reassembleWords` for the byte-split token stream. Reading the file as
+ * utf-8 instead replaces the partial tokens with U+FFFD (�), which then
+ * leaks into subtitles when filterTranscriptByCuts rebuilds text from words.
+ */
+export function parseWhisperCppJson(json: unknown, model: string): Transcript {
   const j = json as {
     result?: { language?: string };
     transcription?: Array<{
@@ -427,20 +758,14 @@ function parseWhisperCppJson(json: unknown, model: string): Transcript {
   const segs = (j.transcription ?? []).map((seg): TranscriptSegment => {
     const start = seg.offsets ? seg.offsets.from / 1000 : 0;
     const end = seg.offsets ? seg.offsets.to / 1000 : 0;
-    const words: TranscriptWord[] = (seg.tokens ?? [])
-      .filter((t) => t.offsets && !t.text.startsWith('['))
-      .map((t) => ({
-        w: stripPunctuation(t.text),
-        start: (t.offsets!.from ?? 0) / 1000,
-        end: (t.offsets!.to ?? 0) / 1000,
-      }))
-      .filter((w) => w.w.length > 0);
     return {
       id: `t_${uuid().slice(0, 8)}`,
       start,
       end,
-      text: stripPunctuation(seg.text),
-      words,
+      // Keep punctuation here — it's the primary subtitle break signal.
+      // splitSegmentsToMaxLen strips it after using it to choose line breaks.
+      text: normalizeWs(decodeLatin1(seg.text)),
+      words: reassembleWords(seg.tokens ?? []),
     };
   });
   return {
@@ -449,6 +774,80 @@ function parseWhisperCppJson(json: unknown, model: string): Transcript {
     model,
     segments: segs,
   };
+}
+
+/** Recover a UTF-8 string from a latin1 byte-carrier (see parseWhisperCppJson). */
+function decodeLatin1(s: string): string {
+  return Buffer.from(s, 'latin1').toString('utf8');
+}
+
+/**
+ * Stitch whisper.cpp's byte-split CJK tokens back into valid UTF-8 words.
+ *
+ * Each token `text` is a latin1 byte-carrier. We accumulate bytes across
+ * consecutive tokens and emit a word as soon as they form one or more
+ * complete UTF-8 characters, carrying any trailing incomplete bytes forward
+ * to merge with the next token. A merged word's timing spans from the first
+ * contributing token's start to the completing token's end.
+ *
+ * Tokens that are already complete (the common case — Latin words, and CJK
+ * chars whisper happened not to split) pass through one-to-one, so this is a
+ * superset of the old per-token mapping, not a behaviour change for them.
+ */
+function reassembleWords(
+  tokens: Array<{ text: string; offsets?: { from: number; to: number } }>
+): TranscriptWord[] {
+  const words: TranscriptWord[] = [];
+  // Carry held as a plain Uint8Array to avoid @types/node's Buffer<ArrayBuffer>
+  // vs Buffer<ArrayBufferLike> friction around subarray/concat.
+  let carry: Uint8Array = new Uint8Array(0);
+  let carryStart: number | null = null;
+  for (const t of tokens) {
+    if (!t.offsets) continue;
+    // Special tokens ([_BEG_], [_TT_123], ...) are pure ASCII and not real
+    // words — '[' (0x5B) can never be a UTF-8 lead/continuation byte, so this
+    // check is safe on the latin1 carrier.
+    if (t.text.startsWith('[')) continue;
+    const bytes = Buffer.from(t.text, 'latin1');
+    if (bytes.length === 0) continue;
+    if (carry.length === 0) carryStart = t.offsets.from;
+    const combined = Buffer.concat([carry, bytes]);
+    const { chars, consumed } = splitCompleteUtf8(combined);
+    if (chars.length > 0) {
+      const w = normalizeWs(chars);
+      if (w.length > 0) {
+        words.push({
+          w,
+          start: (carryStart ?? t.offsets.from) / 1000,
+          end: t.offsets.to / 1000,
+        });
+      }
+      carry = combined.subarray(consumed);
+      carryStart = carry.length > 0 ? t.offsets.from : null;
+    } else {
+      // Still mid-character — keep accumulating, preserve the original start.
+      carry = combined;
+    }
+  }
+  // Trailing incomplete bytes shouldn't happen (the token stream concatenates
+  // to the valid segment text), but decode lossily so nothing is silently lost.
+  if (carry.length > 0 && carryStart != null) {
+    const w = normalizeWs(Buffer.from(carry).toString('utf8'));
+    if (w.length > 0) words.push({ w, start: carryStart / 1000, end: carryStart / 1000 });
+  }
+  return words;
+}
+
+/**
+ * Decode the longest complete-UTF-8 prefix of `buf` and report how many bytes
+ * that consumed; the trailing bytes (an incomplete multi-byte sequence) are
+ * left for the caller to carry forward. Node's StringDecoder buffers the
+ * incomplete tail internally, which is exactly the boundary we want.
+ */
+function splitCompleteUtf8(buf: Buffer): { chars: string; consumed: number } {
+  const decoder = new StringDecoder('utf8');
+  const chars = decoder.write(buf);
+  return { chars, consumed: Buffer.byteLength(chars, 'utf8') };
 }
 
 // ---------- OpenAI Whisper API ----------
@@ -503,6 +902,11 @@ export class WhisperApiService implements TranscriptionService {
       let transcript = parseOpenAiVerbose(data, this.opts.model ?? 'whisper-1');
       if (options.cutRanges && options.cutRanges.length > 0) {
         transcript = filterTranscriptByCuts(transcript, options.cutRanges);
+      }
+      // Hard subtitle-length cap. whisper's --max-len can't split CJK (no word
+      // boundaries), so enforce it ourselves using the per-word array.
+      if (options.maxLen && options.maxLen > 0) {
+        transcript = splitSegmentsToMaxLen(transcript, options.maxLen);
       }
       if (options.autoCorrections && Object.keys(options.autoCorrections).length > 0) {
         transcript = applyAutoCorrections(transcript, options.autoCorrections);

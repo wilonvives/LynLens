@@ -43,13 +43,20 @@ export const projectTools: LynLensToolDef[] = [
 
   {
     name: 'transcribe',
-    description: '对当前项目的视频进行语音转文字(本地 whisper.cpp)。返回带词级时间戳的字幕。',
+    description:
+      '对当前项目的视频进行语音转文字(本地 whisper.cpp)。返回带词级时间戳的字幕。scope=full 转完整视频(默认,字幕随剪切自动重映射);scope=edited 只转"剪剩下的音频"(所见即所得,更准,但改刀后字幕会失效需重转)。',
     schema: {
       projectId: z.string(),
       language: z.string().default('auto').describe('zh / en / auto'),
+      scope: z.enum(['full', 'edited']).default('full').describe('full=完整视频; edited=剪辑后音频'),
     },
-    handler: async ({ projectId, language }: { projectId: string; language: string }, engine) => {
+    handler: async (
+      { projectId, language, scope }: { projectId: string; language: string; scope: 'full' | 'edited' },
+      engine
+    ) => {
       const project = engine.projects.get(projectId);
+      const maxLen =
+        project.userOrientation === 'portrait' ? 12 : project.userOrientation === 'landscape' ? 24 : 16;
       engine.eventBus.emit({
         type: 'transcription.started',
         projectId,
@@ -58,6 +65,11 @@ export const projectTools: LynLensToolDef[] = [
       try {
         const transcript = await engine.transcription.transcribe(project.videoPath, {
           language,
+          scope,
+          maxLen,
+          cutRanges: project.cutRanges,
+          autoCorrections: engine.learningMemory.getAutoCorrections(),
+          properNouns: engine.learningMemory.getProperNouns(),
           onProgress: (percent) =>
             engine.eventBus.emit({ type: 'transcription.progress', projectId, percent }),
         });

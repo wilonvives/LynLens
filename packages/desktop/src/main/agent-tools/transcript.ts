@@ -75,6 +75,19 @@ export const transcriptTools: LynLensToolDef[] = [
   },
 
   {
+    name: 'clear_transcript',
+    description:
+      '一键清空整份字幕稿（删除所有字幕段）。不影响视频、删除段或剪切——只清字幕文字。用户想重来一份转录、或丢掉乱掉的字幕时用。返回清空的条数。',
+    schema: {
+      projectId: z.string(),
+    },
+    handler: async (args: { projectId: string }, engine) => {
+      const n = engine.projects.get(args.projectId).clearTranscript();
+      return text(n > 0 ? `已清空字幕稿（${n} 段）` : '字幕稿已经是空的');
+    },
+  },
+
+  {
     name: 'insert_transcript_segment_after',
     description:
       '在指定字幕段后面插入一段空白字幕(用户要手动加一行时)。新段会从锚点段的结束时间开始,默认 0.5 秒长(或到下一段开始为止)。返回新段的 id 和时间。',

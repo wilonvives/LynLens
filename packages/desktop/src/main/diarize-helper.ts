@@ -51,23 +51,22 @@ export async function runDiarization(
     throw new Error('请先生成字幕后再区分说话人');
   }
   const diarBase = resolveBundledDiarizationBase();
+  const count =
+    opts?.speakerCount && opts.speakerCount > 0 ? Math.floor(opts.speakerCount) : undefined;
   let diarEngine: DiarizationEngine;
   if (diarBase) {
     const paths = await resolveSherpaPaths(diarBase);
     if (paths) {
-      const count =
-        opts?.speakerCount && opts.speakerCount > 0
-          ? Math.floor(opts.speakerCount)
-          : undefined;
       diarEngine = new SherpaOnnxDiarizationEngine(paths, engine.ffmpegPaths, {
         clusterThreshold: 0.9,
         numClusters: count,
       });
     } else {
-      diarEngine = new MockDiarizationEngine(() => project.transcript);
+      // No sherpa bundle → mock. Honour the user's count; undefined → 1 speaker.
+      diarEngine = new MockDiarizationEngine(() => project.transcript, count);
     }
   } else {
-    diarEngine = new MockDiarizationEngine(() => project.transcript);
+    diarEngine = new MockDiarizationEngine(() => project.transcript, count);
   }
   const result = await diarEngine.diarize(project.videoPath);
   project.applyDiarization(result);

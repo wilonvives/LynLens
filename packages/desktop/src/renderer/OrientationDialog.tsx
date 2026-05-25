@@ -1,15 +1,21 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { getOrientation, type VideoMeta } from './core-browser';
 
 export type SpeakerCountChoice = 'auto' | 1 | 2 | 3 | 4;
+export type TranscribeScope = 'full' | 'edited';
+export type WhisperModelKey = 'base' | 'small' | 'medium' | 'large-v3';
 
 interface Props {
   videoMeta: VideoMeta;
   /** Existing orientation if the user set one already; used as default. */
   defaultOrientation?: 'landscape' | 'portrait' | null;
+  /** True when the project already has committed cuts — enables 模式B. */
+  hasCuts?: boolean;
   onConfirm: (opts: {
     orientation: 'landscape' | 'portrait';
     speakerCount: SpeakerCountChoice;
+    scope: TranscribeScope;
+    model: WhisperModelKey;
   }) => void;
   /**
    * Alternative to running whisper: read an existing .srt file as the
@@ -37,6 +43,7 @@ interface Props {
 export function OrientationDialog({
   videoMeta,
   defaultOrientation,
+  hasCuts = false,
   onConfirm,
   onImportSrt,
   onCancel,
@@ -50,6 +57,22 @@ export function OrientationDialog({
     defaultOrientation ?? autoOrient
   );
   const [speakerCount, setSpeakerCount] = useState<SpeakerCountChoice>('auto');
+  const [scope, setScope] = useState<TranscribeScope>('full');
+  const [model, setModel] = useState<WhisperModelKey>('base');
+  const [available, setAvailable] = useState<WhisperModelKey[]>(['base']);
+
+  // Which whisper models are downloaded — gates the 高质量 option.
+  useEffect(() => {
+    window.lynlens
+      .listWhisperModels()
+      .then((m) => {
+        if (m.length > 0) {
+          setAvailable(m);
+          setModel(m.includes('large-v3') ? 'large-v3' : m[0]);
+        }
+      })
+      .catch(() => {});
+  }, []);
 
   const countOptions: Array<{ value: SpeakerCountChoice; label: string; desc: string }> = [
     { value: 'auto', label: '自动', desc: 'AI 猜 (可能分太细)' },
@@ -129,6 +152,62 @@ export function OrientationDialog({
           </div>
         </div>
 
+        <div className="quick-row" style={{ marginTop: 14 }}>
+          <label className="quick-label">识别范围</label>
+          <div style={{ color: 'var(--text3)', fontSize: 11, marginBottom: 6 }}>
+            {hasCuts
+              ? '剪辑后视频：只识别剪剩的部分，所见即所得、更准。改刀后字幕会锁定需重转。'
+              : '当前没有剪切，两者一致。'}
+          </div>
+          <div className="copy-platform-row">
+            <label className={`copy-platform-chip ${scope === 'full' ? 'on' : ''}`} title="识别完整原片；字幕随剪切自动重映射、复原友好">
+              <input type="radio" name="scope" checked={scope === 'full'} onChange={() => setScope('full')} />
+              完整影片
+            </label>
+            <label
+              className={`copy-platform-chip ${scope === 'edited' ? 'on' : ''} ${!hasCuts ? 'disabled' : ''}`}
+              title={hasCuts ? '只识别剪剩的音频；改刀后需重转' : '需要先有剪切才能用'}
+              style={!hasCuts ? { opacity: 0.45, cursor: 'not-allowed' } : undefined}
+            >
+              <input
+                type="radio"
+                name="scope"
+                disabled={!hasCuts}
+                checked={scope === 'edited'}
+                onChange={() => setScope('edited')}
+              />
+              剪辑后影片
+            </label>
+          </div>
+        </div>
+
+        <div className="quick-row" style={{ marginTop: 14 }}>
+          <label className="quick-label">字幕模型</label>
+          <div style={{ color: 'var(--text3)', fontSize: 11, marginBottom: 6 }}>
+            高质量(large-v3)对粤语/口音更准，但更慢、需下载 ~3GB。
+          </div>
+          <div className="copy-platform-row">
+            <label className={`copy-platform-chip ${model === 'base' ? 'on' : ''}`} title="ggml-base, 最快, 内置">
+              <input type="radio" name="wmodel" checked={model === 'base'} onChange={() => setModel('base')} />
+              快速 (base)
+            </label>
+            <label
+              className={`copy-platform-chip ${model === 'large-v3' ? 'on' : ''} ${!available.includes('large-v3') ? 'disabled' : ''}`}
+              title={available.includes('large-v3') ? 'ggml-large-v3, 最准, 较慢' : '尚未下载, 需先下载 large-v3'}
+              style={!available.includes('large-v3') ? { opacity: 0.45, cursor: 'not-allowed' } : undefined}
+            >
+              <input
+                type="radio"
+                name="wmodel"
+                disabled={!available.includes('large-v3')}
+                checked={model === 'large-v3'}
+                onChange={() => setModel('large-v3')}
+              />
+              高质量 (large-v3){!available.includes('large-v3') ? ' · 需下载' : ''}
+            </label>
+          </div>
+        </div>
+
         <div className="dialog-actions">
           <button onClick={onCancel}>取消</button>
           {/* Secondary action: skip whisper, import an existing .srt
@@ -144,7 +223,7 @@ export function OrientationDialog({
           </button>
           <button
             className="primary"
-            onClick={() => onConfirm({ orientation, speakerCount })}
+            onClick={() => onConfirm({ orientation, speakerCount, scope, model })}
           >
             开始转录
           </button>

@@ -1,4 +1,5 @@
 export {
+  cutFingerprint,
   effectiveToSource,
   getEffectiveDuration,
   mapRangeToEffective,

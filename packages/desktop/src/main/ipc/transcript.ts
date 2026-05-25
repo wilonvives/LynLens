@@ -15,11 +15,17 @@ import {
   filterTranscriptByCuts,
   mergeShortEnglishSegments,
   parseSrt,
+  WhisperLocalService,
 } from '@lynlens/core';
 import type { IpcContext } from './_context';
+import { resolveWhisperModel, listWhisperModels, type WhisperModelKey } from '../whisper-resolve';
 
 export function registerTranscriptIpc(ctx: IpcContext): void {
   const { engine, getMainWindow } = ctx;
+
+  // Which whisper models are downloaded — the 字幕转录 dialog uses this to
+  // enable/disable the 高质量 (large-v3) option.
+  ipcMain.handle('list-whisper-models', async (): Promise<WhisperModelKey[]> => listWhisperModels());
 
   /**
    * Save SRT content to disk. Default destination is the source video's
@@ -209,6 +215,15 @@ export function registerTranscriptIpc(ctx: IpcContext): void {
     }
   );
 
+  ipcMain.handle('clear-transcript', async (_ev, projectId: string) => {
+    const project = engine.projects.get(projectId);
+    const n = project.clearTranscript();
+    if (n > 0 && project.projectPath) {
+      await engine.projects.saveProject(projectId);
+    }
+    return n;
+  });
+
   ipcMain.handle(
     'accept-transcript-suggestion',
     async (_ev, projectId: string, segmentId: string) => {
@@ -228,9 +243,30 @@ export function registerTranscriptIpc(ctx: IpcContext): void {
     async (
       _ev,
       projectId: string,
-      opts: { engine?: 'whisper-local' | 'openai-api'; language?: string }
+      opts: {
+        engine?: 'whisper-local' | 'openai-api';
+        language?: string;
+        /** 'full' = whole video (default); 'edited' = only the kept audio. */
+        scope?: 'full' | 'edited';
+        /** Whisper model to use. Falls back to best available if not present. */
+        model?: WhisperModelKey;
+      }
     ) => {
       const project = engine.projects.get(projectId);
+      // Honour the user's model choice (快速 base / 高质量 large-v3). Swap the
+      // engine's whisper service to the requested model for this transcribe.
+      if (opts.model) {
+        const resolved = resolveWhisperModel(opts.model);
+        if (resolved) {
+          engine.setTranscriptionService(
+            new WhisperLocalService({
+              binaryPath: resolved.binaryPath,
+              modelPath: resolved.modelPath,
+              ffmpegPaths: engine.ffmpegPaths,
+            })
+          );
+        }
+      }
       // Cap subtitle length per orientation. Without this whisper produces
       // "natural-pause" segments that can run 19+ chars even for portrait,
       // overflowing the on-screen subtitle frame.
@@ -263,6 +299,7 @@ export function registerTranscriptIpc(ctx: IpcContext): void {
         const transcript = await engine.transcription.transcribe(project.videoPath, {
           engine: opts.engine,
           language: opts.language,
+          scope: opts.scope,
           maxLen,
           cutRanges,
           autoCorrections,

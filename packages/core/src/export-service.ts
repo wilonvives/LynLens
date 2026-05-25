@@ -341,21 +341,32 @@ export class ExportService {
 }
 
 /**
- * Convert a container-level rotation metadata (0/90/180/270, CW positive in
- * ffprobe 'Display Matrix' side-data terms) to an ffmpeg filter chain that
- * re-applies the visual rotation after decoding.
+ * Convert a normalised rotation (0/90/180/270, as produced by
+ * `extractRotation` → `normalizeRotation` on the source's Display Matrix
+ * `rotation` field) into an ffmpeg transpose filter that bakes the visual
+ * rotation into the pixels — because export runs with `-noautorotate`.
  *
- * In ffmpeg's Display Matrix convention the rotation reported is the angle
- * the video should be displayed at. So if probe says -90 we need to rotate
- * the raw frames 90° CCW to see them upright (= transpose=2). If it says 90
- * we need 90° CW (= transpose=1). 180 is a double transpose.
+ * The handedness MUST match ffmpeg's own auto-rotation. ffmpeg rotates by
+ * `theta = -displayRotation`, i.e. it negates the Display Matrix angle before
+ * deciding the transpose. `extractRotation` stores the *un-negated* angle
+ * (e.g. an iPhone portrait clip reports display rotation -90 → normalised to
+ * 270), so the mapping here has to invert it back:
+ *
+ *   rotation 270 (display -90, iPhone portrait) → transpose=1 (90° CW)
+ *   rotation  90 (display -270 / +90)           → transpose=2 (90° CCW)
+ *   rotation 180                                 → double transpose
+ *
+ * Verified empirically: for a real iPhone clip (display matrix -90 →
+ * normalised 270), `transpose=1` produces byte-identical frames to ffmpeg's
+ * default auto-rotation. Getting this backwards exports portrait video
+ * 180° upside-down (the v0.5.x bug this mapping fixes).
  */
 function rotationFilter(rotation: number): string {
   const r = ((Math.round(rotation) % 360) + 360) % 360;
   switch (r) {
-    case 90:  return 'transpose=1,';
+    case 90:  return 'transpose=2,';
     case 180: return 'transpose=1,transpose=1,';
-    case 270: return 'transpose=2,';
+    case 270: return 'transpose=1,';
     default:  return '';
   }
 }

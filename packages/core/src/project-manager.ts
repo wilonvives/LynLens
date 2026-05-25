@@ -411,6 +411,27 @@ export class Project {
     return removed;
   }
 
+  /**
+   * Wipe the entire subtitle script — drops every transcript segment. Returns
+   * how many were removed. Used by the "清空字幕稿" button / `clear_transcript`
+   * MCP tool when the user wants to start the script over (e.g. before
+   * re-transcribing, or to discard a messy auto-transcription). Does NOT touch
+   * delete segments, ripple cuts, or the video — only the transcript text.
+   */
+  clearTranscript(): number {
+    if (!this.transcript) return 0;
+    const removed = this.transcript.segments.length;
+    if (removed === 0) return 0;
+    this.transcript.segments = [];
+    this.modifiedAt = new Date().toISOString();
+    this.eventBus.emit({
+      type: 'transcript.updated',
+      projectId: this.id,
+      segmentId: '__bulk__',
+    });
+    return removed;
+  }
+
   updateTranscriptSegment(segmentId: string, newText: string): boolean {
     if (!this.transcript) return false;
     const seg = this.transcript.segments.find((s) => s.id === segmentId);

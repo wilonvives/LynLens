@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   displaySpeakerName,
   effectiveToSource,
+  cutFingerprint as cutSetFingerprint,
   getLineLimits,
   getOrientation,
   listSpeakers,
@@ -260,6 +261,16 @@ export function SubtitlePanel({
   const cutRanges = useMemo<Range[]>(
     () => cutSegments.map((c) => ({ start: c.start, end: c.end })),
     [cutSegments]
+  );
+
+  // 模式B (scope='edited') 字幕是基于"某一套刀"生成的成片字幕。一旦刀法变了
+  // (增/删/复原)，成片时间轴就变了、字幕对不上 → 锁定整份字幕,提示重转。
+  const transcriptStale = useMemo<boolean>(
+    () =>
+      transcript?.scope === 'edited' &&
+      typeof transcript.cutFingerprint === 'string' &&
+      transcript.cutFingerprint !== cutSetFingerprint(cutRanges),
+    [transcript, cutRanges]
   );
 
   // Which subtitle is currently being spoken? Recomputed only when the
@@ -616,6 +627,21 @@ export function SubtitlePanel({
                 </button>
               );
             })()}
+            <button
+              className="sub-bulk-clean"
+              disabled={!projectId || !transcript || transcript.segments.length === 0}
+              onClick={async () => {
+                if (!projectId || !transcript || transcript.segments.length === 0) return;
+                const n = transcript.segments.length;
+                if (!confirm(`确定清空整份字幕稿（${n} 段）？\n不影响视频和剪切，之后可重新转录生成。`)) {
+                  return;
+                }
+                await window.lynlens.clearTranscript(projectId);
+              }}
+              title="删除所有字幕段，清空字幕稿（不影响视频/剪切，可重新转录）"
+            >
+              清空字幕稿
+            </button>
           </div>
           <div className="sub-settings-row">
             <label
@@ -682,11 +708,42 @@ export function SubtitlePanel({
           </div>
         </div>
       )}
+      {transcriptStale && (
+        <div
+          style={{
+            margin: '8px 0',
+            padding: '10px 12px',
+            borderRadius: 8,
+            background: 'rgba(255,170,0,0.12)',
+            border: '1px solid rgba(255,170,0,0.45)',
+            color: 'var(--text)',
+            fontSize: 13,
+            lineHeight: 1.5,
+          }}
+        >
+          ⚠ 剪辑已变化。这份字幕是"剪辑后影片"模式生成的，时间轴已和当前剪辑对不上，已锁定。请重新转录后继续。
+        </div>
+      )}
+      <div
+        style={
+          transcriptStale
+            ? { opacity: 0.45, pointerEvents: 'none', filter: 'grayscale(0.7)' }
+            : undefined
+        }
+      >
       {transcript.segments.map((seg, i) => {
         const currentText = draft[seg.id] ?? seg.text;
         const effStart = sourceToEffective(seg.start, cutRanges);
         const effEnd = sourceToEffective(seg.end, cutRanges);
-        const overlap = computeOverlapState(seg, effStart, effEnd, cutRanges);
+        // A 模式B (edited) transcript already IS the final-cut subtitle — every
+        // segment is kept content. Its source-time ranges may nominally bridge
+        // a cut seam, but that's a storage artifact, not a real "spans cut".
+        // So don't re-apply 已剪/横跨剪切 to it. (When stale, the whole panel is
+        // locked above anyway.)
+        const overlap =
+          transcript.scope === 'edited'
+            ? 'none'
+            : computeOverlapState(seg, effStart, effEnd, cutRanges);
         const isFullyCut = overlap === 'full';
         if (isFullyCut && hideFullyCut) return null;
         const isPartialCut = overlap === 'partial';
@@ -930,6 +987,7 @@ export function SubtitlePanel({
           </div>
         );
       })}
+      </div>
 
       {speakerEdit && projectId && (
         <SegmentSpeakerDialog

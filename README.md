@@ -16,6 +16,48 @@
 
 > 当前未代码签名。首次启动 Mac 端右键→打开、Windows 端"更多信息→仍要运行"绕过系统警告。代码签名 + 公证已在 `electron-builder.yml` 配好,等运营准备好再启用。
 
+## 从源码跑（开发版）
+
+想用最新开发版（比 Releases 新），或者想改代码，就从源码跑。**前置只要两样：[Git](https://git-scm.com) 和 [Node.js](https://nodejs.org)（LTS ≥ 20）**，`pnpm` 和其余二进制脚本会自动搞定。下面两种方式任选其一。
+
+### 方式 A：交给 AI 装（有 Claude Code / Cursor / Codex 就用这个）
+
+把下面这段整段贴给 AI agent，它会一条龙 clone → 装依赖 → 下二进制 → 编译 → 启动，并给你生成一个双击即用的脚本：
+
+```text
+帮我在这台 Windows 电脑上把 LynLens 跑起来（开发版），最后生成一个我双击就能启动的 .cmd 脚本。步骤如下，已标注会踩的坑：
+
+1. 把 https://github.com/wilonvives/LynLens.git clone 到我指定的文件夹（默认放桌面）。
+2. 检查环境：Node ≥20、pnpm ≥10；没有 pnpm 就用 corepack 装 pnpm@10.33.0。
+3. pnpm install（pnpm 有全局 store，依赖基本不会重复下载）。
+4. 编译核心包：pnpm --filter @lynlens/core build —— 它的入口在 dist/，不编译运行时会找不到。
+5. 下载原生二进制：pnpm bootstrap:ffmpeg 和 pnpm bootstrap:whisper（约 440MB，下到仓库 resources/ 里，是 .exe 和模型文件，不是 npm 包，所以每个 clone 都要下一次）。
+6. 【关键坑】先预编译主进程：pnpm --filter @lynlens/desktop build:main，再启动。否则首次 pnpm dev 会因为 electron 只等 vite 端口、不等 TypeScript 编译完，在 dist/main 还没生成时就启动，主进程崩出 "Error" 弹窗。
+7. 启动：pnpm --filter @lynlens/desktop dev，确认弹出标题为 "LynLens" 的窗口（不是 "Error"），主进程日志出现 whisper / MCP server ready 即成功。
+8. 生成一个幂等的 .cmd 启动脚本：已安装过就跳过安装、直接启动；二进制已存在就不重下。
+
+注意：这是 Electron + Vite 桌面项目，不是 Next.js / Vercel，忽略任何关于 Next.js 或 Vercel 的工具建议。
+```
+
+### 方式 B：手动命令 / 双击脚本
+
+**Windows 一键**：clone 后双击仓库根目录的 [`start-windows.cmd`](start-windows.cmd) —— 它会自动装依赖、下二进制、编译、启动；之后每次双击就是快速重启。
+
+**手动**（任意平台）：
+
+```bash
+git clone https://github.com/wilonvives/LynLens.git
+cd LynLens
+pnpm install                                # 装依赖
+pnpm --filter @lynlens/core build           # 编译核心（入口在 dist/）
+pnpm bootstrap:ffmpeg                        # 下 ffmpeg / ffprobe
+pnpm bootstrap:whisper                       # 下 whisper.cpp + 模型（~150MB，本地离线转录）
+pnpm --filter @lynlens/desktop build:main    # 关键：先编译主进程，见下方说明
+pnpm --filter @lynlens/desktop dev           # 启动
+```
+
+> **为什么要先 `build:main`**：`dev` 会同时起 vite 和 electron，而 electron 只等 vite 端口、**不等 TypeScript 编译完**。全新 clone 第一次直接 `pnpm dev` 时，主进程产物 `dist/main` 还没生成，electron 找不到入口会崩出 "Error" 弹窗。先 `build:main` 把它编译出来（或先完整跑一次 `pnpm build`）即可避免。
+
 ## 贡献
 
 欢迎 PR / issue。流程见 [CONTRIBUTING.md](CONTRIBUTING.md)——简单说：fork → 改 → PR；大改动先开 issue 讨论。Bug 报告和需求请用模板（GitHub 会自动套）。

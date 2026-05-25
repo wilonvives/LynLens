@@ -492,8 +492,17 @@ export interface IpcApi {
 
   transcribe(
     projectId: string,
-    opts: { engine?: 'whisper-local' | 'openai-api'; language?: string }
+    opts: {
+      engine?: 'whisper-local' | 'openai-api';
+      language?: string;
+      /** 'full' = transcribe whole video (default); 'edited' = only kept audio. */
+      scope?: 'full' | 'edited';
+      /** Whisper model key; falls back to best downloaded if absent. */
+      model?: 'base' | 'small' | 'medium' | 'large-v3';
+    }
   ): Promise<{ segmentCount: number; language: string; engine: string }>;
+  /** Which whisper models are downloaded on this machine. */
+  listWhisperModels(): Promise<Array<'base' | 'small' | 'medium' | 'large-v3'>>;
   updateTranscriptSegment(projectId: string, segmentId: string, newText: string): Promise<boolean>;
   /**
    * Nudge / overwrite a transcript segment's (start,end). Times are source
@@ -526,6 +535,8 @@ export interface IpcApi {
   removeTranscriptSegment(projectId: string, segmentId: string): Promise<boolean>;
   /** Bulk: remove every transcript segment whose text trims to empty. Returns count removed. */
   removeEmptyTranscriptSegments(projectId: string): Promise<number>;
+  /** Clear the ENTIRE subtitle script (all segments). Does not touch cuts/video. Returns count removed. */
+  clearTranscript(projectId: string): Promise<number>;
   /**
    * Insert a new empty transcript segment right after `afterSegmentId`. Used
    * by the "+" button on each card. Returns the new segment, or null if

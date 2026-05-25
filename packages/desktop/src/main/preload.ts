@@ -121,6 +121,7 @@ const api: IpcApi = {
   autoAssignUnlabeledSpeakers: (pid) =>
     ipcRenderer.invoke('auto-assign-unlabeled-speakers', pid),
   transcribe: (pid, opts) => ipcRenderer.invoke('transcribe', pid, opts),
+  listWhisperModels: () => ipcRenderer.invoke('list-whisper-models'),
   updateTranscriptSegment: (pid, sid, text) =>
     ipcRenderer.invoke('update-transcript-segment', pid, sid, text),
   updateTranscriptSegmentTime: (pid, sid, start, end) =>
@@ -133,6 +134,7 @@ const api: IpcApi = {
     ipcRenderer.invoke('remove-transcript-segment', pid, sid),
   removeEmptyTranscriptSegments: (pid) =>
     ipcRenderer.invoke('remove-empty-transcript-segments', pid),
+  clearTranscript: (pid) => ipcRenderer.invoke('clear-transcript', pid),
   insertTranscriptSegmentAfter: (pid, afterSid) =>
     ipcRenderer.invoke('insert-transcript-segment-after', pid, afterSid),
   acceptTranscriptSuggestion: (pid, sid) =>

@@ -53,3 +53,37 @@ describe('buildConcatFilter', () => {
     expect(videoMatches?.length).toBe(2);
   });
 });
+
+// Orientation regression (v0.5.x): iPhone portrait clips store LANDSCAPE
+// frames + a Display Matrix rotation. extractRotation() normalises that
+// signed angle to 0/90/180/270. The transpose direction MUST match ffmpeg's
+// own auto-rotation (which uses theta = -displayRotation), NOT the raw
+// display-matrix sign — otherwise portrait videos export 180° upside-down.
+//
+// Ground truth verified by extracting frames from a real iPhone clip
+// (Display Matrix rotation -90 → normalised 270) and SHA1-comparing against
+// `ffmpeg` default auto-rotation:
+//   rotation 270  →  transpose=1  (90° CW)   == autorotate output (identical bytes)
+//   rotation  90  →  transpose=2  (90° CCW)
+describe('buildConcatFilter rotation', () => {
+  it('emits no transpose when rotation is 0', () => {
+    const f = buildConcatFilter([{ start: 0, end: 5 }], 0);
+    expect(f).not.toContain('transpose');
+  });
+
+  it('rotation 270 (iPhone portrait, display matrix -90) uses transpose=1 (CW)', () => {
+    const f = buildConcatFilter([{ start: 0, end: 5 }], 270);
+    expect(f).toContain('[0:v]transpose=1,trim=');
+    expect(f).not.toContain('transpose=2');
+  });
+
+  it('rotation 90 uses transpose=2 (CCW)', () => {
+    const f = buildConcatFilter([{ start: 0, end: 5 }], 90);
+    expect(f).toContain('[0:v]transpose=2,trim=');
+  });
+
+  it('rotation 180 uses a double transpose', () => {
+    const f = buildConcatFilter([{ start: 0, end: 5 }], 180);
+    expect(f).toContain('transpose=1,transpose=1,trim=');
+  });
+});

@@ -171,6 +171,19 @@ export function computeKeepIntervals(
   return keeps;
 }
 
+/**
+ * Stable fingerprint of a cut set. An 'edited'-scope transcript stores the
+ * fingerprint it was built against; if the project's current fingerprint
+ * differs, the transcript is stale (the kept-audio it transcribed no longer
+ * matches the timeline) and the UI locks it until re-transcribe. Rounded to
+ * the millisecond so insignificant float jitter doesn't trip false staleness.
+ */
+export function cutFingerprint(cuts: readonly Range[]): string {
+  return normalizeCuts(cuts)
+    .map((c) => `${Math.round(c.start * 1000)}-${Math.round(c.end * 1000)}`)
+    .join('|');
+}
+
 // ---------- internal ----------
 
 function cumulativeCutBefore(sortedCuts: readonly Range[], sourceSec: number): number {

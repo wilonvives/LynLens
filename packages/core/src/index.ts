@@ -179,6 +179,7 @@ export {
 import * as ripple from './ripple';
 export const addCutRange = ripple.addCutRange;
 export const computeKeepIntervals = ripple.computeKeepIntervals;
+export const cutFingerprint = ripple.cutFingerprint;
 export const effectiveToSource = ripple.effectiveToSource;
 export const getEffectiveDuration = ripple.getEffectiveDuration;
 export const mapRangeToEffective = ripple.mapRangeToEffective;

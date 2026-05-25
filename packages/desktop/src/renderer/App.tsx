@@ -662,6 +662,7 @@ export function App() {
         <OrientationDialog
           videoMeta={store.videoMeta}
           defaultOrientation={store.userOrientation}
+          hasCuts={cutSegmentsForPanel.length > 0}
           onCancel={() => setShowOrientDialog(false)}
           onImportSrt={async (orientation) => {
             // Skip whisper entirely; just read an existing .srt as the
@@ -695,7 +696,7 @@ export function App() {
               alert(`字幕导入失败:\n\n${msg}`);
             }
           }}
-          onConfirm={async ({ orientation, speakerCount }) => {
+          onConfirm={async ({ orientation, speakerCount, scope, model }) => {
             setShowOrientDialog(false);
             if (!store.projectId) return;
             const pid = store.projectId;
@@ -704,9 +705,9 @@ export function App() {
             await window.lynlens.setUserOrientation(pid, orientation);
             store.setUserOrientation(orientation);
 
-            // 2. Run whisper.
+            // 2. Run whisper (scope = 完整影片 / 剪辑后影片; model = base / large-v3).
             try {
-              await window.lynlens.transcribe(pid, { language: 'auto' });
+              await window.lynlens.transcribe(pid, { language: 'auto', scope, model });
             } catch (err) {
               alert(`转录失败: ${(err as Error).message}`);
               return;

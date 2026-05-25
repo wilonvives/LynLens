@@ -11,6 +11,7 @@ import {
   setCodexContext,
   loadSavedProvider,
 } from './agent-dispatcher';
+import { resolveWhisperModel } from './whisper-resolve';
 import { startMcpHttpServer, type McpHttpServer } from './mcp-http-server';
 import { startMediaHttpServer } from './media-http-server';
 import { setupAutoUpdater } from './auto-updater';
@@ -116,25 +117,9 @@ function resolveBundledFfmpegPaths(): FfmpegPaths | undefined {
   return undefined;
 }
 
-function resolveBundledWhisperPaths(): { binaryPath: string; modelPath: string } | null {
-  const exe = process.platform === 'win32' ? '.exe' : '';
-  const platformDir =
-    process.platform === 'win32'
-      ? 'win'
-      : process.platform === 'darwin'
-        ? process.arch === 'arm64' ? 'mac-arm64' : 'mac-x64'
-        : null;
-  if (!platformDir) return null;
-  const dir = app.isPackaged
-    ? path.join(process.resourcesPath, 'whisper')
-    : path.join(__dirname, '..', '..', '..', 'resources', 'whisper', platformDir);
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
-  const fs = require('node:fs') as typeof import('node:fs');
-  const binaryPath = path.join(dir, `whisper-cli${exe}`);
-  const modelPath = path.join(dir, 'ggml-base.bin');
-  if (!fs.existsSync(binaryPath) || !fs.existsSync(modelPath)) return null;
-  return { binaryPath, modelPath };
-}
+// Whisper binary/model resolution lives in ./whisper-resolve (shared with the
+// transcribe IPC handler so the dialog's model choice and the startup default
+// use the same logic).
 
 /**
  * Locate the sherpa-onnx diarization assets the bootstrap script writes
@@ -162,7 +147,7 @@ function resolveBundledDiarizationBase(): string | null {
 const engine = new LynLensEngine({ ffmpegPaths: resolveBundledFfmpegPaths() });
 // Swap in the bundled WhisperLocalService when binaries are available.
 {
-  const whisper = resolveBundledWhisperPaths();
+  const whisper = resolveWhisperModel();
   if (whisper) {
     engine.setTranscriptionService(
       new WhisperLocalService({
@@ -171,7 +156,10 @@ const engine = new LynLensEngine({ ffmpegPaths: resolveBundledFfmpegPaths() });
         ffmpegPaths: engine.ffmpegPaths,
       })
     );
-    console.log('[lynlens] whisper.cpp local transcription ready:', whisper.binaryPath);
+    console.log(
+      '[lynlens] whisper.cpp local transcription ready, model:',
+      path.basename(whisper.modelPath)
+    );
   } else {
     console.log('[lynlens] whisper binaries not found; transcription disabled');
   }

@@ -89,6 +89,23 @@ export interface Transcript {
   engine: string;
   model: string;
   segments: TranscriptSegment[];
+  /**
+   * How this transcript was produced relative to cuts:
+   *   'full'   — transcribed the whole source video; times are source-time and
+   *              stay valid as the user adds/removes cuts (display remaps them).
+   *   'edited' — transcribed ONLY the kept (post-cut) audio, then mapped back to
+   *              source-time. Matches the final cut exactly, but is invalidated
+   *              the moment the cut set changes (see cutFingerprint).
+   * Absent → legacy/full behaviour.
+   */
+  scope?: 'full' | 'edited';
+  /**
+   * Fingerprint of the cut set this transcript was generated against. Only
+   * meaningful for scope='edited'. When the project's current cut fingerprint
+   * differs, the transcript no longer lines up with the audio and the UI locks
+   * it (grey) until the user re-transcribes.
+   */
+  cutFingerprint?: string;
 }
 
 export interface QcpProject {
