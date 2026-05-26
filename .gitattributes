@@ -1,0 +1,8 @@
+# Windows batch scripts MUST be checked out with CRLF line endings — cmd.exe
+# mis-parses goto/labels in LF-only .cmd/.bat files (the script silently fails
+# to run on double-click). Force CRLF regardless of the user's core.autocrlf.
+*.cmd text eol=crlf
+*.bat text eol=crlf
+
+# macOS launcher stays LF.
+*.command text eol=lf
