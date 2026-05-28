@@ -51,6 +51,16 @@ describe('detectFillers', () => {
     const hits = detectFillers(t);
     expect(hits).toHaveLength(0);
   });
+
+  it('skips zero-duration segments (would crash AI-mark with end<=start)', () => {
+    const t = mk('zh', [
+      { start: 523.72, end: 523.72, text: '嗯' }, // degenerate
+      { start: 600, end: 600.5, text: '那个' }, // valid
+    ]);
+    const hits = detectFillers(t);
+    expect(hits.every((h) => h.end > h.start)).toBe(true);
+    expect(hits.map((h) => h.text.trim())).toEqual(['那个']);
+  });
 });
 
 describe('detectRetakes', () => {

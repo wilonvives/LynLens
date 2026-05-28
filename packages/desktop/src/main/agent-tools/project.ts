@@ -12,7 +12,7 @@ export const projectTools: LynLensToolDef[] = [
   {
     name: 'get_project_state',
     description:
-      '获取当前项目状态(视频信息、字幕段文本、所有删除段、AI 模式、高光变体)。返回精简结构:字幕段只含 id/start/end/text,不含词级时间戳(省 token)。',
+      '获取当前项目概览(视频信息、删除段、AI 模式、高光变体)。为避免超出工具结果大小上限,字幕正文不在这里返回——只给 segmentCount,请用 get_transcript 分页读取字幕文本。删除段只含 id/start/end/status/source。',
     schema: {
       projectId: z
         .string()
@@ -21,21 +21,25 @@ export const projectTools: LynLensToolDef[] = [
     handler: async ({ projectId }: { projectId: string }, engine) => {
       const project = engine.projects.get(projectId);
       const qcp = project.toQcp();
+      // Keep this UNDER the MCP tool-result size cap even for long videos:
+      // omit the (potentially huge) transcript body and slim the delete-mark
+      // list to essentials. Full transcript text → get_transcript (paginated).
       const slim = {
         ...qcp,
         transcript: qcp.transcript
           ? {
               language: qcp.transcript.language,
               segmentCount: qcp.transcript.segments.length,
-              segments: qcp.transcript.segments.map((s) => ({
-                id: s.id,
-                start: Number(s.start.toFixed(3)),
-                end: Number(s.end.toFixed(3)),
-                text: s.text,
-                ...(s.speaker ? { speaker: s.speaker } : {}),
-              })),
+              note: '字幕正文已省略以免超限,请用 get_transcript(projectId, offset, limit) 分页读取',
             }
           : null,
+        deleteSegments: qcp.deleteSegments.map((d) => ({
+          id: d.id,
+          start: Number(d.start.toFixed(3)),
+          end: Number(d.end.toFixed(3)),
+          status: d.status,
+          source: d.source,
+        })),
       };
       return { content: [{ type: 'text', text: JSON.stringify(slim, null, 2) }] };
     },

@@ -18,6 +18,31 @@ import { type LynLensToolDef, okOrFail, text } from './types';
 
 export const transcriptTools: LynLensToolDef[] = [
   {
+    name: 'get_transcript',
+    description:
+      '分页读取字幕稿正文(避免一次性超出工具结果大小上限)。只返回每段 id+text(省 token),用于通读字幕、挑错别字/衍音字/人名,再用 suggest_transcript_fix(歧义) 或 replace_in_transcript(全局替换) 改。长字幕请用 offset 翻页:每次 offset += returned,直到 returned < limit。',
+    schema: {
+      projectId: z.string(),
+      offset: z.number().int().min(0).default(0).describe('从第几段开始,默认 0'),
+      limit: z.number().int().min(1).max(400).default(200).describe('一次返回多少段,默认 200'),
+    },
+    handler: async (
+      { projectId, offset, limit }: { projectId: string; offset: number; limit: number },
+      engine
+    ) => {
+      const t = engine.projects.get(projectId).transcript;
+      if (!t || t.segments.length === 0) return text('当前没有字幕稿,请先转录。');
+      const segments = t.segments.slice(offset, offset + limit).map((s) => ({
+        id: s.id,
+        text: s.text,
+        ...(s.speaker ? { spk: s.speaker } : {}),
+      }));
+      return text(
+        JSON.stringify({ total: t.segments.length, offset, returned: segments.length, segments })
+      );
+    },
+  },
+  {
     name: 'update_transcript_segment',
     description:
       '【直接改】修正某一段字幕文字,立刻生效,不经过审核。只在"很明显不需要确认"的机械错误时用(如字面打错);有歧义请用 suggest_transcript_fix。',

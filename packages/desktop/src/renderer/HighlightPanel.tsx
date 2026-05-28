@@ -103,6 +103,12 @@ export function HighlightPanel({
         .sort((a, b) => a.start - b.start),
     [segments]
   );
+  // Mirror ref so the RAF playback loop can read the latest cuts without
+  // re-mounting every time `segments` changes (see CLAUDE.md React patterns).
+  const cutRangesRef = useRef<Range[]>(cutRanges);
+  useEffect(() => {
+    cutRangesRef.current = cutRanges;
+  }, [cutRanges]);
 
   const [variants, setVariants] = useState<HighlightVariant[]>([]);
   const [showDialog, setShowDialog] = useState(false);
@@ -306,6 +312,21 @@ export function HighlightPanel({
         // Always mirror current time into state so the scrubber playhead
         // moves whether or not a variant is selected.
         setVideoCurrentTime(v.currentTime);
+        // The highlight tab works on the POST-CUT video. ALWAYS skip committed
+        // ripple cuts (same as the precision player) — otherwise the player
+        // shows the short effective duration but actually plays straight
+        // through the cut-out regions of the full source. Skip is suppressed
+        // only while a variant is being previewed (that loop owns seeking, and
+        // variant segments live in kept regions anyway).
+        if (!previewMode && Number.isFinite(v.duration)) {
+          const cut = cutRangesRef.current.find(
+            (c) => v.currentTime >= c.start && v.currentTime < c.end
+          );
+          if (cut) {
+            const target = Math.min(v.duration, cut.end + 0.02);
+            if (Number.isFinite(target)) v.currentTime = target;
+          }
+        }
         if (selectedVariant && selectedVariant.segments.length > 0) {
           const segs = selectedVariant.segments;
           const cur = segs[playingSegIdx] ?? segs[0];

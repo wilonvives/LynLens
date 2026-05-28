@@ -178,6 +178,13 @@ export class WhisperLocalService implements TranscriptionService {
         '--output-file', outputBase,
         '--split-on-word',
         '--print-progress',
+        // Reset decoder context every 30s window (whisper.cpp default is -1 =
+        // "carry ALL prior text as context"). On long files that default makes
+        // whisper LOOP: once a window emits a repeat, the repeated text is fed
+        // forward and reinforces itself, producing a stretch of hallucinated,
+        // duplicated subtitles in the middle (which then made the retake
+        // detector flag the whole region). `-mc 0` breaks that propagation.
+        '-mc', '0',
       ];
       // NOTE: we deliberately do NOT pass `--max-len`. whisper's own length
       // cap chops segments mid-phrase (and mid-English-word: "signboard" →
@@ -646,15 +653,14 @@ function finalizePiece(chars: TimedChar[], a: number, b: number): TranscriptSegm
     if (isPunctChar(c.ch) || /\s/.test(c.ch)) continue;
     words.push({ w: c.ch, start: c.start, end: c.end });
   }
-  return [
-    {
-      id: `t_${uuid().slice(0, 8)}`,
-      start: chars[s].start,
-      end: chars[e - 1].end,
-      text,
-      words,
-    },
-  ];
+  // Guarantee a positive duration. whisper occasionally emits a zero-duration
+  // token (from==to), which would yield start==end here — and a downstream
+  // delete mark built from it (filler/retake) would be rejected by the
+  // SegmentManager (end must be > start). Nudge the end by 1ms so the card
+  // keeps its text but is never degenerate.
+  const start = chars[s].start;
+  const end = Math.max(chars[e - 1].end, start + 0.001);
+  return [{ id: `t_${uuid().slice(0, 8)}`, start, end, text, words }];
 }
 
 /**
@@ -1001,6 +1007,10 @@ export function detectFillers(
   const fillers = new Set((extraFillers ? [...table, ...extraFillers] : table).map((f) => f.toLowerCase()));
   const out: FillerMatch[] = [];
   for (const seg of transcript.segments) {
+    // Skip degenerate (zero/negative-duration) segments — a delete mark built
+    // from one would have end<=start and the SegmentManager rejects it, which
+    // would crash the whole AI-mark pass.
+    if (seg.end <= seg.start) continue;
     const cleaned = seg.text
       .toLowerCase()
       .replace(/[\s，,。.!?！？:：、"'-]/g, '');
@@ -1045,6 +1055,8 @@ export function detectRetakes(
   const out: FillerMatch[] = [];
   const segs = transcript.segments;
   for (let i = 1; i < segs.length; i++) {
+    // Skip if the segment we'd mark (the earlier one) is zero/negative length.
+    if (segs[i - 1].end <= segs[i - 1].start) continue;
     const a = normalizeText(segs[i - 1].text);
     const b = normalizeText(segs[i].text);
     if (a.length < 4 || b.length < 4) continue;
