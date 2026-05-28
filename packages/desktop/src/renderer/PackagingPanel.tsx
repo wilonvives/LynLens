@@ -77,6 +77,11 @@ interface PreviewState {
   durationSeconds: number;
   /** Thumbnail absolute paths (0..24 frames) for the bottom timeline strip. */
   thumbnails: string[];
+  /**
+   * 整片-with-cuts only: kept source ranges. When set, `rawPath` is the RAW
+   * source and the player stitches these slices live (no giant concat).
+   */
+  clips?: Array<{ fromSec: number; toSec: number }>;
 }
 
 export function PackagingPanel({ effectiveDuration }: Props): JSX.Element {
@@ -292,6 +297,7 @@ export function PackagingPanel({ effectiveDuration }: Props): JSX.Element {
           playlist: result.playlist,
           durationSeconds: result.durationSeconds,
           thumbnails: result.thumbnails ?? [],
+          clips: result.clips,
         });
         setCurrentTimeSec(0);
       })
@@ -787,6 +793,7 @@ export function PackagingPanel({ effectiveDuration }: Props): JSX.Element {
                         : preview.videoUrl
                     }
                     spec={plan?.templateSpec ?? { cues: [] }}
+                    clips={preview.clips}
                     durationInSeconds={preview.durationSeconds}
                     fps={videoMeta.fps}
                     width={videoMeta.width}

@@ -14,7 +14,7 @@
  *
  * Effects + sounds editing live in the 画面 / 声音 tabs (separate editors).
  */
-import { useMemo } from 'react';
+import { Fragment, useMemo, useState } from 'react';
 import type {
   BusinessExplainerSpec,
   SimpleSubtitleStyle,
@@ -66,6 +66,32 @@ export function PackagingSpecEditor({
     onSpecChange({ ...spec, cues });
   }
 
+  /**
+   * Remove a cue line entirely. Packaging now OVER-captures sentences (so a
+   * straddling head/tail line never goes missing); deleting the occasional
+   * extra here is the intended counterpart. The preceding cue simply extends
+   * to the next remaining cue's start.
+   */
+  function deleteCue(idx: number): void {
+    onSpecChange({ ...spec, cues: spec.cues.filter((_, i) => i !== idx) });
+  }
+
+  /**
+   * Insert a blank line at array position `idx` (0 = before first, cues.length
+   * = after last). Its start is interpolated between the neighbours so it lands
+   * exactly there on the timeline. Driven by the hover-revealed "+" between
+   * cards — add a sentence wherever you want, type the text + pick a style.
+   */
+  function insertCueAt(idx: number): void {
+    const style: SpecCueStyle = spec.subtitleStyle ? 'simple' : 'strong';
+    const prevStart = idx > 0 ? spec.cues[idx - 1].start : 0;
+    const nextStart = idx < spec.cues.length ? spec.cues[idx].start : prevStart + 2;
+    const start = (prevStart + nextStart) / 2;
+    const next = [...spec.cues];
+    next.splice(idx, 0, { start, text: '新字幕', style });
+    onSpecChange({ ...spec, cues: next });
+  }
+
   function setStyle(idx: number, style: SpecCueStyle): void {
     const cue = spec.cues[idx];
     const patch: Partial<SpecCue> = { style };
@@ -100,18 +126,74 @@ export function PackagingSpecEditor({
           ? '逐行改文字、画重点(标的词变黄加粗),改完左边实时变。'
           : '逐行改样式/关键词/拆节,改完左边预览实时变。镜头特效在「画面」、音效在「声音」。'}
       </div>
-      {spec.cues.map((cue, idx) => (
-        <CueCard
-          key={idx}
-          cue={cue}
-          active={idx === activeIdx}
-          onSeek={() => onSeekToCue?.(cue.start)}
-          onText={(text) => patchCue(idx, { text })}
-          onStyle={(s) => setStyle(idx, s)}
-          onHighlight={(highlight) => patchCue(idx, { highlight })}
-          onSegments={(segments) => patchCue(idx, { segments })}
-        />
-      ))}
+      {/* Cue list with hover-revealed "+" inserters in every gap (before the
+          first, between each pair, after the last). The gaps ARE the spacing,
+          so the list isn't cluttered — the "+" only shows on hover. */}
+      <div style={{ display: 'flex', flexDirection: 'column' }}>
+        {spec.cues.map((cue, idx) => (
+          <Fragment key={idx}>
+            <InsertGap onInsert={() => insertCueAt(idx)} />
+            <CueCard
+              cue={cue}
+              active={idx === activeIdx}
+              onSeek={() => onSeekToCue?.(cue.start)}
+              onText={(text) => patchCue(idx, { text })}
+              onStyle={(s) => setStyle(idx, s)}
+              onHighlight={(highlight) => patchCue(idx, { highlight })}
+              onSegments={(segments) => patchCue(idx, { segments })}
+              onDelete={() => deleteCue(idx)}
+            />
+          </Fragment>
+        ))}
+        <InsertGap onInsert={() => insertCueAt(spec.cues.length)} />
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Thin gap between cue cards. Invisible at rest (just provides the spacing);
+ * on hover it grows a little and shows a centred "+" on an accent line. Click
+ * inserts a new sentence at this exact position.
+ */
+function InsertGap({ onInsert }: { onInsert: () => void }): JSX.Element {
+  const [hover, setHover] = useState(false);
+  return (
+    <div
+      onMouseEnter={() => setHover(true)}
+      onMouseLeave={() => setHover(false)}
+      onClick={onInsert}
+      title="在这里插入一句字幕"
+      style={{
+        height: hover ? 20 : 8,
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        cursor: 'pointer',
+        transition: 'height 0.1s ease',
+      }}
+    >
+      {hover && (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6, width: '100%' }}>
+          <div style={{ flex: 1, height: 1, background: 'var(--accent)', opacity: 0.45 }} />
+          <span
+            style={{
+              flexShrink: 0,
+              width: 18,
+              height: 18,
+              borderRadius: 9,
+              background: 'var(--accent)',
+              color: '#fff',
+              fontSize: 13,
+              lineHeight: '18px',
+              textAlign: 'center',
+            }}
+          >
+            +
+          </span>
+          <div style={{ flex: 1, height: 1, background: 'var(--accent)', opacity: 0.45 }} />
+        </div>
+      )}
     </div>
   );
 }
@@ -249,6 +331,7 @@ interface CueCardProps {
   onStyle: (style: SpecCueStyle) => void;
   onHighlight: (highlight: string[]) => void;
   onSegments: (segments: string[]) => void;
+  onDelete: () => void;
 }
 
 function CueCard({
@@ -259,6 +342,7 @@ function CueCard({
   onStyle,
   onHighlight,
   onSegments,
+  onDelete,
 }: CueCardProps): JSX.Element {
   return (
     <div
@@ -291,6 +375,30 @@ function CueCard({
             borderRadius: 4,
           }}
         />
+        {/* Delete this line — for trimming the occasional over-captured /
+            duplicate sentence. stopPropagation so it doesn't also seek. */}
+        <button
+          onClick={(e) => {
+            e.stopPropagation();
+            onDelete();
+          }}
+          title="删除这一句字幕"
+          style={{
+            flexShrink: 0,
+            width: 24,
+            height: 24,
+            fontSize: 13,
+            lineHeight: 1,
+            padding: 0,
+            background: 'transparent',
+            color: '#ff6b6b',
+            border: '1px solid #3a2a2a',
+            borderRadius: 4,
+            cursor: 'pointer',
+          }}
+        >
+          ✕
+        </button>
       </div>
 
       {/* 通用 (simple) cues: no style picker — every line is the same

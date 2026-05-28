@@ -304,6 +304,24 @@ button.ai.active {
 .toolbar .spacer {
   flex: 1;
 }
+
+/* "打快查看" speed button — a single button reused by the 粗剪 toolbar and
+   the 高光 player transport. Each tap cycles 1× → 2× → 4× → 6×. Tints with the
+   accent colour while boosted (>1×) so it's obvious you're not at normal speed. */
+.speed-btn-cycle {
+  padding: 5px 9px;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+  min-width: 36px;
+  text-align: center;
+  flex-shrink: 0;
+}
+.speed-btn-cycle.boosted {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
 .toolbar .stats {
   color: var(--text2);
   font-variant-numeric: tabular-nums;

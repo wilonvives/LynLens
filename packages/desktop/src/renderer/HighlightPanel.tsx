@@ -1,11 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { HighlightStyle, HighlightVariant, Range, VariantStatus } from '@lynlens/core';
-import { getVariantStatus, sourceToEffective, effectiveToSource } from './core-browser';
+import { getVariantStatus, sourceToEffective } from './core-browser';
 import { ExportDialog } from './ExportDialog';
 import { GenerateHighlightDialog } from './GenerateHighlightDialog';
 import { HighlightTimeline } from './HighlightTimeline';
 import { VariantCard } from './VariantCard';
 import { Resizer } from './Resizer';
+import { SpeedControl } from './components/SpeedControl';
+import { useApplyPlaybackRate } from './hooks/useApplyPlaybackRate';
 import { useStore } from './store';
 import { formatTime } from './util';
 
@@ -93,6 +95,8 @@ export function HighlightPanel({
   const videoUrl = useStore((s) => s.videoUrl);
   const transcript = useStore((s) => s.transcript);
   const segments = useStore((s) => s.segments);
+  const playbackRate = useStore((s) => s.playbackRate);
+  const setPlaybackRate = useStore((s) => s.setPlaybackRate);
   // Derive cut ranges the same way App.tsx does (status='cut' segments).
   // Pass into VariantCard's status check so stale / broken variants flag up.
   const cutRanges = useMemo<Range[]>(
@@ -142,6 +146,10 @@ export function HighlightPanel({
   const videoRef = useRef<HTMLVideoElement>(null);
   const playerWrapRef = useRef<HTMLDivElement | null>(null);
   const [playerWrapSize, setPlayerWrapSize] = useState({ w: 0, h: 0 });
+
+  // Apply the shared "打快" speed to THIS player's video too (its own
+  // element, not the 粗剪 one — hence the selector). Re-applied on src reload.
+  useApplyPlaybackRate(videoRef, playbackRate, videoUrl, '.highlight-player-video video');
 
   const [selectedVariantId, setSelectedVariantId] = useState<string | null>(null);
   const [playingSegIdx, setPlayingSegIdx] = useState(0);
@@ -312,13 +320,13 @@ export function HighlightPanel({
         // Always mirror current time into state so the scrubber playhead
         // moves whether or not a variant is selected.
         setVideoCurrentTime(v.currentTime);
-        // The highlight tab works on the POST-CUT video. ALWAYS skip committed
-        // ripple cuts (same as the precision player) — otherwise the player
-        // shows the short effective duration but actually plays straight
-        // through the cut-out regions of the full source. Skip is suppressed
-        // only while a variant is being previewed (that loop owns seeking, and
-        // variant segments live in kept regions anyway).
-        if (!previewMode && Number.isFinite(v.duration)) {
+        // The highlight tab works on the POST-CUT video — ALWAYS skip committed
+        // ripple cuts, INCLUDING during variant preview. A correctly-built
+        // variant never has a cut inside a segment, so this is a no-op there;
+        // but for a legacy / stale variant whose segment spans a cut it stops
+        // the player from replaying deleted footage ("一按预览就播放完整视频").
+        // The variant-hop logic below still owns jumping between segments.
+        if (Number.isFinite(v.duration)) {
           const cut = cutRangesRef.current.find(
             (c) => v.currentTime >= c.start && v.currentTime < c.end
           );
@@ -521,7 +529,7 @@ export function HighlightPanel({
       return (
         name
           .trim()
-          .replace(/[\\/:*?"<>| -]/g, '_')
+          .replace(/[\\/:*?"<>|-]/g, '_')
           .slice(0, 80) || 'highlight'
       );
     }
@@ -835,6 +843,11 @@ export function HighlightPanel({
                 </button>
               </div>
               <div className="highlight-player-meta-right">
+                <SpeedControl
+                  rate={playbackRate}
+                  onChange={setPlaybackRate}
+                  disabled={!videoUrl}
+                />
                 {selectedVariant && (
                   <span className="highlight-player-segchip">
                     段 {playingSegIdx + 1} / {selectedVariant.segments.length}
@@ -1031,6 +1044,7 @@ export function HighlightPanel({
                   playingSegIdx={v.id === selectedVariantId ? playingSegIdx : null}
                   status={status}
                   transcript={transcript}
+                  cutRanges={cutRanges}
                   projectId={projectId}
                   selected={selectedIds.has(v.id)}
                   batchActive={selectedIds.size > 0}
@@ -1261,12 +1275,26 @@ export function HighlightPanel({
           title={`导出高光 — ${exportingVariant.title}`}
           defaultPath={(() => {
             const srcBase = videoPath?.split(/[\\/]/).pop() ?? 'output.mp4';
+            // Strip characters illegal in (Windows) filenames from the title
+            // (e.g. "?", ":") — otherwise ffmpeg can't open the output and the
+            // export dies with "Invalid argument". Replace with a space.
+            const cleanTitle = exportingVariant.title
+              .replace(/[<>:"/\\|?*-]/g, ' ')
+              .replace(/\s+/g, ' ')
+              .trim();
             return (
               srcBase.replace(/\.[^.]+$/, '') +
-              `_高光_${exportingVariant.title}.mp4`
+              `_高光_${cleanTitle}.mp4`
             );
           })()}
-          onClose={() => setExportingVariant(null)}
+          onClose={() => {
+            // "取消导出" must actually ABORT an in-flight export — not just
+            // hide the dialog. Otherwise ffmpeg keeps running and the .then()
+            // below fires a bogus "导出完成" alert after the user cancelled.
+            // cancel-export no-ops when nothing is running.
+            if (projectId) void window.lynlens.cancelExport(projectId);
+            setExportingVariant(null);
+          }}
           onConfirm={(args) => {
             void window.lynlens
               .exportHighlight(

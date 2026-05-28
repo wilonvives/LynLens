@@ -44,6 +44,7 @@ import {
   probeColorMeta,
   probeVideo,
   renderPackagingPreview,
+  subtractCutsFromRange,
   type LynLensEngine,
   type PackagingPlan,
   type Project,
@@ -52,13 +53,27 @@ import {
 import { runOneShotViaCurrentProvider } from '../agent-dispatcher';
 import type { IpcContext } from './_context';
 
-/** Keep ranges for a variant (ordered segments) or 整片 (keep-intervals). */
+/**
+ * Keep ranges for a variant (ordered segments) or 整片 (keep-intervals).
+ *
+ * CRITICAL: this MUST match the ranges `prepare-packaging-preview` and
+ * `export-packaged` use, because the spec cues are authored in this range
+ * set's OUTPUT-time playlist. If they diverge, the花字 lands at the wrong
+ * time. For a variant we subtract the project cuts so a segment that spans a
+ * cut becomes kept-only pieces — same as everywhere else. Without this the
+ * cue times referenced the un-rippled (e.g. 13-min) timeline. 整片 already
+ * uses cut-aware computeKeepIntervals.
+ */
 function keepRangesFor(project: Project, variantId: string | null): Range[] {
   if (variantId) {
     const variant = project.findHighlightVariant(variantId);
     if (!variant) throw new Error(`找不到高光变体: ${variantId}`);
     if (variant.segments.length === 0) throw new Error('变体没有片段');
-    return variant.segments.map((s) => ({ start: s.start, end: s.end }));
+    const ranges = variant.segments.flatMap((s) =>
+      subtractCutsFromRange({ start: s.start, end: s.end }, project.cutRanges)
+    );
+    if (ranges.length === 0) throw new Error('变体所有片段都在已剪切区域内');
+    return ranges;
   }
   const ranges = computeKeepIntervals(
     project.videoMeta.duration,
@@ -121,8 +136,15 @@ async function stampBt709(
 }
 
 interface RemotionRenderArgs {
-  videoSrc: string; // basename inside remotion public/
+  videoSrc: string; // basename inside remotion public/, OR an http(s) URL (raw source)
   spec: unknown;
+  /**
+   * Optional kept source ranges. When set, `videoSrc` is the RAW source (an
+   * http URL) and the composition stitches these slices live via OffthreadVideo
+   * — instead of decoding a pre-rendered many-segment concat, which makes the
+   * compositor emit NAL garbage on deep seeks. Avoids the 933MB source copy too.
+   */
+  clips?: Array<{ fromSec: number; toSec: number }>;
   durationInSeconds: number;
   fps: number;
   width: number;
@@ -172,6 +194,7 @@ function spawnRemotionRender(args: RemotionRenderArgs): Promise<void> {
       JSON.stringify({
         videoSrc: args.videoSrc,
         spec: args.spec,
+        ...(args.clips ? { clips: args.clips } : {}),
         durationInSeconds: args.durationInSeconds,
         fps: args.fps,
         width: args.width,
@@ -225,7 +248,19 @@ function spawnRemotionRender(args: RemotionRenderArgs): Promise<void> {
       }
     });
     child.stderr.on('data', (chunk: Buffer) => {
-      stderrTail = (stderrTail + chunk.toString()).slice(-2000);
+      // render.mjs spams `\r[remotion] render NN%` progress to stderr; if we
+      // keep that it pushes the actual crash message out of the capped buffer
+      // (which is exactly what hid the real error before). Keep only the
+      // meaningful lines and a larger tail so `render failed: <message>` plus
+      // its stack both survive.
+      const meaningful = chunk
+        .toString()
+        .split(/[\r\n]+/)
+        .filter((l) => l.trim() && !/^\[remotion\] (render|browser) /.test(l.trim()))
+        .join('\n');
+      if (meaningful.trim()) {
+        stderrTail = (stderrTail + meaningful + '\n').slice(-8000);
+      }
     });
     child.on('error', (err) => {
       void fs.unlink(propsPath).catch(() => {});
@@ -270,6 +305,10 @@ export async function generatePackagingSpecFor(
   const existing = project.getPackagingPlan(variantId) ?? emptyPackagingPlan(variantId);
   const nextPlan: PackagingPlan = { ...existing, templateSpec: spec, model };
   project.setPackagingPlan(nextPlan);
+  // Persist immediately so a 一键包装 survives app/dev restarts (the plan is
+  // serialized into the .qcp). Without this the spec lived only in memory and
+  // was lost on reload ("调好了一重启就不见了").
+  if (project.projectPath) await engine.projects.saveProject(projectId).catch(() => {});
   return nextPlan;
 }
 
@@ -301,6 +340,8 @@ export async function generateSimpleSpecFor(
   const existing = project.getPackagingPlan(variantId) ?? emptyPackagingPlan(variantId);
   const nextPlan: PackagingPlan = { ...existing, templateSpec: spec };
   project.setPackagingPlan(nextPlan);
+  // Persist immediately so it survives restarts (see generatePackagingSpecFor).
+  if (project.projectPath) await engine.projects.saveProject(projectId).catch(() => {});
   return nextPlan;
 }
 
@@ -315,7 +356,7 @@ export async function exportPackagingRemotion(
   projectId: string,
   variantId: string | null,
   outputPath: string,
-  opts: { signal?: AbortSignal } = {}
+  opts: { signal?: AbortSignal; mediaHttpBase?: string | null } = {}
 ): Promise<{ outputPath: string; sizeBytes: number }> {
   const project = engine.projects.get(projectId);
   if (!project.transcript || project.transcript.segments.length === 0) {
@@ -327,6 +368,21 @@ export async function exportPackagingRemotion(
   }
   const absOutputPath = resolveExportOutputPath(outputPath);
   const ranges = keepRangesFor(project, variantId);
+  const playlist = buildPreviewPlaylist(ranges);
+  const spec =
+    plan.templateSpec ?? planToSpec({ transcript: project.transcript, plan, playlist });
+  const totalDur = ranges.reduce((s, r) => s + (r.end - r.start), 0);
+  const rotation = ((Math.round(project.videoMeta.rotation ?? 0) % 360) + 360) % 360;
+
+  // Prefer clips-from-raw: hand the renderer the RAW source (over the media
+  // http server, which supports range) + the kept ranges, and let OffthreadVideo
+  // stitch the slices live. This avoids pre-rendering a many-segment concat —
+  // which the compositor deep-seeks into and chokes on (NAL garbage → export
+  // exit 1) — and avoids copying the (often huge) source. Requires the media
+  // server (OffthreadVideo only loads http) AND no source rotation (OffthreadVideo
+  // doesn't auto-rotate; rotated sources fall back to the concat which bakes
+  // rotation in). OffthreadVideo tone-maps HDR on its own, so SDR/HDR are fine.
+  const useClips = !!opts.mediaHttpBase && rotation === 0;
 
   engine.eventBus.emit({
     type: 'export.started',
@@ -337,35 +393,55 @@ export async function exportPackagingRemotion(
 
   const pkgDir = remotionPackageDir();
   const stamp = crypto.randomBytes(6).toString('hex');
-  const clipName = `lynlens-base-${stamp}.mp4`;
-  const clipPublicPath = path.join(pkgDir, 'public', clipName);
   const remotionRawOut = path.join(os.tmpdir(), `lynlens-remotion-raw-${stamp}.mp4`);
+  // Only set on the concat fallback (a base clip copied into public/ to clean up).
+  let clipPublicPath: string | null = null;
 
   try {
     engine.eventBus.emit({ type: 'export.progress', projectId, percent: 2, stage: '准备素材' });
-    const colorMeta = await probeColorMeta(project.videoPath, engine.ffmpegPaths);
-    const base = await renderPackagingPreview({
-      videoPath: project.videoPath,
-      ranges,
-      cacheKey: previewCacheKey(project.videoPath, ranges),
-      rotation: project.videoMeta.rotation ?? 0,
-      colorMeta,
-      ffmpegPaths: engine.ffmpegPaths,
-    });
-    const playlist = buildPreviewPlaylist(ranges);
-    const spec =
-      plan.templateSpec ?? planToSpec({ transcript: project.transcript, plan, playlist });
-    const baseMeta = await probeVideo(base.outputPath, engine.ffmpegPaths);
-    await fs.copyFile(base.outputPath, clipPublicPath);
+
+    let videoSrc: string;
+    let clips: Array<{ fromSec: number; toSec: number }> | undefined;
+    let fps: number;
+    let width: number;
+    let height: number;
+
+    if (useClips) {
+      const m = await probeVideo(project.videoPath, engine.ffmpegPaths);
+      videoSrc = `${opts.mediaHttpBase}/media?p=${encodeURIComponent(project.videoPath)}`;
+      clips = ranges.map((r) => ({ fromSec: r.start, toSec: r.end }));
+      fps = m.fps;
+      width = m.width;
+      height = m.height;
+    } else {
+      const colorMeta = await probeColorMeta(project.videoPath, engine.ffmpegPaths);
+      const base = await renderPackagingPreview({
+        videoPath: project.videoPath,
+        ranges,
+        cacheKey: previewCacheKey(project.videoPath, ranges),
+        rotation,
+        colorMeta,
+        ffmpegPaths: engine.ffmpegPaths,
+      });
+      const baseMeta = await probeVideo(base.outputPath, engine.ffmpegPaths);
+      const clipName = `lynlens-base-${stamp}.mp4`;
+      clipPublicPath = path.join(pkgDir, 'public', clipName);
+      await fs.copyFile(base.outputPath, clipPublicPath);
+      videoSrc = clipName;
+      fps = baseMeta.fps;
+      width = baseMeta.width;
+      height = baseMeta.height;
+    }
     if (opts.signal?.aborted) throw new Error('已取消');
 
     await spawnRemotionRender({
-      videoSrc: clipName,
+      videoSrc,
       spec,
-      durationInSeconds: base.durationSeconds,
-      fps: baseMeta.fps,
-      width: baseMeta.width,
-      height: baseMeta.height,
+      clips,
+      durationInSeconds: totalDur,
+      fps,
+      width,
+      height,
       outPath: remotionRawOut,
       onProgress: (progress) => {
         const percent = 5 + Math.round(progress * 90);
@@ -400,7 +476,7 @@ export async function exportPackagingRemotion(
     engine.eventBus.emit({ type: 'export.failed', projectId, error: (err as Error).message });
     throw err;
   } finally {
-    await fs.unlink(clipPublicPath).catch(() => {});
+    if (clipPublicPath) await fs.unlink(clipPublicPath).catch(() => {});
     await fs.unlink(remotionRawOut).catch(() => {});
   }
 }
@@ -519,6 +595,9 @@ export function registerPackagingRemotionIpc(ctx: IpcContext): void {
       try {
         return await exportPackagingRemotion(engine, projectId, variantId, outputPath, {
           signal: ac.signal,
+          // Lets the export stitch the raw source live (clips-from-raw) instead
+          // of deep-seeking a many-segment concat. Null → falls back to concat.
+          mediaHttpBase: ctx.getMediaHttpBase(),
         });
       } finally {
         activeExports.delete(projectId);

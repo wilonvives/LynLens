@@ -36,6 +36,12 @@ export type PackagingProps = {
   fps: number;
   width: number;
   height: number;
+  /**
+   * Optional kept ranges (source seconds). When set, `videoSrc` is the RAW
+   * source and the composition stitches these slices live (整片 preview path)
+   * instead of expecting a pre-rendered concat. Absent → `videoSrc` whole.
+   */
+  clips?: Array<{ fromSec: number; toSec: number }>;
 };
 
 const POC_DEFAULTS: PackagingProps = {
@@ -47,7 +53,7 @@ const POC_DEFAULTS: PackagingProps = {
   height: 1920,
 };
 
-const PackagingComp: React.FC<PackagingProps> = ({ videoSrc, spec }) => {
+const PackagingComp: React.FC<PackagingProps> = ({ videoSrc, spec, clips }) => {
   // Resolve the clip source: absolute paths / file: / http(s) URLs pass
   // through; a bare relative name (e.g. "ep8.mp4") is resolved against the
   // bundle's public dir via staticFile. LynLens export passes an absolute
@@ -55,7 +61,7 @@ const PackagingComp: React.FC<PackagingProps> = ({ videoSrc, spec }) => {
   const resolved = /^(https?:|file:|\/)/.test(videoSrc)
     ? videoSrc
     : staticFile(videoSrc);
-  return <BusinessExplainer videoSrc={resolved} spec={spec} />;
+  return <BusinessExplainer videoSrc={resolved} spec={spec} clips={clips} />;
 };
 
 export const RemotionRoot: React.FC = () => {

@@ -8,7 +8,7 @@ import {
   useVideoConfig,
 } from 'remotion';
 import {SUBTITLE_STYLES} from './subtitles';
-import {CameraLayer} from './effects/CameraLayer';
+import {CameraLayer, type Clip} from './effects/CameraLayer';
 import {SoundLayer} from './sound/SoundLayer';
 import {loadTemplateFonts} from './fonts';
 import type {BusinessExplainerSpec} from './spec';
@@ -16,14 +16,27 @@ import type {BusinessExplainerSpec} from './spec';
 interface BusinessExplainerProps {
   videoSrc: string; // staticFile(...) 指向消费者自己的视频
   spec: BusinessExplainerSpec; // 字幕 / 特效 / 音效
+  /**
+   * Optional: when present, `videoSrc` is the RAW source and these are the
+   * kept ranges to stitch live (整片 preview — avoids an undecodable concat).
+   * Absent → `videoSrc` is played whole (variant preview + export).
+   */
+  clips?: Clip[];
 }
 
 // 「商务讲解」模板入口：吃一条视频 + 一份 spec，输出包装后的成片。
 // 适配任意视频——换视频只换 videoSrc + spec。
-export const BusinessExplainer: React.FC<BusinessExplainerProps> = ({videoSrc, spec}) => {
+export const BusinessExplainer: React.FC<BusinessExplainerProps> = ({videoSrc, spec, clips}) => {
   const {fps, durationInFrames} = useVideoConfig();
   const {cues, effects = [], sounds = []} = spec;
-  const [handle] = useState(() => delayRender('loading-fonts'));
+  // Generous timeout: at higher render concurrency several tabs fetch the
+  // ~22MB CJK fonts at once while decoding video, and the default 30s
+  // delayRender window can be exceeded under that contention → export fails
+  // with "delayRender() not cleared". 4 min is ample headroom; fonts always
+  // finish well before that.
+  const [handle] = useState(() =>
+    delayRender('loading-fonts', { timeoutInMilliseconds: 240000 })
+  );
 
   useEffect(() => {
     loadTemplateFonts()
@@ -33,7 +46,7 @@ export const BusinessExplainer: React.FC<BusinessExplainerProps> = ({videoSrc, s
 
   return (
     <AbsoluteFill style={{backgroundColor: 'black'}}>
-      <CameraLayer videoSrc={videoSrc} effects={effects} fps={fps} />
+      <CameraLayer videoSrc={videoSrc} effects={effects} fps={fps} clips={clips} />
       {cues.map((cue, i) => {
         const from = Math.round(cue.start * fps);
         const next = i + 1 < cues.length ? cues[i + 1].start : null;
@@ -54,7 +67,7 @@ export const BusinessExplainer: React.FC<BusinessExplainerProps> = ({videoSrc, s
           </Sequence>
         );
       })}
-      <SoundLayer sounds={sounds} fps={fps} />
+      <SoundLayer sounds={sounds} fps={fps} masterVolume={spec.soundsVolume ?? 1} />
     </AbsoluteFill>
   );
 };

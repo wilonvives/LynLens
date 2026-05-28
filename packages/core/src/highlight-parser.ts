@@ -1,6 +1,6 @@
 import { v4 as uuid } from 'uuid';
 import type { HighlightStyle } from './highlight-prompts';
-import { effectiveToSource } from './ripple';
+import { mapEffectiveRangeToSource } from './ripple';
 import type { Range } from './types';
 
 /**
@@ -138,9 +138,17 @@ function coerceStyle(v: unknown): HighlightStyle {
 /**
  * Turn Claude's JSON response into HighlightVariant records. Segment
  * timestamps arrive in EFFECTIVE time (because that's what the prompt
- * showed); we translate them back to source time via cutRanges so the
- * rest of the app — export, preview, timeline — can consume them in the
- * same coordinate system as regular segments.
+ * showed); we translate them back to source time so the rest of the app —
+ * export, preview, timeline — can consume them in the same coordinate
+ * system as regular segments.
+ *
+ * Crucially we translate via `mapEffectiveRangeToSource`, NOT by mapping the
+ * two endpoints independently. A clip Claude picks off the compacted
+ * transcript can straddle a glued cut boundary; mapping endpoints alone would
+ * swallow the deleted region back into the stored range (and re-play cut-out
+ * footage / land "inside a cut"). Splitting at boundaries means ONE effective
+ * pick may yield SEVERAL source segments — each guaranteed to sit in kept
+ * footage. They share the same `reason`.
  */
 export function parseHighlightResponse(
   raw: string,
@@ -173,14 +181,18 @@ export function parseHighlightResponse(
         reason: typeof s.reason === 'string' ? s.reason : '',
       }))
       .filter((s) => Number.isFinite(s.start) && Number.isFinite(s.end) && s.end > s.start)
-      .map((s) => ({
-        start: effectiveToSource(s.start, cutRanges),
-        end: effectiveToSource(s.end, cutRanges),
-        reason: s.reason,
-      }))
+      // Split each EFFECTIVE pick into source sub-ranges at cut boundaries.
+      // One pick → 1+ source segments, each fully inside kept footage.
+      .flatMap((s) =>
+        mapEffectiveRangeToSource({ start: s.start, end: s.end }, cutRanges).map((r) => ({
+          start: r.start,
+          end: r.end,
+          reason: s.reason,
+        }))
+      )
       // Drop anything that collapsed under the mapping (too small to matter).
       .filter((s) => s.end > s.start + 0.05)
-      // Sort + dedupe adjacency for stable playback.
+      // Sort for stable playback.
       .sort((a, b) => a.start - b.start);
 
     if (segs.length === 0) continue;

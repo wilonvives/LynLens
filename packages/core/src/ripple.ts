@@ -145,6 +145,72 @@ export function mapRangeToEffective(
 }
 
 /**
+ * Inverse of `mapRangeToEffective`: given an effective-time range, return the
+ * list of SOURCE-time sub-ranges it occupies, split at every cut boundary the
+ * range crosses. Each returned piece lies entirely within a kept region, so
+ * the result NEVER intersects a cut.
+ *
+ * This is the correct way to translate a contiguous effective-time selection
+ * (e.g. a highlight clip Claude picked off the compacted transcript) back to
+ * source time. Mapping the two endpoints independently via `effectiveToSource`
+ * is WRONG: an effective range straddling a glued cut boundary would expand
+ * into a single source range that swallows the deleted region back in. A 20s
+ * effective clip over a 60s cut would otherwise become an 80s source span that
+ * replays cut-out content. Splitting at the boundary keeps it 20s across two
+ * pieces.
+ */
+export function mapEffectiveRangeToSource(
+  range: Range,
+  cuts: readonly Range[]
+): Range[] {
+  if (range.end <= range.start) return [];
+  const n = normalizeCuts(cuts);
+  const srcStart = effectiveToSource(range.start, n);
+  const srcEnd = effectiveToSource(range.end, n);
+  if (srcEnd <= srcStart) return [];
+  // Subtract every cut lying within [srcStart, srcEnd] → kept sub-intervals.
+  const pieces: Range[] = [];
+  let cursor = srcStart;
+  for (const c of n) {
+    if (c.end <= cursor) continue;
+    if (c.start >= srcEnd) break;
+    if (c.start > cursor) {
+      pieces.push({ start: cursor, end: Math.min(c.start, srcEnd) });
+    }
+    cursor = Math.max(cursor, c.end);
+    if (cursor >= srcEnd) break;
+  }
+  if (cursor < srcEnd) pieces.push({ start: cursor, end: srcEnd });
+  return pieces.filter((p) => p.end > p.start);
+}
+
+/**
+ * Subtract cut ranges from a SOURCE-time range, returning the kept sub-ranges
+ * (the parts of [range.start, range.end] NOT inside any cut). Use this to keep
+ * a highlight-variant segment from ever spanning a cut: a gesture that paints /
+ * resizes across a deleted region becomes kept-only piece(s) instead of one
+ * span that drags the cut footage back into preview + export.
+ *
+ * Unlike `mapEffectiveRangeToSource` (which takes EFFECTIVE input), this takes
+ * an already-source range and just punches the cuts out of it.
+ */
+export function subtractCutsFromRange(range: Range, cuts: readonly Range[]): Range[] {
+  if (range.end <= range.start) return [];
+  const n = normalizeCuts(cuts);
+  const pieces: Range[] = [];
+  let cursor = range.start;
+  for (const c of n) {
+    if (c.end <= cursor) continue;
+    if (c.start >= range.end) break;
+    if (c.start > cursor) pieces.push({ start: cursor, end: Math.min(c.start, range.end) });
+    cursor = Math.max(cursor, c.end);
+    if (cursor >= range.end) break;
+  }
+  if (cursor < range.end) pieces.push({ start: cursor, end: range.end });
+  return pieces.filter((p) => p.end > p.start);
+}
+
+/**
  * Given all approved delete segments and a totalDuration, return the list of
  * KEEP intervals (source time) for export. Identical semantics to the old
  * SegmentManager.getKeepSegments, but kept here too so callers that already

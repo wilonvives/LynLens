@@ -88,6 +88,13 @@ export interface BusinessExplainerSpec {
   cues: SpecCue[];
   effects?: SpecEffect[];
   sounds?: SpecSound[];
+  /**
+   * Master volume multiplier for ALL sound effects (0..1, default 1). Each
+   * SFX's final volume = (sound.volume ?? 0.85) × soundsVolume. Lets the user
+   * dial the whole 音效 bed down without touching every line. Per-line volume
+   * lives on SpecSound.volume.
+   */
+  soundsVolume?: number;
   /** 通用-template global subtitle style (SimpleSubtitle reads this). */
   subtitleStyle?: SimpleSubtitleStyle;
 }
@@ -125,19 +132,30 @@ const KEYPOINT_SOUNDS = [
 
 /**
  * Resolve a transcript segment to variant time. Membership is decided by
- * the segment MIDPOINT (robust against cut boundaries — a segment whose
- * `start` lands exactly on a kept range's end belongs to the NEXT range,
- * not this one). Returns the variant-time start, or null if the segment's
- * midpoint is cut out of the variant. Mirrors PackagingSubtitlesTab.
+ * OVERLAP: a sentence is included if ANY part of it falls inside a kept range,
+ * anchored at the output time of the first kept moment it covers.
+ *
+ * This deliberately OVER-captures: a sentence straddling a highlight boundary
+ * (its head or tail sliced off by the cut) is grabbed WHOLE and shown at the
+ * clip's edge, instead of being silently dropped. The old midpoint rule dropped
+ * any sentence whose centre landed in the cut/gap — which is exactly the
+ * "缺头/缺尾/吃句子" bug (head/tail sentences of a highlight clip vanished).
+ * Over-capturing is the intended trade: the 字幕 tab has a per-line ✕ to delete
+ * the occasional extra, which beats missing a sentence and re-adding it.
+ *
+ * Returns the variant-time start, or null if the segment doesn't touch the
+ * variant at all.
  */
 export function segmentVariantStart(
   segStart: number,
   segEnd: number,
   playlist: PreviewPlaylistEntry[]
 ): number | null {
-  const mid = (segStart + segEnd) / 2;
   for (const e of playlist) {
-    if (mid >= e.srcStart && mid < e.srcEnd) {
+    // Real overlap (touching exactly at a boundary, overlap === 0, doesn't
+    // count — that sentence belongs to the adjacent clip, not this one).
+    const overlap = Math.min(segEnd, e.srcEnd) - Math.max(segStart, e.srcStart);
+    if (overlap > 0) {
       const clamped = Math.max(e.srcStart, Math.min(segStart, e.srcEnd));
       return e.variantStart + (clamped - e.srcStart);
     }

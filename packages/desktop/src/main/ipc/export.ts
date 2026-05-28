@@ -18,11 +18,24 @@ import type { IpcContext } from './_context';
  * pass through unchanged.
  */
 function resolveExportOutputPath(outputPath: string): string {
-  if (path.isAbsolute(outputPath)) return outputPath;
-  if (!outputPath.includes(path.sep) && !outputPath.includes('/')) {
-    return path.join(app.getPath('downloads'), outputPath);
+  let resolved: string;
+  if (path.isAbsolute(outputPath)) {
+    resolved = outputPath;
+  } else if (!outputPath.includes(path.sep) && !outputPath.includes('/')) {
+    resolved = path.join(app.getPath('downloads'), outputPath);
+  } else {
+    resolved = path.resolve(app.getPath('home'), outputPath);
   }
-  return path.resolve(app.getPath('home'), outputPath);
+  // Strip characters illegal in (Windows) filenames from the basename so
+  // ffmpeg can always open the output ("?", ":" etc. → space). Directory is
+  // left alone (a drive's "C:" is legitimate).
+  const dir = path.dirname(resolved);
+  const base = path
+    .basename(resolved)
+    .replace(/[<>:"/\\|?* -]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return path.join(dir, base || 'output.mp4');
 }
 
 export function registerExportIpc(ctx: IpcContext): void {

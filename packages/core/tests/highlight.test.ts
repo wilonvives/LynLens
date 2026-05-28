@@ -123,6 +123,37 @@ describe('parseHighlightResponse', () => {
     expect(result[0].segments[0].end).toBeCloseTo(35);
   });
 
+  it('splits a clip that straddles a cut into kept-only source pieces', () => {
+    // Cut [300,360]. The model picks effective [290,310] — a 20s clip that
+    // sits either side of the glued boundary. It must NOT become one source
+    // span [290,370] (which re-includes the deleted 300-360); it must split
+    // into [290,300] + [360,370], both inside kept footage.
+    const raw = JSON.stringify({
+      variants: [
+        {
+          title: 'straddle',
+          style: 'default',
+          segments: [{ start: 290, end: 310, reason: '跨剪切口' }],
+        },
+      ],
+    });
+    const result = parseHighlightResponse(raw, [{ start: 300, end: 360 }]);
+    const segs = result[0].segments;
+    expect(segs).toHaveLength(2);
+    expect(segs[0].start).toBeCloseTo(290);
+    expect(segs[0].end).toBeCloseTo(300);
+    expect(segs[1].start).toBeCloseTo(360);
+    expect(segs[1].end).toBeCloseTo(370);
+    // No stored piece overlaps the cut.
+    for (const s of segs) {
+      expect(s.end <= 300 || s.start >= 360).toBe(true);
+    }
+    // Both pieces inherit the source pick's reason.
+    expect(segs.every((s) => s.reason === '跨剪切口')).toBe(true);
+    // Total kept duration stays 20s (the cut is not counted).
+    expect(result[0].durationSeconds).toBeCloseTo(20);
+  });
+
   it('coerces unknown style to default', () => {
     const raw = JSON.stringify({
       variants: [

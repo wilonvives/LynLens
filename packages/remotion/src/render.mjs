@@ -12,6 +12,7 @@
 import { fileURLToPath } from 'node:url';
 import { dirname, join, resolve } from 'node:path';
 import { readFileSync } from 'node:fs';
+import os from 'node:os';
 import { bundle } from '@remotion/bundler';
 import { selectComposition, renderMedia, ensureBrowser } from '@remotion/renderer';
 
@@ -26,6 +27,7 @@ function parseArgs(argv) {
     composition: 'Packaging',
     frames: null, // limit frameRange for fast color/look checks
     colorSpace: 'bt709', // satisfy LynLens color hard rule by default
+    concurrency: null, // null → Remotion auto (~half cores); number → explicit
   };
   for (let i = 2; i < argv.length; i += 1) {
     const a = argv[i];
@@ -35,6 +37,7 @@ function parseArgs(argv) {
     else if (a === '--composition') args.composition = argv[++i];
     else if (a === '--frames') args.frames = parseInt(argv[++i], 10);
     else if (a === '--colorSpace') args.colorSpace = argv[++i];
+    else if (a === '--concurrency') args.concurrency = parseInt(argv[++i], 10);
   }
   return args;
 }
@@ -79,10 +82,17 @@ async function main() {
   });
   console.error(`[remotion] bundled in ${((Date.now() - t0) / 1000).toFixed(1)}s`);
 
+  // Stabilize headless Chromium. The default GL backend crashes render tabs
+  // on Windows ("Protocol error (Page.bringToFront): Target closed") — short
+  // renders recover but a full-length one accumulates crashes until Remotion
+  // gives up (exit 1). ANGLE (D3D-backed) is far more stable headless.
+  const chromiumOptions = { gl: 'angle' };
+
   const composition = await selectComposition({
     serveUrl,
     id: args.composition,
     inputProps,
+    chromiumOptions,
   });
   console.error(
     `[remotion] composition: ${composition.width}x${composition.height} ` +
@@ -96,6 +106,17 @@ async function main() {
     codec: 'h264',
     outputLocation: outPath,
     inputProps,
+    chromiumOptions,
+    // Concurrency: more tabs = faster, but each tab fetches the 22MB CJK fonts
+    // + decodes video, so too many contend (slow font load → delayRender
+    // timeout; memory → "Target closed"). A moderate fraction of cores is the
+    // sweet spot — clearly faster than 1-2, well short of Remotion's auto
+    // (~half cores) where the contention bites. --concurrency overrides.
+    concurrency:
+      args.concurrency ?? Math.max(2, Math.min(6, Math.floor(os.cpus().length / 4))),
+    // Generous delayRender window so font loads / frame extraction don't time
+    // out under render contention (default is only 30s).
+    timeoutInMilliseconds: 240000,
     // Color hard rule: tag output as BT.709 so Windows / browsers don't
     // shift colors. Remotion's default ('default') leaves matrix=bt470bg
     // + unknown primaries/transfer, which violates the rule. 'bt709'

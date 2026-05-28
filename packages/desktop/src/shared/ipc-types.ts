@@ -331,6 +331,12 @@ export interface IpcApi {
      * UI should gracefully render the timeline without thumbnails.
      */
     thumbnails: string[];
+    /**
+     * Present only for 整片-with-cuts: kept source ranges the player stitches
+     * live from the raw source (outputPath = raw source). Lets the preview
+     * skip a giant undecodable concat. Variant preview omits this.
+     */
+    clips?: Array<{ fromSec: number; toSec: number }>;
   }>;
   /**
    * Render the variant WITH subtitles burned in by libass. Used by the

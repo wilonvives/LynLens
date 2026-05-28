@@ -183,6 +183,8 @@ export const cutFingerprint = ripple.cutFingerprint;
 export const effectiveToSource = ripple.effectiveToSource;
 export const getEffectiveDuration = ripple.getEffectiveDuration;
 export const mapRangeToEffective = ripple.mapRangeToEffective;
+export const mapEffectiveRangeToSource = ripple.mapEffectiveRangeToSource;
+export const subtractCutsFromRange = ripple.subtractCutsFromRange;
 export const normalizeCuts = ripple.normalizeCuts;
 export const sourceToEffective = ripple.sourceToEffective;
 export {

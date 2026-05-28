@@ -25,6 +25,7 @@ import {
   previewCacheKey,
   probeColorMeta,
   renderPackagingPreview,
+  subtractCutsFromRange,
   transcriptToPromptSegments,
   type AssPlaylistEntry,
   type ExportQuality,
@@ -61,15 +62,37 @@ function outputDimensions(meta: VideoMeta): { w: number; h: number } {
  * confirming. This makes the failure mode benign instead of mysterious.
  */
 function resolveExportOutputPath(outputPath: string): string {
-  if (path.isAbsolute(outputPath)) return outputPath;
-  // No directory component → bare filename → Downloads/<name>.
-  if (!outputPath.includes(path.sep) && !outputPath.includes('/')) {
-    return path.join(app.getPath('downloads'), outputPath);
+  let resolved: string;
+  if (path.isAbsolute(outputPath)) {
+    resolved = outputPath;
+  } else if (!outputPath.includes(path.sep) && !outputPath.includes('/')) {
+    // No directory component → bare filename → Downloads/<name>.
+    resolved = path.join(app.getPath('downloads'), outputPath);
+  } else {
+    // Relative path with directory parts → resolve against home so e.g.
+    // "Movies/foo.mp4" lands in $HOME/Movies/foo.mp4 rather than wherever
+    // process.cwd() happens to be.
+    resolved = path.resolve(app.getPath('home'), outputPath);
   }
-  // Relative path with directory parts → resolve against home so e.g.
-  // "Movies/foo.mp4" lands in $HOME/Movies/foo.mp4 rather than wherever
-  // process.cwd() happens to be.
-  return path.resolve(app.getPath('home'), outputPath);
+  return sanitizeOutputBasename(resolved);
+}
+
+/**
+ * Strip characters illegal in (Windows) filenames from the path's BASENAME so
+ * ffmpeg can always open the output. A highlight variant titled e.g. "钱骡户口
+ * 想开回?银行说不行" became "..._高光_...?....mp4", and ffmpeg failed the whole
+ * export with "Invalid argument" on the "?". We replace each illegal char with
+ * a space (the user asked for spaces, not deletion) and collapse runs. The
+ * directory is left untouched (a drive's "C:" colon is legitimate).
+ */
+function sanitizeOutputBasename(p: string): string {
+  const dir = path.dirname(p);
+  const base = path
+    .basename(p)
+    .replace(/[<>:"/\\|?*-]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return path.join(dir, base || 'output.mp4');
 }
 // NOTE: renderPackagingPlan (Remotion-based export) is staged for v0.6+
 // but disabled in v0.5 — preview is pure HTML overlay, export reverts
@@ -445,7 +468,19 @@ export function registerHighlightsIpc(ctx: IpcContext): void {
         promptSegments = transcriptToPromptSegments(project.transcript, indices);
         segmentCount = project.transcript.segments.length;
       } else {
-        promptSegments = transcriptToPromptSegments(project.transcript);
+        // 整片 = rippled timeline: only segments that survive the cuts get
+        // 花字 (a segment fully inside a cut is never shown, so don't waste a
+        // cue on it). Keeps the AI's view aligned with the 6-min cut version.
+        const keeps = computeKeepIntervals(
+          project.videoMeta.duration,
+          project.segments.getApprovedSegments().map((s) => ({ start: s.start, end: s.end })),
+          project.cutRanges
+        );
+        const indices: number[] = [];
+        project.transcript.segments.forEach((seg, i) => {
+          if (keeps.some((k) => seg.start < k.end && seg.end > k.start)) indices.push(i);
+        });
+        promptSegments = transcriptToPromptSegments(project.transcript, indices);
         segmentCount = project.transcript.segments.length;
       }
 
@@ -453,7 +488,7 @@ export function registerHighlightsIpc(ctx: IpcContext): void {
         project.userOrientation ?? 'unknown';
       const totalDurationSec = variant
         ? variant.durationSeconds
-        : project.videoMeta.duration;
+        : project.getEffectiveDuration();
       const title = variant?.title ?? '原片';
 
       const systemPrompt = buildPackagingSystemPrompt();
@@ -542,15 +577,24 @@ export function registerHighlightsIpc(ctx: IpcContext): void {
       durationSeconds: number;
       cached: boolean;
       thumbnails: string[];
+      /**
+       * Present ONLY for the 整片 (whole-video) preview: kept source ranges
+       * the player stitches LIVE from the raw source (outputPath = raw source).
+       * A 整片 with many ripple cuts would otherwise need a ~180-segment concat
+       * the browser can't decode (black + PIPELINE_ERROR_DECODE). Variant
+       * preview still returns a rendered concat with no `clips`.
+       */
+      clips?: Array<{ fromSec: number; toSec: number }>;
     }> => {
       const project = engine.projects.get(projectId);
       const videoPath = project.videoPath;
       const videoMeta = project.videoMeta;
 
-      // Determine the keep ranges. Variant → its segments in playback
-      // order. 整片 → no rendering needed, return the source as-is with
-      // a 1:1 playlist (subtitle overlay treats currentTime as source
-      // time directly).
+      // Determine the keep ranges. Variant → its segments in playback order →
+      // rendered into a (small) concat below. 整片 → the RIPPLED timeline; we
+      // DON'T pre-render a concat (a ~180-segment one is undecodable in the
+      // browser preview), we hand back the RAW source + `clips` and let the
+      // composition stitch the kept slices live.
       let ranges: Range[];
       if (variantId) {
         const variant = project.findHighlightVariant(variantId);
@@ -558,24 +602,51 @@ export function registerHighlightsIpc(ctx: IpcContext): void {
         if (variant.segments.length === 0) {
           throw new Error('变体没有片段,无法生成预览');
         }
-        ranges = variant.segments.map((s) => ({ start: s.start, end: s.end }));
+        ranges = variant.segments.flatMap((s) =>
+          subtractCutsFromRange({ start: s.start, end: s.end }, project.cutRanges)
+        );
+        if (ranges.length === 0) {
+          throw new Error('变体所有片段都在已剪切区域内,无法预览');
+        }
       } else {
-        // 整片 mode — skip the render, point the player at the source.
-        // No thumbnails returned for 整片 right now (would require an
-        // extra ffmpeg pass on the source); v0.6+ can add that lazily.
+        const keeps = computeKeepIntervals(
+          videoMeta.duration,
+          project.segments.getApprovedSegments().map((s) => ({ start: s.start, end: s.end })),
+          project.cutRanges
+        );
+        if (keeps.length === 0) {
+          throw new Error('整片没有可预览的内容(全部被剪掉了)');
+        }
+        // Fast path: nothing actually cut → whole source as-is, no clips.
+        const uncut =
+          keeps.length === 1 &&
+          keeps[0].start <= 0.01 &&
+          keeps[0].end >= videoMeta.duration - 0.01;
+        if (uncut) {
+          return {
+            outputPath: videoPath,
+            playlist: [
+              {
+                srcStart: 0,
+                srcEnd: videoMeta.duration,
+                variantStart: 0,
+                variantEnd: videoMeta.duration,
+              },
+            ],
+            durationSeconds: videoMeta.duration,
+            cached: true,
+            thumbnails: [],
+          };
+        }
+        // CUT 整片: play the raw source per-segment (clips). No concat render —
+        // instant, and the browser only ever decodes raw-source slices.
         return {
           outputPath: videoPath,
-          playlist: [
-            {
-              srcStart: 0,
-              srcEnd: videoMeta.duration,
-              variantStart: 0,
-              variantEnd: videoMeta.duration,
-            },
-          ],
-          durationSeconds: videoMeta.duration,
+          playlist: buildPreviewPlaylist(keeps),
+          durationSeconds: keeps.reduce((s, r) => s + (r.end - r.start), 0),
           cached: true,
           thumbnails: [],
+          clips: keeps.map((r) => ({ fromSec: r.start, toSec: r.end })),
         };
       }
 
@@ -650,10 +721,12 @@ export function registerHighlightsIpc(ctx: IpcContext): void {
 
       const videoPath = project.videoPath;
       const videoMeta = project.videoMeta;
-      const ranges: Range[] = variant.segments.map((s) => ({
-        start: s.start,
-        end: s.end,
-      }));
+      const ranges: Range[] = variant.segments.flatMap((s) =>
+        subtractCutsFromRange({ start: s.start, end: s.end }, project.cutRanges)
+      );
+      if (ranges.length === 0) {
+        throw new Error('变体所有片段都在已剪切区域内,无法预览');
+      }
 
       // Build playlist (source → preview time mapping) used both by
       // the ASS time-calibration and as the return value.
@@ -760,7 +833,14 @@ export function registerHighlightsIpc(ctx: IpcContext): void {
         if (variant.segments.length === 0) {
           throw new Error('变体没有片段,无法导出');
         }
-        ranges = variant.segments.map((s) => ({ start: s.start, end: s.end }));
+        // Clip against cuts (defensive — see export-highlight) so花字成品
+        // never includes deleted footage even for a legacy span-a-cut variant.
+        ranges = variant.segments.flatMap((s) =>
+          subtractCutsFromRange({ start: s.start, end: s.end }, project.cutRanges)
+        );
+        if (ranges.length === 0) {
+          throw new Error('变体所有片段都在已剪切区域内,无法导出');
+        }
       } else {
         ranges = computeKeepIntervals(
           project.videoMeta.duration,
@@ -858,10 +938,16 @@ export function registerHighlightsIpc(ctx: IpcContext): void {
       // Variant export drops any packaging visuals for now; they only
       // show in the live preview tab.
       try {
-        const keepOverride = variant.segments.map((s) => ({
-          start: s.start,
-          end: s.end,
-        }));
+        // Defensive: clip every segment against the project's cuts so even a
+        // legacy/stale variant whose segment spans a cut (created before the
+        // never-span-a-cut fix) exports the kept footage only — never drags
+        // the deleted regions back in.
+        const keepOverride = variant.segments.flatMap((s) =>
+          subtractCutsFromRange({ start: s.start, end: s.end }, project.cutRanges)
+        );
+        if (keepOverride.length === 0) {
+          throw new Error('这个变体的所有片段都落在已剪切区域内,没有可导出的内容');
+        }
         return await engine.exports.export(project, {
           outputPath: resolveExportOutputPath(outputPath),
           mode,

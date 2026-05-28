@@ -1,6 +1,7 @@
 import { type RefObject } from 'react';
 import { useStore } from '../store';
 import { formatTime } from '../util';
+import { SpeedControl } from './SpeedControl';
 
 interface BottomToolbarProps {
   videoRef: RefObject<HTMLVideoElement | null>;
@@ -53,6 +54,11 @@ export function BottomToolbar({
       >
         {isPlaying ? '暂停' : '播放'}
       </button>
+      <SpeedControl
+        rate={store.playbackRate}
+        onChange={store.setPlaybackRate}
+        disabled={!store.videoUrl}
+      />
       <button
         className={store.previewMode ? 'ai' : ''}
         onClick={() => store.setPreviewMode(!store.previewMode)}

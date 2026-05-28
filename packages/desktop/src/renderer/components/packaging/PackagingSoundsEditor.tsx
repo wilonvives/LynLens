@@ -58,6 +58,12 @@ export function PackagingSoundsEditor({
   currentTimeSec,
 }: Props): JSX.Element {
   const sounds = spec.sounds ?? [];
+  const master = spec.soundsVolume ?? 1;
+  const DEFAULT_SOUND_VOLUME = 0.85;
+
+  function setMaster(v: number): void {
+    onSpecChange({ ...spec, soundsVolume: Math.max(0, Math.min(1, v)) });
+  }
 
   function update(next: SpecSound[]): void {
     onSpecChange({ ...spec, sounds: sortSounds(next) });
@@ -87,6 +93,46 @@ export function PackagingSoundsEditor({
       <div style={{ fontSize: 11, color: 'var(--text3)', lineHeight: 1.6 }}>
         音效线(一次性 sfx)。落在装饰行上、间隔 ≥2.5s;改完左边实时变。
       </div>
+
+      {/* Master SFX volume — scales ALL sound effects at once (does NOT
+          touch the original video audio). Per-line volume is on each row. */}
+      <div
+        style={{
+          padding: '8px 10px',
+          background: '#15151c',
+          border: '1px solid #2a2a2a',
+          borderRadius: 6,
+          display: 'flex',
+          alignItems: 'center',
+          gap: 8,
+        }}
+      >
+        <span style={{ fontSize: 12, color: 'var(--text2)', whiteSpace: 'nowrap' }}>
+          🔊 整体音效音量
+        </span>
+        <input
+          type="range"
+          min={0}
+          max={1}
+          step={0.05}
+          value={master}
+          onChange={(e) => setMaster(Number(e.target.value))}
+          style={{ flex: 1, accentColor: 'var(--accent)' }}
+          title="一次调低/调高所有音效的音量(不影响原视频声音)"
+        />
+        <span
+          style={{
+            fontSize: 11,
+            color: 'var(--text3)',
+            width: 36,
+            textAlign: 'right',
+            fontVariantNumeric: 'tabular-nums',
+          }}
+        >
+          {Math.round(master * 100)}%
+        </span>
+      </div>
+
       {sounds.length === 0 && (
         <div style={{ fontSize: 12, color: 'var(--text3)', textAlign: 'center', padding: 12 }}>
           还没有音效。点下面「+ 加音效」。
@@ -131,6 +177,29 @@ export function PackagingSoundsEditor({
             />
             s
           </label>
+          {/* Per-sound volume — this line's own level (before the master
+              multiplier). Default 0.85 when unset. */}
+          <input
+            type="range"
+            min={0}
+            max={1}
+            step={0.05}
+            value={snd.volume ?? DEFAULT_SOUND_VOLUME}
+            onChange={(e) => patch(idx, { volume: Number(e.target.value) })}
+            style={{ width: 64, accentColor: 'var(--accent)' }}
+            title="这条音效自己的音量(再乘以上面的整体音量)"
+          />
+          <span
+            style={{
+              fontSize: 10,
+              color: 'var(--text3)',
+              width: 30,
+              textAlign: 'right',
+              fontVariantNumeric: 'tabular-nums',
+            }}
+          >
+            {Math.round((snd.volume ?? DEFAULT_SOUND_VOLUME) * 100)}%
+          </span>
           <button onClick={() => remove(idx)} title="删除" style={removeBtn}>
             ✕
           </button>

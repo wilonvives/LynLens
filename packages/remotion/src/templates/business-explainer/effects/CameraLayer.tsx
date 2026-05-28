@@ -2,6 +2,7 @@ import React from 'react';
 import {
   AbsoluteFill,
   OffthreadVideo,
+  Series,
   Video,
   getRemotionEnvironment,
   useCurrentFrame,
@@ -23,14 +24,52 @@ const EFFECTS: Record<EffectSpec['type'], EffectFn> = {
 
 const SCRIM_HEIGHT = '50%'; // 底盘覆盖高度
 
+/** One kept slice of the SOURCE video, played at its compacted position. */
+export interface Clip {
+  fromSec: number;
+  toSec: number;
+}
+
 interface CameraLayerProps {
   videoSrc: string;
   effects: EffectSpec[];
   fps: number;
+  /**
+   * When present, `videoSrc` is the RAW source and these are the kept ranges
+   * (source seconds, in playback order). The layer stitches them live via a
+   * <Series> of trimmed source clips instead of relying on a pre-rendered
+   * concat. This avoids handing the browser preview player a huge
+   * many-segment concat it can't decode (整片 with ~180 ripple cuts → black
+   * + PIPELINE_ERROR_DECODE). Each clip decodes a slice of the raw source,
+   * which the browser handles fine. When absent, `videoSrc` is played whole
+   * (variant preview + export keep using their concat, untouched).
+   */
+  clips?: Clip[];
+}
+
+/** Render the base video element (render path = OffthreadVideo, preview = Video).
+ *  Optional trim plays only source frames [trimBefore, trimAfter). */
+function BaseVideo({
+  src,
+  trimBefore,
+  trimAfter,
+}: {
+  src: string;
+  trimBefore?: number;
+  trimAfter?: number;
+}): React.ReactElement {
+  const isRendering = getRemotionEnvironment().isRendering;
+  const trim =
+    trimBefore != null ? {trimBefore, ...(trimAfter != null ? {trimAfter} : {})} : {};
+  return isRendering ? (
+    <OffthreadVideo src={src} {...trim} />
+  ) : (
+    <Video src={src} {...trim} />
+  );
 }
 
 // 背景视频 + 镜头特效层（缩放/位移/压暗/黑边）。特效只作用于视频，字幕在更上层不受影响。
-export const CameraLayer: React.FC<CameraLayerProps> = ({videoSrc, effects, fps}) => {
+export const CameraLayer: React.FC<CameraLayerProps> = ({videoSrc, effects, fps, clips}) => {
   const frame = useCurrentFrame();
 
   let state = NEUTRAL;
@@ -59,13 +98,38 @@ export const CameraLayer: React.FC<CameraLayerProps> = ({videoSrc, effects, fps}
               : undefined,
         }}
       >
-        {/* Player preview uses a single native <Video> (one element = one
-            connection, no decoder/connection exhaustion when scrubbing).
-            Export rendering uses OffthreadVideo (frame-accurate). */}
-        {getRemotionEnvironment().isRendering ? (
-          <OffthreadVideo src={videoSrc} />
+        {/* No clips → play the source whole (variant preview + export use a
+            pre-rendered concat here). With clips → stitch the raw source's
+            kept slices live via <Series>, so the browser never has to decode
+            a giant many-segment concat (整片 fix). */}
+        {clips && clips.length > 0 ? (
+          <Series>
+            {clips
+              .map((c) => ({
+                fromF: Math.round(c.fromSec * fps),
+                toF: Math.round(c.toSec * fps),
+              }))
+              // Drop sub-frame slivers: a kept range shorter than one frame
+              // rounds to fromF === toF, i.e. trimBefore === trimAfter, which
+              // Remotion's OffthreadVideo rejects (validateMediaTrimProps →
+              // render crash). These come from two ripple cuts ~0.01s apart;
+              // < 1 frame of footage, safe to skip.
+              .filter((c) => c.toF > c.fromF)
+              .map((c, i) => (
+                // premountFor mounts each clip's <Video> ~1s early (invisibly)
+                // so the browser has finished seeking + buffering to trimBefore
+                // before the clip becomes visible — kills the "切口黑闪".
+                <Series.Sequence
+                  key={i}
+                  durationInFrames={c.toF - c.fromF}
+                  premountFor={Math.round(fps)}
+                >
+                  <BaseVideo src={videoSrc} trimBefore={c.fromF} trimAfter={c.toF} />
+                </Series.Sequence>
+              ))}
+          </Series>
         ) : (
-          <Video src={videoSrc} />
+          <BaseVideo src={videoSrc} />
         )}
       </AbsoluteFill>
       {desat > 0 && (

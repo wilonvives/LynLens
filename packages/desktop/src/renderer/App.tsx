@@ -15,6 +15,7 @@ import { Resizer } from './Resizer';
 import { usePlayerWrapSize } from './hooks/usePlayerWrapSize';
 import { useEngineEvents } from './hooks/useEngineEvents';
 import { usePlaybackLoop } from './hooks/usePlaybackLoop';
+import { useApplyPlaybackRate } from './hooks/useApplyPlaybackRate';
 import { useKeyboardShortcuts } from './hooks/useKeyboardShortcuts';
 import { MenuBar } from './components/MenuBar';
 import { WorkModeTabs, type WorkMode } from './components/WorkModeTabs';
@@ -187,6 +188,9 @@ export function App() {
     projectId: store.projectId,
     setCurrentTime,
   });
+
+  // Keep the 粗剪 player at the chosen "打快" speed (re-applied on src reload).
+  useApplyPlaybackRate(videoRef, store.playbackRate, store.videoUrl);
 
   useKeyboardShortcuts({ videoRef, brushRef, setShowExport });
 

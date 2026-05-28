@@ -895,7 +895,7 @@ export function HighlightTimeline({
                 isDragging ? ' dragging' : ''
               }`}
               style={{ left: `${leftPct}%`, width: `${Math.max(0.6, widthPct)}%` }}
-              title={`#${i + 1} ${formatTime(dragStart)} – ${formatTime(dragEnd)}`}
+              title={`#${i + 1} ${formatTime(effStart)} – ${formatTime(effEnd)}`}
             >
               <div
                 className="hl-timeline-seg-handle left"
@@ -909,7 +909,7 @@ export function HighlightTimeline({
               >
                 <span className="hl-timeline-seg-idx">#{i + 1}</span>
                 <span className="hl-timeline-seg-time">
-                  {formatTime(dragStart)} – {formatTime(dragEnd)}
+                  {formatTime(effStart)} – {formatTime(effEnd)}
                 </span>
                 {segments.length > 1 && (
                   <button
@@ -976,6 +976,13 @@ function TimelineMarker({
   onMarkerRemove?: (id: string) => void;
 }): JSX.Element {
   const [hover, setHover] = useState(false);
+  /**
+   * Live drag position as a left-% across the bar. Non-null only while the
+   * user is dragging this flag — overrides the committed `leftPct` prop so
+   * the marker FOLLOWS THE CURSOR in real time (跟手) instead of snapping to
+   * the new spot only on mouseup. Cleared on release.
+   */
+  const [dragLeftPct, setDragLeftPct] = useState<number | null>(null);
   const accent = marker.color ?? '#7aa2f7';
 
   const startDrag = (e: React.MouseEvent): void => {
@@ -996,23 +1003,19 @@ function TimelineMarker({
       if (!moved && dx < 3) return; // jitter threshold
       moved = true;
       const rect = container.getBoundingClientRect();
-      const eff = Math.max(
-        0,
-        Math.min(effectiveDuration, xToEff(ev.clientX - rect.left))
-      );
-      // Convert back to source — markers are stored in source time.
-      // We don't have effectiveToSource here easily, so inline it:
-      // walk cutRanges and shift back.
-      let src = eff;
-      for (const c of cutRanges) {
-        if (src + (c.end - c.start) <= c.start) break;
-        src += c.end - c.start;
-      }
-      latestSrcSec = src;
+      const x = ev.clientX - rect.left;
+      // Follow the cursor: the flag's left-% IS the cursor's % across the bar
+      // (equals effToLeftPct(eff) by construction — no view math needed here).
+      setDragLeftPct(Math.max(0, Math.min(100, (x / rect.width) * 100)));
+      const eff = Math.max(0, Math.min(effectiveDuration, xToEff(x)));
+      // Markers are stored in source time. Use the real ripple conversion —
+      // a hand-rolled loop here mis-placed markers sitting after multiple cuts.
+      latestSrcSec = effectiveToSource(eff, cutRanges);
     };
     const up = (): void => {
       window.removeEventListener('mousemove', move);
       window.removeEventListener('mouseup', up);
+      setDragLeftPct(null);
       if (moved) {
         onMarkerMove(marker.id, latestSrcSec);
       } else {
@@ -1029,13 +1032,13 @@ function TimelineMarker({
       onMouseLeave={() => setHover(false)}
       style={{
         position: 'absolute',
-        left: `${leftPct}%`,
+        left: `${dragLeftPct ?? leftPct}%`,
         top: 0,
         bottom: 0,
         width: 2,
         background: accent,
         pointerEvents: 'auto',
-        zIndex: 6,
+        zIndex: dragLeftPct != null ? 7 : 6,
         transform: 'translateX(-50%)',
       }}
     >

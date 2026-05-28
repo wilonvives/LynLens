@@ -8,7 +8,7 @@ import {
   clearTranscriptSpeakers,
   type DiarizationResult,
 } from './diarization';
-import { getEffectiveDuration } from './ripple';
+import { getEffectiveDuration, subtractCutsFromRange } from './ripple';
 import type { HighlightVariant } from './highlight-parser';
 import type { PackagingPlan } from './packaging-plan';
 import { applyCorrectionsToText, isPathologicalCorrection } from './learning-memory';
@@ -901,6 +901,18 @@ export class Project {
       start = 0;
       end = Math.min(videoDur, Math.max(0.2, videoDur));
     }
+    // Don't let the seed straddle a cut — clamp to the kept piece around the
+    // hint so a custom variant starts life clean (never spanning deleted
+    // footage). The hint normally sits in kept content (the player skips cuts).
+    const seedPieces = subtractCutsFromRange({ start, end }, this.cutRanges);
+    if (seedPieces.length > 0) {
+      const within = seedPieces.find((p) => hint >= p.start && hint < p.end);
+      const chosen =
+        within ??
+        seedPieces.reduce((a, b) => (b.end - b.start > a.end - a.start ? b : a));
+      start = chosen.start;
+      end = chosen.end;
+    }
     // Auto-number "自定义 #N" if no explicit title.
     const existingCustom = this.highlightVariants.filter((v) =>
       /^自定义\s*#?\d+/.test(v.title)
@@ -1168,6 +1180,28 @@ export class Project {
     if (vIdx < 0) return false;
     const variant = this.highlightVariants[vIdx];
     if (segmentIdx < 0 || segmentIdx >= variant.segments.length) return false;
+    const orig = variant.segments[segmentIdx];
+
+    // A segment must not span a cut. Punch cuts out of the requested range and
+    // clamp to the kept piece that best matches where this segment already
+    // lived — so dragging an edge across a deleted region STOPS at the cut
+    // boundary instead of swallowing it. (To grab content on the far side,
+    // the user adds another segment, which splits naturally.) Reject if the
+    // whole new range fell inside a cut.
+    const pieces = subtractCutsFromRange(
+      { start: newStart, end: newEnd },
+      this.cutRanges
+    ).filter((p) => p.end - p.start >= MIN_DUR);
+    if (pieces.length === 0) return false;
+    const overlap = (p: { start: number; end: number }): number =>
+      Math.max(0, Math.min(p.end, orig.end) - Math.max(p.start, orig.start));
+    const pick = pieces.reduce((best, p) => {
+      const op = overlap(p);
+      const ob = overlap(best);
+      if (op > ob) return p;
+      if (op === ob && p.end - p.start > best.end - best.start) return p;
+      return best;
+    }, pieces[0]);
 
     // Overlap is intentionally ALLOWED. Users sometimes want to reuse
     // the same moment multiple times in a variant — or have two
@@ -1179,8 +1213,8 @@ export class Project {
       i === segmentIdx
         ? {
             ...s,
-            start: newStart,
-            end: newEnd,
+            start: pick.start,
+            end: pick.end,
             reason: newReason !== undefined ? newReason : s.reason,
           }
         : s
@@ -1283,8 +1317,21 @@ export class Project {
     if (vIdx < 0) return false;
     const variant = this.highlightVariants[vIdx];
 
+    // A highlight segment must NEVER span a cut. Punch the ripple cuts out of
+    // the requested range so a gesture painted across a deleted region becomes
+    // kept-only piece(s); otherwise preview + export replay the cut footage
+    // (the "导出把剪掉的内容又带回来了 / 一按预览播放完整视频" bug).
+    const pieces = subtractCutsFromRange(
+      { start: newStart, end: newEnd },
+      this.cutRanges
+    ).filter((p) => p.end - p.start > 0.05);
+    if (pieces.length === 0) return false;
+
     // Overlap allowed — see updateHighlightVariantSegment for rationale.
-    const nextSegs = [...variant.segments, { start: newStart, end: newEnd, reason }];
+    const nextSegs = [
+      ...variant.segments,
+      ...pieces.map((p) => ({ start: p.start, end: p.end, reason })),
+    ];
     const nextVariant = {
       ...variant,
       segments: nextSegs,

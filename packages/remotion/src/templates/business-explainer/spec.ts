@@ -18,6 +18,7 @@ export interface BusinessExplainerSpec {
   cues: Cue[]; // 字幕线
   effects?: EffectSpec[]; // 镜头特效线
   sounds?: SoundCue[]; // 音效线
+  soundsVolume?: number; // 全体音效音量倍率 0..1（默认 1），每条最终音量 = (cue.volume ?? 0.85) × 此值
   subtitleStyle?: SimpleSubtitleStyle; // 通用模板的全局字幕外观
 }
 

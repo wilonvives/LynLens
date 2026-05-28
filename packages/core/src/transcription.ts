@@ -5,7 +5,7 @@ import path from 'node:path';
 import { StringDecoder } from 'node:string_decoder';
 import { v4 as uuid } from 'uuid';
 import { isMainlyCJK } from './subtitle';
-import { cutFingerprint, effectiveToSource } from './ripple';
+import { cutFingerprint, effectiveToSource, mapEffectiveRangeToSource } from './ripple';
 import { mkTmpDir, resolveFfmpegPaths, type FfmpegPaths } from './ffmpeg';
 import { applyCorrectionsToText, isPathologicalCorrection } from './learning-memory';
 import type { Transcript, TranscriptSegment, TranscriptWord } from './types';
@@ -280,25 +280,81 @@ function invertCutsToKeeps(
   return keeps;
 }
 
-/** Map an effective-time (post-cut) transcript back to source-time. */
+/**
+ * Map an effective-time (post-cut) transcript back to source-time.
+ *
+ * A subtitle line whisper produced from the kept audio can straddle a glued
+ * cut boundary (whisper grouped speech either side of a removed chunk). Mapping
+ * the two endpoints independently would inflate the segment envelope to SPAN
+ * the deleted region — same straddle bug the highlight parser had. So we split
+ * such a line at the boundary via `mapEffectiveRangeToSource`.
+ *
+ * Text safety: splitting a card means rebuilding each piece's text from its
+ * words, so we only split when the words reconstruct the text losslessly (the
+ * CJK per-char case — `words.join('') === text`). For Latin (words carry no
+ * spaces) or any post-correction divergence, we keep the card whole — its
+ * envelope spans the cut but the SubtitlePanel collapses it on display and the
+ * text stays byte-for-byte intact. Integrity always wins over precision.
+ */
 function mapTranscriptToSource(
   transcript: Transcript,
   cuts: ReadonlyArray<{ start: number; end: number }>
 ): Transcript {
   const c = cuts.map((r) => ({ start: r.start, end: r.end }));
-  return {
-    ...transcript,
-    segments: transcript.segments.map((s) => ({
-      ...s,
-      start: effectiveToSource(s.start, c),
-      end: effectiveToSource(s.end, c),
-      words: (s.words ?? []).map((w) => ({
-        w: w.w,
-        start: effectiveToSource(w.start, c),
-        end: effectiveToSource(w.end, c),
-      })),
-    })),
-  };
+  const out: TranscriptSegment[] = [];
+  for (const s of transcript.segments) {
+    const srcWords: TranscriptWord[] = (s.words ?? []).map((w) => ({
+      w: w.w,
+      start: effectiveToSource(w.start, c),
+      end: effectiveToSource(w.end, c),
+    }));
+    const pieces = mapEffectiveRangeToSource({ start: s.start, end: s.end }, c);
+
+    // No straddle (≤1 kept piece) → one card, endpoints mapped directly.
+    if (pieces.length <= 1) {
+      out.push({
+        ...s,
+        start: pieces[0]?.start ?? effectiveToSource(s.start, c),
+        end: pieces[0]?.end ?? effectiveToSource(s.end, c),
+        words: srcWords,
+      });
+      continue;
+    }
+
+    // Straddles a cut. Split only when lossless; else keep whole (safe).
+    const lossless = srcWords.length > 0 && srcWords.map((w) => w.w).join('') === s.text;
+    if (!lossless) {
+      out.push({
+        ...s,
+        start: pieces[0].start,
+        end: pieces[pieces.length - 1].end,
+        words: srcWords,
+      });
+      continue;
+    }
+
+    // One card per kept piece. Assign each word by its source midpoint.
+    for (const p of pieces) {
+      const inPiece = srcWords.filter((w) => {
+        const mid = (w.start + w.end) / 2;
+        return mid >= p.start - 1e-3 && mid < p.end + 1e-3;
+      });
+      if (inPiece.length === 0) continue;
+      const text = inPiece.map((w) => w.w).join('');
+      if (!text) continue;
+      const start = Math.max(p.start, inPiece[0].start);
+      const end = Math.max(Math.min(p.end, inPiece[inPiece.length - 1].end), start + 0.001);
+      out.push({
+        ...s,
+        id: `t_${uuid().slice(0, 8)}`,
+        start,
+        end,
+        text,
+        words: inPiece.map((w) => ({ w: w.w, start: w.start, end: Math.min(w.end, p.end) })),
+      });
+    }
+  }
+  return { ...transcript, segments: out };
 }
 
 /**

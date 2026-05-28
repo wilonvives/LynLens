@@ -43,9 +43,12 @@ export interface PackagingPlayerRef {
 }
 
 interface Props {
-  /** HTTP URL (localhost media server) to the trimmed variant clip. */
+  /** HTTP URL (localhost media server) to the clip. For 整片-with-cuts this is
+   *  the RAW source and `clips` lists the kept ranges to stitch live. */
   videoSrc: string;
   spec: BusinessExplainerSpec;
+  /** 整片-with-cuts only: kept source ranges played per-segment from videoSrc. */
+  clips?: Array<{ fromSec: number; toSec: number }>;
   durationInSeconds: number;
   fps: number;
   width: number;
@@ -57,6 +60,7 @@ interface Props {
 type BusinessExplainerProps = {
   videoSrc: string;
   spec: BusinessExplainerSpec;
+  clips?: Array<{ fromSec: number; toSec: number }>;
 };
 
 /** Surface composition crashes on screen instead of a silent blank player. */
@@ -83,6 +87,7 @@ function ErrorFallback({ error }: { error: Error }): React.ReactNode {
 export function PackagingRemotionPlayer({
   videoSrc,
   spec,
+  clips,
   durationInSeconds,
   fps,
   width,
@@ -90,7 +95,7 @@ export function PackagingRemotionPlayer({
   playerRef,
 }: Props): JSX.Element {
   const durationInFrames = Math.max(1, Math.round(durationInSeconds * fps));
-  const inputProps: BusinessExplainerProps = { videoSrc, spec };
+  const inputProps: BusinessExplainerProps = { videoSrc, spec, clips };
   return (
     <Player
       ref={playerRef}

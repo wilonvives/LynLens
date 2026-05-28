@@ -32,6 +32,14 @@ interface State {
   diarizationEngine: 'mock' | 'sherpa-onnx' | null;
 
   previewMode: boolean;
+  /**
+   * Player playback speed (1 = normal). Shared across the 粗剪 and 高光
+   * players so "打快查看" carries over when switching tabs. Transient view
+   * state — NOT persisted to the .qcp (it's a viewing aid, not project data).
+   * HTML5 resets video.playbackRate to 1 on every src (re)load, so the
+   * players re-apply this via useApplyPlaybackRate.
+   */
+  playbackRate: number;
   export: ExportState;
 
   setProject(p: { projectId: string; videoPath: string; videoUrl: string; videoMeta: VideoMeta }): void;
@@ -44,6 +52,7 @@ interface State {
   setSpeakerNames(names: Record<string, string>): void;
   setDiarizationEngine(engine: 'mock' | 'sherpa-onnx' | null): void;
   setPreviewMode(v: boolean): void;
+  setPlaybackRate(n: number): void;
   applyEvent(e: LynLensEvent): void;
 }
 
@@ -62,6 +71,7 @@ export const useStore = create<State>((set, get) => ({
   speakerNames: {},
   diarizationEngine: null,
   previewMode: false,
+  playbackRate: 1,
   export: { active: false, percent: 0, stage: '' },
 
   setProject(p) {
@@ -119,6 +129,11 @@ export const useStore = create<State>((set, get) => ({
   },
   setPreviewMode(v) {
     set({ previewMode: v });
+  },
+  setPlaybackRate(n) {
+    // Clamp to the supported set's range; reject NaN.
+    const r = Number.isFinite(n) ? Math.max(0.25, Math.min(6, n)) : 1;
+    set({ playbackRate: r });
   },
   applyEvent(e) {
     const s = get();

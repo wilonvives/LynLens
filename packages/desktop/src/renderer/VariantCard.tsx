@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { createPortal } from 'react-dom';
-import type { HighlightVariant, Transcript, VariantStatus } from '@lynlens/core';
+import type { HighlightVariant, Range, Transcript, VariantStatus } from '@lynlens/core';
+import { effectiveToSource, sourceToEffective } from './core-browser';
 import { formatTime } from './util';
 
 interface Props {
@@ -21,6 +22,13 @@ interface Props {
    * text content when the user hits 「复制文案」.
    */
   transcript: Transcript | null;
+  /**
+   * Ripple cut ranges (source time). Variant segments are STORED in source
+   * time but DISPLAYED in effective (post-cut) time so the numbers match the
+   * 粗剪 timeline + subtitle panel. Drives source↔effective conversion for
+   * both display and inline time-edit. Empty when nothing is cut.
+   */
+  cutRanges: readonly Range[];
   /** Active project id — needed for the segment-edit IPCs. */
   projectId: string | null;
   onSelect: (variant: HighlightVariant) => void;
@@ -227,6 +235,7 @@ export function VariantCard({
   playingSegIdx,
   status,
   transcript,
+  cutRanges,
   projectId,
   onSelect,
   onSelectSegment,
@@ -278,12 +287,15 @@ export function VariantCard({
   async function commitTimeEdit(
     segIdx: number,
     edge: 'start' | 'end',
-    newValueSec: number
+    // EFFECTIVE seconds (what the user typed / sees). Converted to source
+    // before persisting — variant segments are stored in source time.
+    newEffSec: number
   ): Promise<boolean> {
     if (!projectId) return false;
     const seg = variant.segments[segIdx];
-    const newStart = edge === 'start' ? newValueSec : seg.start;
-    const newEnd = edge === 'end' ? newValueSec : seg.end;
+    const newSrcSec = effectiveToSource(newEffSec, cutRanges);
+    const newStart = edge === 'start' ? newSrcSec : seg.start;
+    const newEnd = edge === 'end' ? newSrcSec : seg.end;
     try {
       const ok = await window.lynlens.updateHighlightVariantSegment(
         projectId,
@@ -313,16 +325,18 @@ export function VariantCard({
     deltaSec: number
   ): void {
     const seg = variant.segments[segIdx];
-    const cur = edge === 'start' ? seg.start : seg.end;
-    const next = Math.max(0, cur + deltaSec);
+    // Nudge in EFFECTIVE space so the displayed number moves by exactly the
+    // delta the button promises (±0.1 / ±0.5). commitTimeEdit converts back.
+    const curEff = sourceToEffective(edge === 'start' ? seg.start : seg.end, cutRanges);
+    const nextEff = Math.max(0, curEff + deltaSec);
     // Optimistic draft update so the input's number jumps immediately.
     // Same pattern as SubtitlePanel's TimestampEditor.
     setEditing((prev) =>
       prev && prev.segIdx === segIdx && prev.kind === edge
-        ? { ...prev, draft: formatTime(next) }
+        ? { ...prev, draft: formatTime(nextEff) }
         : prev
     );
-    void commitTimeEdit(segIdx, edge, next);
+    void commitTimeEdit(segIdx, edge, nextEff);
   }
 
   async function commitReasonEdit(segIdx: number, newReason: string): Promise<void> {
@@ -913,7 +927,7 @@ export function VariantCard({
                   </span>
                   <span className="variant-seg-idx">{i + 1}</span>
                   <EditableTimeCell
-                    value={s.start}
+                    value={sourceToEffective(s.start, cutRanges)}
                     editing={editingThis && editingThis.kind === 'start' ? editingThis : null}
                     onJump={() => onSelectSegment(variant, i)}
                     onBeginEdit={(draft) =>
@@ -934,7 +948,7 @@ export function VariantCard({
                   />
                   <span className="variant-seg-sep">-</span>
                   <EditableTimeCell
-                    value={s.end}
+                    value={sourceToEffective(s.end, cutRanges)}
                     editing={editingThis && editingThis.kind === 'end' ? editingThis : null}
                     onJump={() => onSelectSegment(variant, i)}
                     onBeginEdit={(draft) =>
