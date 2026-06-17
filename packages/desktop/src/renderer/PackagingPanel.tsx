@@ -329,6 +329,39 @@ export function PackagingPanel({ effectiveDuration }: Props): JSX.Element {
     return () => cancelAnimationFrame(raf);
   }, [isPlaying]);
 
+  // The live Remotion player (showLivePlayer, the active path) doesn't emit a
+  // timeupdate the way <video> does, so poll its current frame each rAF and
+  // feed it to currentTimeSec. This is what lets the 字幕 list follow playback
+  // (highlight + scroll the active cue) like the 粗剪 panel. setState bails when
+  // the value is unchanged, so a paused player costs only a number read.
+  useEffect(() => {
+    if (!(preview && videoMeta)) return;
+    const fps = videoMeta.fps || 30;
+    let raf = 0;
+    // Throttle to ~12fps. The poll feeds currentTimeSec, which re-renders the
+    // spec editor (40+ cue cards). At the full 60fps that re-render storm
+    // starves the main thread → the 字号 / cue inputs can't paint their caret
+    // ("光标跑不出来"). 12fps is plenty for highlighting/scrolling the active
+    // cue, and cuts the re-renders ~5×.
+    let lastEmit = 0;
+    const tick = (): void => {
+      const now = performance.now();
+      if (now - lastEmit >= 80) {
+        lastEmit = now;
+        const p = playerRef.current;
+        const f = p?.getCurrentFrame?.();
+        if (typeof f === 'number' && Number.isFinite(f)) {
+          setCurrentTimeSec(f / fps);
+        }
+      }
+      raf = requestAnimationFrame(tick);
+    };
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+    // Re-binds when a new preview clip loads (fps / player instance change).
+    // The live Remotion player is the only preview path, so this always runs.
+  }, [preview, videoMeta]);
+
   async function togglePlay(): Promise<void> {
     const v = videoRef.current;
     if (!v) return;

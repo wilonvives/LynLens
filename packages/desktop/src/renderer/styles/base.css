@@ -344,6 +344,13 @@ button.ai.active {
   min-height: 120px;
   flex-shrink: 0;
   position: relative;
+  /* Horizontal gutter so the waveform doesn't bleed to the window edges.
+     Functional, not just cosmetic: the mark/erase drag clamps cursorX to
+     [0, canvasWidth], so this gutter gives room to drag PAST the waveform's
+     first/last pixel — which is what lets you actually grab frame 0 and the
+     final frame. Without it the canvas touched the window edge and you could
+     never quite reach the first/last frame, always leaving 1 frame uncut. */
+  padding: 0 14px;
 }
 
 /* ---------- Shared timeline zoom-controls overlay ----------

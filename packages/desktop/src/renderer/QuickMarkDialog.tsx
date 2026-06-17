@@ -3,18 +3,32 @@ import { useState } from 'react';
 interface Props {
   hasTranscript: boolean;
   onCancel: () => void;
-  onConfirm: (opts: { minPauseSec: number; silenceThreshold: number }) => void;
+  onConfirm: (opts: {
+    minPauseSec: number;
+    sensitivity?: number;
+    silenceThreshold?: number;
+  }) => void;
 }
 
 /**
  * Before running the silence-based auto-marker, let the user pick how
  * aggressive the cut should be. Shorter minPauseSec = removes more; longer =
- * only cuts obvious dead air. A fine-grained slider is the most intuitive way
- * to dial this in without forcing users to type numbers.
+ * only cuts obvious dead air.
+ *
+ * The amplitude cut-line is ADAPTIVE by default — derived from the recording's
+ * own noise floor and tuned by 环境音灵敏度. This is what makes it work on noisy
+ * recordings (a fixed level missed every pause when there was room tone). The
+ * old fixed-absolute slider is kept under 进阶 for power users who want to pin
+ * an exact number.
  */
 export function QuickMarkDialog({ hasTranscript, onCancel, onConfirm }: Props) {
   const [minPause, setMinPause] = useState(1.0);
+  // 0..1 adaptive sensitivity (default 0.5). Higher = treat noisier pauses as
+  // silence (mark more) — turn this up when a noisy recording finds nothing.
+  const [sensitivity, setSensitivity] = useState(0.5);
   const [threshold, setThreshold] = useState(0.03);
+  // When true, use the fixed-absolute threshold instead of the adaptive one.
+  const [manualThreshold, setManualThreshold] = useState(false);
   const [advanced, setAdvanced] = useState(false);
 
   // Presets for quick selection
@@ -72,14 +86,46 @@ export function QuickMarkDialog({ hasTranscript, onCancel, onConfirm }: Props) {
           ))}
         </div>
 
+        {/* 环境音灵敏度 — the adaptive cut-line knob. Auto-measures this
+            recording's noise floor; the slider just nudges how aggressively
+            near-floor counts as silence. Disabled when manual override is on. */}
+        <div className="quick-row" style={{ marginTop: 4, opacity: manualThreshold ? 0.4 : 1 }}>
+          <label className="quick-label">
+            环境音灵敏度
+            <span className="quick-value">{Math.round(sensitivity * 100)}%</span>
+          </label>
+          <input
+            type="range"
+            min="0"
+            max="1"
+            step="0.05"
+            value={sensitivity}
+            disabled={manualThreshold}
+            onChange={(e) => setSensitivity(Number(e.target.value))}
+            className="quick-slider"
+          />
+          <div className="quick-hint">
+            自动按这段录音的底噪判断静音。环境越吵 / 标不出停顿 → 灵敏度调高一点。
+          </div>
+        </div>
+
         <div className="quick-advanced">
           <button className="quick-adv-toggle" onClick={() => setAdvanced((v) => !v)}>
-            {advanced ? '▾' : '▸'} 进阶:音量阈值
+            {advanced ? '▾' : '▸'} 进阶:手动固定音量阈值
           </button>
           {advanced && (
             <div className="quick-row" style={{ marginTop: 8 }}>
-              <label className="quick-label">
-                低于此音量视为静音
+              <label
+                className="quick-label"
+                style={{ display: 'flex', alignItems: 'center', gap: 6 }}
+              >
+                <input
+                  type="checkbox"
+                  checked={manualThreshold}
+                  onChange={(e) => setManualThreshold(e.target.checked)}
+                  style={{ accentColor: 'var(--accent)' }}
+                />
+                用固定阈值(关掉自动)
                 <span className="quick-value">{threshold.toFixed(3)}</span>
               </label>
               <input
@@ -88,11 +134,13 @@ export function QuickMarkDialog({ hasTranscript, onCancel, onConfirm }: Props) {
                 max="0.1"
                 step="0.005"
                 value={threshold}
+                disabled={!manualThreshold}
                 onChange={(e) => setThreshold(Number(e.target.value))}
                 className="quick-slider"
               />
               <div className="quick-hint">
-                数字越大 = 把更多"小声"也当静音。默认 0.03 适合大多数人声录音。
+                只有勾选「用固定阈值」时才生效。数字越大 = 把更多"小声"当静音。
+                一般用上面的自动灵敏度就好。
               </div>
             </div>
           )}
@@ -102,7 +150,13 @@ export function QuickMarkDialog({ hasTranscript, onCancel, onConfirm }: Props) {
           <button onClick={onCancel}>取消</button>
           <button
             className="primary"
-            onClick={() => onConfirm({ minPauseSec: minPause, silenceThreshold: threshold })}
+            onClick={() =>
+              onConfirm(
+                manualThreshold
+                  ? { minPauseSec: minPause, silenceThreshold: threshold }
+                  : { minPauseSec: minPause, sensitivity }
+              )
+            }
           >
             开始分析
           </button>

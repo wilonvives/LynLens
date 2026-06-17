@@ -15,14 +15,30 @@ export const segmentTools: LynLensToolDef[] = [
   {
     name: 'ai_mark_silence',
     description:
-      '内置静音检测(可选:若已有字幕,还会识别语气词和重复段)。添加的段都进 pending 待审状态。',
+      '内置静音检测(可选:若已有字幕,还会识别语气词和重复段)。静音阈值默认自适应——按本段录音的底噪自动判定,环境有底噪也能标出停顿;sensitivity(0..1)调高=更宽松/标更多。只有当你想固定一个绝对音量阈值时才传 silenceThreshold。添加的段都进 pending 待审状态。',
     schema: {
       projectId: z.string(),
       minPauseSec: z.number().positive().default(1.0),
-      silenceThreshold: z.number().min(0).max(1).default(0.03),
+      sensitivity: z
+        .number()
+        .min(0)
+        .max(1)
+        .default(0.5)
+        .describe('自适应静音灵敏度 0..1,环境吵/标不出就调高'),
+      silenceThreshold: z
+        .number()
+        .min(0)
+        .max(1)
+        .optional()
+        .describe('固定绝对音量阈值(可选);给了就覆盖自适应'),
     },
     handler: async (
-      args: { projectId: string; minPauseSec: number; silenceThreshold: number },
+      args: {
+        projectId: string;
+        minPauseSec: number;
+        sensitivity: number;
+        silenceThreshold?: number;
+      },
       engine
     ) => {
       const project = engine.projects.get(args.projectId);
@@ -32,6 +48,7 @@ export const segmentTools: LynLensToolDef[] = [
       const env = await extractWaveform(project.videoPath, 4000, engine.ffmpegPaths);
       const silences = detectSilences(env.peak, project.videoMeta.duration, {
         minPauseSec: args.minPauseSec,
+        sensitivity: args.sensitivity,
         silenceThreshold: args.silenceThreshold,
       });
       let fillerCount = 0;

@@ -1173,48 +1173,35 @@ export class Project {
   ): boolean {
     const MIN_DUR = 0.2;
     if (!Number.isFinite(newStart) || !Number.isFinite(newEnd)) return false;
+    // CLAMP to video bounds instead of rejecting — dragging an edge a hair past
+    // 0 or the end should snap to the first/last frame, not pop "超出视频范围".
+    newStart = Math.max(0, newStart);
+    newEnd = Math.min(this.videoMeta.duration, newEnd);
     if (newEnd - newStart < MIN_DUR) return false;
-    if (newStart < 0 || newEnd > this.videoMeta.duration) return false;
 
     const vIdx = this.highlightVariants.findIndex((v) => v.id === variantId);
     if (vIdx < 0) return false;
     const variant = this.highlightVariants[vIdx];
     if (segmentIdx < 0 || segmentIdx >= variant.segments.length) return false;
-    const orig = variant.segments[segmentIdx];
 
-    // A segment must not span a cut. Punch cuts out of the requested range and
-    // clamp to the kept piece that best matches where this segment already
-    // lived — so dragging an edge across a deleted region STOPS at the cut
-    // boundary instead of swallowing it. (To grab content on the far side,
-    // the user adds another segment, which splits naturally.) Reject if the
-    // whole new range fell inside a cut.
-    const pieces = subtractCutsFromRange(
-      { start: newStart, end: newEnd },
-      this.cutRanges
-    ).filter((p) => p.end - p.start >= MIN_DUR);
-    if (pieces.length === 0) return false;
-    const overlap = (p: { start: number; end: number }): number =>
-      Math.max(0, Math.min(p.end, orig.end) - Math.max(p.start, orig.start));
-    const pick = pieces.reduce((best, p) => {
-      const op = overlap(p);
-      const ob = overlap(best);
-      if (op > ob) return p;
-      if (op === ob && p.end - p.start > best.end - best.start) return p;
-      return best;
-    }, pieces[0]);
-
-    // Overlap is intentionally ALLOWED. Users sometimes want to reuse
-    // the same moment multiple times in a variant — or have two
-    // adjacent segments fade into each other. Playback uses
-    // playingSegIdx to pick which one is "current"; overlap doesn't
-    // confuse it. Previously we rejected overlap which kept blocking
-    // legitimate edits ("拖来拖去都失败").
+    // Store the dragged range AS-IS. We deliberately do NOT clip it against the
+    // cuts here: the highlight timeline drags in EFFECTIVE (post-cut) space, so
+    // in a heavily-cut project almost any drag maps to a source range that
+    // straddles a cut. Clipping at mutation time would snap the segment to a
+    // sub-piece on every move ("一直弹回来不让拖"). The "a segment must not
+    // replay deleted footage" guarantee is enforced downstream instead, where
+    // it doesn't fight the gesture: the player always skips cut ranges, and
+    // export/preview run every segment through subtractCutsFromRange. So a
+    // stored range that spans a cut still plays + exports as kept-only.
+    //
+    // Overlap between segments is also intentionally ALLOWED (reuse a moment,
+    // cross-fade); playback uses playingSegIdx to pick the current one.
     const nextSegs = variant.segments.map((s, i) =>
       i === segmentIdx
         ? {
             ...s,
-            start: pick.start,
-            end: pick.end,
+            start: newStart,
+            end: newEnd,
             reason: newReason !== undefined ? newReason : s.reason,
           }
         : s
@@ -1310,28 +1297,25 @@ export class Project {
   ): boolean {
     const MIN_DUR = 0.2;
     if (!Number.isFinite(newStart) || !Number.isFinite(newEnd)) return false;
-    if (newEnd - newStart < MIN_DUR) return false;
-    if (newStart < 0 || newEnd > this.videoMeta.duration) return false;
+    // CLAMP to video bounds instead of rejecting. A shift-drag / edge that
+    // overshoots the start or end by a hair should grab frame 0 / the last
+    // frame, not pop "超出视频范围" and refuse — you could never select the
+    // first/last frame otherwise.
+    const start = Math.max(0, Math.min(newStart, newEnd));
+    const end = Math.min(this.videoMeta.duration, Math.max(newStart, newEnd));
+    if (end - start < MIN_DUR) return false;
 
     const vIdx = this.highlightVariants.findIndex((v) => v.id === variantId);
     if (vIdx < 0) return false;
     const variant = this.highlightVariants[vIdx];
 
-    // A highlight segment must NEVER span a cut. Punch the ripple cuts out of
-    // the requested range so a gesture painted across a deleted region becomes
-    // kept-only piece(s); otherwise preview + export replay the cut footage
-    // (the "导出把剪掉的内容又带回来了 / 一按预览播放完整视频" bug).
-    const pieces = subtractCutsFromRange(
-      { start: newStart, end: newEnd },
-      this.cutRanges
-    ).filter((p) => p.end - p.start > 0.05);
-    if (pieces.length === 0) return false;
-
-    // Overlap allowed — see updateHighlightVariantSegment for rationale.
-    const nextSegs = [
-      ...variant.segments,
-      ...pieces.map((p) => ({ start: p.start, end: p.end, reason })),
-    ];
+    // Store the painted range as ONE segment — do NOT split it at cut
+    // boundaries. One gesture = one segment, even across a heavily-cut
+    // timeline (was splitting into 3-4 pieces, "跳多个段出来"). A stored range
+    // that spans a cut still plays + exports as kept-only: the player skips
+    // cut ranges and export/preview run every segment through
+    // subtractCutsFromRange. Same as updateHighlightVariantSegment.
+    const nextSegs = [...variant.segments, { start, end, reason }];
     const nextVariant = {
       ...variant,
       segments: nextSegs,

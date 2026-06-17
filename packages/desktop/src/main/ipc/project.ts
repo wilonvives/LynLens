@@ -7,7 +7,7 @@
 
 import { dialog, ipcMain } from 'electron';
 import path from 'node:path';
-import { promises as fsp } from 'node:fs';
+import { existsSync, promises as fsp } from 'node:fs';
 import type { IpcContext } from './_context';
 
 /**
@@ -22,20 +22,72 @@ function toMediaUrl(absPath: string): string {
 export function registerProjectIpc(ctx: IpcContext): void {
   const { engine, getMainWindow, qcpPathForVideo, attachProjectWatcher, markInternalSave } = ctx;
 
+  /**
+   * Ask the user to relocate a project's source video when the linked file is
+   * gone (moved / renamed / deleted). Returns the newly-picked absolute path,
+   * or null if they cancel. Native dialogs so it works before any project
+   * state exists.
+   */
+  async function promptRelinkVideo(missingPath: string): Promise<string | null> {
+    const win = getMainWindow();
+    if (!win) return null;
+    const choice = await dialog.showMessageBox(win, {
+      type: 'warning',
+      title: '找不到原视频',
+      message: '这个项目链接的原视频找不到了',
+      detail:
+        `项目记录的视频路径:\n${missingPath}\n\n` +
+        '可能是文件被移动、改名或删除了。请重新选择这个视频文件来继续打开项目。',
+      buttons: ['重新选择视频…', '取消'],
+      defaultId: 0,
+      cancelId: 1,
+    });
+    if (choice.response !== 0) return null;
+    const missingDir = path.dirname(missingPath);
+    const picked = await dialog.showOpenDialog(win, {
+      title: '选择原视频文件',
+      defaultPath: existsSync(missingDir) ? missingDir : undefined,
+      properties: ['openFile'],
+      filters: [
+        { name: 'Video', extensions: ['mp4', 'mov', 'mkv', 'webm', 'avi', 'flv'] },
+        { name: 'All Files', extensions: ['*'] },
+      ],
+    });
+    if (picked.canceled || picked.filePaths.length === 0) return null;
+    return picked.filePaths[0];
+  }
+
   /** Open a .qcp by path — used by both the dialog and drag-and-drop. */
   async function openProjectFromQcpPath(qcpPath: string) {
     const raw = await fsp.readFile(qcpPath, 'utf-8');
-    const parsed = JSON.parse(raw) as { videoPath: string };
-    const project = await engine.openFromVideo({
-      videoPath: parsed.videoPath,
-      projectPath: qcpPath,
-    });
+    const data = JSON.parse(raw) as { videoPath: string } & Record<string, unknown>;
+    let videoPath = data.videoPath;
+
+    // The .qcp stores an ABSOLUTE path to the original video. If that file is
+    // gone (the user renamed / moved it), probing it with ffprobe would ENOENT
+    // and the open would hard-fail with a raw error. Instead, detect it up front
+    // and let the user relocate the file — then persist the new path into the
+    // .qcp so the next open just works.
+    if (!existsSync(videoPath)) {
+      const relinked = await promptRelinkVideo(videoPath);
+      if (!relinked) {
+        // User cancelled — abort the open cleanly (renderer treats null as no-op).
+        return null;
+      }
+      videoPath = relinked;
+      data.videoPath = videoPath;
+      // Safe to write before the watcher attaches (it's set up below), so this
+      // can't trip the external-change reload.
+      await fsp.writeFile(qcpPath, JSON.stringify(data, null, 2), 'utf-8');
+    }
+
+    const project = await engine.openFromVideo({ videoPath, projectPath: qcpPath });
     await attachProjectWatcher(project.id, qcpPath);
     return {
       projectId: project.id,
       videoMeta: project.videoMeta,
-      videoPath: parsed.videoPath,
-      videoUrl: toMediaUrl(parsed.videoPath),
+      videoPath,
+      videoUrl: toMediaUrl(videoPath),
     };
   }
 

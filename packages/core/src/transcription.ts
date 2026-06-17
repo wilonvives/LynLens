@@ -5,7 +5,7 @@ import path from 'node:path';
 import { StringDecoder } from 'node:string_decoder';
 import { v4 as uuid } from 'uuid';
 import { isMainlyCJK } from './subtitle';
-import { cutFingerprint, effectiveToSource, mapEffectiveRangeToSource } from './ripple';
+import { cutFingerprint, effectiveToSource } from './ripple';
 import { mkTmpDir, resolveFfmpegPaths, type FfmpegPaths } from './ffmpeg';
 import { applyCorrectionsToText, isPathologicalCorrection } from './learning-memory';
 import type { Transcript, TranscriptSegment, TranscriptWord } from './types';
@@ -159,7 +159,12 @@ export class WhisperLocalService implements TranscriptionService {
     // (post-cut) time and contains no cut-region content; we map it back to
     // source-time at the end.
     const editedMode = options.scope === 'edited' && cuts.length > 0;
-    const keeps = editedMode ? invertCutsToKeeps(cuts) : undefined;
+    // Shrink the cuts by a small pad so the kept-audio splices don't clip the
+    // boundary syllable (see padCutsForTranscription). The SAME padded set is
+    // used for the audio (here) and the source remap (below) so timing stays
+    // consistent; the stored fingerprint still uses the real cuts.
+    const audioCuts = editedMode ? padCutsForTranscription(cuts) : cuts;
+    const keeps = editedMode ? invertCutsToKeeps(audioCuts) : undefined;
     const { wavPath, cleanup } = await toWav16kMono(
       input,
       this.opts.ffmpegPaths ?? resolveFfmpegPaths(),
@@ -251,7 +256,10 @@ export class WhisperLocalService implements TranscriptionService {
         // Times are currently effective (post-cut). Map back to source-time so
         // the rest of the app (player seek, ripple, export) stays consistent,
         // and stamp the cut fingerprint so the UI can lock it when cuts change.
-        transcript = mapTranscriptToSource(transcript, cuts);
+        // Map back through the SAME padded cut set used for the audio, so the
+        // effective↔source times line up exactly. Fingerprint uses the real
+        // cuts so staleness detection compares against the project state.
+        transcript = mapTranscriptToSource(transcript, audioCuts);
         transcript = { ...transcript, scope: 'edited', cutFingerprint: cutFingerprint(cuts) };
       } else {
         transcript = { ...transcript, scope: 'full' };
@@ -261,6 +269,42 @@ export class WhisperLocalService implements TranscriptionService {
       await cleanup();
     }
   }
+}
+
+/**
+ * Shrink each cut inward by a small pad before building the edited-mode
+ * transcription audio. WHY: the kept ranges are the inverse of the cuts, so a
+ * cut boundary is also a keep boundary — and `atrim` slices the audio EXACTLY
+ * there. A user-marked cut almost always lands a few tens of ms INTO the
+ * adjacent kept word (you can't drag perfectly onto the silence), so the hard
+ * slice clips that word's onset/tail. whisper then hears a partial phoneme at
+ * every splice and drops / mis-hears the edge character — the "句子前后缺一个字"
+ * bug. Shrinking the cut lets each kept range keep a little lead-in/lead-out so
+ * the boundary syllable survives.
+ *
+ * Clamped to never consume more than 40% of a cut (20% each side), so a tiny
+ * filler cut stays mostly removed and isn't re-transcribed; large cuts (removed
+ * sentences / retakes) get the full pad with megabytes of gap to spare.
+ *
+ * MUST be applied consistently: the same shrunk set feeds BOTH
+ * `invertCutsToKeeps` (the audio) AND `mapTranscriptToSource` (the time remap),
+ * which keeps the effective↔source mapping exact. The project's REAL cuts are
+ * still used for the stored `cutFingerprint` (staleness detection).
+ */
+export function padCutsForTranscription(
+  cuts: ReadonlyArray<{ start: number; end: number }>,
+  pad = 0.15
+): Array<{ start: number; end: number }> {
+  const out: Array<{ start: number; end: number }> = [];
+  for (const c of cuts) {
+    const dur = c.end - c.start;
+    if (dur <= 0) continue;
+    const p = Math.min(pad, dur * 0.4);
+    const s = c.start + p;
+    const e = c.end - p;
+    if (e > s) out.push({ start: s, end: e });
+  }
+  return out;
 }
 
 /** Invert a cut set into the kept source-time ranges. The final range runs to
@@ -283,78 +327,35 @@ function invertCutsToKeeps(
 /**
  * Map an effective-time (post-cut) transcript back to source-time.
  *
- * A subtitle line whisper produced from the kept audio can straddle a glued
- * cut boundary (whisper grouped speech either side of a removed chunk). Mapping
- * the two endpoints independently would inflate the segment envelope to SPAN
- * the deleted region — same straddle bug the highlight parser had. So we split
- * such a line at the boundary via `mapEffectiveRangeToSource`.
- *
- * Text safety: splitting a card means rebuilding each piece's text from its
- * words, so we only split when the words reconstruct the text losslessly (the
- * CJK per-char case — `words.join('') === text`). For Latin (words carry no
- * spaces) or any post-correction divergence, we keep the card whole — its
- * envelope spans the cut but the SubtitlePanel collapses it on display and the
- * text stays byte-for-byte intact. Integrity always wins over precision.
+ * Whisper transcribed the COMPACTED (kept) audio, so the lines are already
+ * well-segmented in effective time. We must keep each line WHOLE — just map its
+ * start/end (and word times) back to source. We deliberately do NOT split a
+ * line that straddles a cut into per-piece fragments: with dense cuts that
+ * shatters normal lines into one-character cards ("一粒一粒的字"). A line whose
+ * source envelope spans a cut still displays correctly — the SubtitlePanel
+ * collapses cut regions via sourceToEffective, so it shows as one continuous
+ * line at the right effective position, and playback skips the cut. Whole,
+ * readable lines win; the highlight pipeline (which needs non-cut-spanning
+ * ranges for export) handles its own splitting separately.
  */
 function mapTranscriptToSource(
   transcript: Transcript,
   cuts: ReadonlyArray<{ start: number; end: number }>
 ): Transcript {
   const c = cuts.map((r) => ({ start: r.start, end: r.end }));
-  const out: TranscriptSegment[] = [];
-  for (const s of transcript.segments) {
-    const srcWords: TranscriptWord[] = (s.words ?? []).map((w) => ({
-      w: w.w,
-      start: effectiveToSource(w.start, c),
-      end: effectiveToSource(w.end, c),
-    }));
-    const pieces = mapEffectiveRangeToSource({ start: s.start, end: s.end }, c);
-
-    // No straddle (≤1 kept piece) → one card, endpoints mapped directly.
-    if (pieces.length <= 1) {
-      out.push({
-        ...s,
-        start: pieces[0]?.start ?? effectiveToSource(s.start, c),
-        end: pieces[0]?.end ?? effectiveToSource(s.end, c),
-        words: srcWords,
-      });
-      continue;
-    }
-
-    // Straddles a cut. Split only when lossless; else keep whole (safe).
-    const lossless = srcWords.length > 0 && srcWords.map((w) => w.w).join('') === s.text;
-    if (!lossless) {
-      out.push({
-        ...s,
-        start: pieces[0].start,
-        end: pieces[pieces.length - 1].end,
-        words: srcWords,
-      });
-      continue;
-    }
-
-    // One card per kept piece. Assign each word by its source midpoint.
-    for (const p of pieces) {
-      const inPiece = srcWords.filter((w) => {
-        const mid = (w.start + w.end) / 2;
-        return mid >= p.start - 1e-3 && mid < p.end + 1e-3;
-      });
-      if (inPiece.length === 0) continue;
-      const text = inPiece.map((w) => w.w).join('');
-      if (!text) continue;
-      const start = Math.max(p.start, inPiece[0].start);
-      const end = Math.max(Math.min(p.end, inPiece[inPiece.length - 1].end), start + 0.001);
-      out.push({
-        ...s,
-        id: `t_${uuid().slice(0, 8)}`,
-        start,
-        end,
-        text,
-        words: inPiece.map((w) => ({ w: w.w, start: w.start, end: Math.min(w.end, p.end) })),
-      });
-    }
-  }
-  return { ...transcript, segments: out };
+  return {
+    ...transcript,
+    segments: transcript.segments.map((s) => ({
+      ...s,
+      start: effectiveToSource(s.start, c),
+      end: effectiveToSource(s.end, c),
+      words: (s.words ?? []).map((w) => ({
+        w: w.w,
+        start: effectiveToSource(w.start, c),
+        end: effectiveToSource(w.end, c),
+      })),
+    })),
+  };
 }
 
 /**
@@ -1154,20 +1155,68 @@ function jaccardSimilarity(a: string, b: string): number {
 // ---------- silence-based "built-in AI" predictor ----------
 
 /**
+ * Estimate an adaptive silence threshold from the waveform's own loudness
+ * distribution, instead of a fixed absolute level. A fixed 0.03 fails on
+ * recordings with room tone / AC / street noise: the "silence" between words
+ * never drops below 0.03, so nothing is detected ("没找到符合条件的段").
+ *
+ * We read the noise FLOOR (a low percentile = the quiet baseline / room tone)
+ * and a SPEECH reference (a high percentile), then place the threshold a
+ * fraction `k` of the way from floor to speech. So "silence" means "near this
+ * recording's own quiet baseline", which auto-scales with the environment.
+ *
+ * `sensitivity` (0..1, default 0.5) nudges `k`: higher = threshold sits higher
+ * = treats noisier pauses as silence (marks more). This is the knob the user
+ * turns up when a noisy recording still isn't getting marked.
+ */
+export function adaptiveSilenceThreshold(
+  waveform: Float32Array,
+  sensitivity = 0.5
+): number {
+  if (waveform.length === 0) return 0.03;
+  // Sort a copy to read percentiles. (4000 buckets → trivial cost.)
+  const sorted = Float32Array.from(waveform).sort();
+  const pct = (p: number): number =>
+    sorted[Math.min(sorted.length - 1, Math.max(0, Math.floor(p * sorted.length)))];
+  const floor = pct(0.05); // quiet baseline (room tone / true gaps)
+  const speech = pct(0.85); // speech reference level
+  const span = speech - floor;
+  // Uniformly-loud recording (no quiet baseline distinct from speech) → there
+  // are no pauses to find. Return a line just below the floor so the detector
+  // matches (almost) nothing, instead of the "everything is silent" failure
+  // that happens when the cut line creeps above the speech level.
+  if (span < 0.02) return Math.max(0, floor - 0.001);
+  // sensitivity 0..1 → k 0.10..0.42 (more sensitive = higher cut line = mark more).
+  const k = 0.1 + Math.max(0, Math.min(1, sensitivity)) * 0.32;
+  // Place the cut between floor and speech; clamp so it can't reach the speech
+  // level (which would mark real talking as silence).
+  const thr = Math.min(speech * 0.9, Math.max(floor + 0.004, floor + span * k));
+  return thr;
+}
+
+/**
  * Detect silent regions from a normalized waveform (Float32Array of peak or rms
  * amplitudes in [0,1]). Returns ranges (seconds) longer than minPauseSec where
- * amplitude stays below silenceThreshold. Powers the in-app "🤖 AI 预标记" button.
+ * amplitude stays below the silence threshold. Powers the in-app "快速标记".
+ *
+ * Threshold is ADAPTIVE by default (derived from this recording's own noise
+ * floor via `adaptiveSilenceThreshold`, tuned by `sensitivity`). Pass an
+ * explicit `silenceThreshold` to override with a fixed absolute level
+ * (the dialog's "进阶:手动音量阈值").
  */
 export function detectSilences(
   waveform: Float32Array,
   totalDuration: number,
   options: {
     silenceThreshold?: number;
+    sensitivity?: number;
     minPauseSec?: number;
     paddingSec?: number;
   } = {}
 ): Array<{ start: number; end: number; reason: string }> {
-  const threshold = options.silenceThreshold ?? 0.03;
+  const threshold =
+    options.silenceThreshold ??
+    adaptiveSilenceThreshold(waveform, options.sensitivity ?? 0.5);
   const minPause = options.minPauseSec ?? 1.0;
   const padding = options.paddingSec ?? 0.1;
   if (waveform.length === 0 || totalDuration <= 0) return [];

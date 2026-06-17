@@ -14,7 +14,7 @@
  *
  * Effects + sounds editing live in the 画面 / 声音 tabs (separate editors).
  */
-import { Fragment, useMemo, useState } from 'react';
+import { Fragment, useEffect, useMemo, useRef, useState } from 'react';
 import type {
   BusinessExplainerSpec,
   SimpleSubtitleStyle,
@@ -60,6 +60,21 @@ export function PackagingSpecEditor({
     });
     return idx;
   }, [spec.cues, currentTimeSec]);
+
+  // Follow playback: scroll the active cue into view as it changes (like the
+  // 粗剪 字幕 panel) so the user always sees which line is playing. `nearest`
+  // only scrolls when the cue is off-screen (no yank if already visible). We
+  // skip while the user is typing in a cue field so it doesn't fight editing.
+  const cardRefs = useRef<Map<number, HTMLDivElement>>(new Map());
+  useEffect(() => {
+    if (activeIdx < 0) return;
+    const el = cardRefs.current.get(activeIdx);
+    if (!el) return;
+    const focused = document.activeElement;
+    const tag = focused?.tagName?.toLowerCase();
+    if (tag === 'input' || tag === 'textarea') return; // editing — don't yank
+    el.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  }, [activeIdx]);
 
   function patchCue(idx: number, patch: Partial<SpecCue>): void {
     const cues = spec.cues.map((c, i) => (i === idx ? { ...c, ...patch } : c));
@@ -133,16 +148,23 @@ export function PackagingSpecEditor({
         {spec.cues.map((cue, idx) => (
           <Fragment key={idx}>
             <InsertGap onInsert={() => insertCueAt(idx)} />
-            <CueCard
-              cue={cue}
-              active={idx === activeIdx}
-              onSeek={() => onSeekToCue?.(cue.start)}
-              onText={(text) => patchCue(idx, { text })}
-              onStyle={(s) => setStyle(idx, s)}
-              onHighlight={(highlight) => patchCue(idx, { highlight })}
-              onSegments={(segments) => patchCue(idx, { segments })}
-              onDelete={() => deleteCue(idx)}
-            />
+            <div
+              ref={(el) => {
+                if (el) cardRefs.current.set(idx, el);
+                else cardRefs.current.delete(idx);
+              }}
+            >
+              <CueCard
+                cue={cue}
+                active={idx === activeIdx}
+                onSeek={() => onSeekToCue?.(cue.start)}
+                onText={(text) => patchCue(idx, { text })}
+                onStyle={(s) => setStyle(idx, s)}
+                onHighlight={(highlight) => patchCue(idx, { highlight })}
+                onSegments={(segments) => patchCue(idx, { segments })}
+                onDelete={() => deleteCue(idx)}
+              />
+            </div>
           </Fragment>
         ))}
         <InsertGap onInsert={() => insertCueAt(spec.cues.length)} />
@@ -249,14 +271,12 @@ function SimpleStyleBar({
         </span>
       </Field>
       <Field label="字号">
-        <input
-          type="number"
+        <NumInput
+          value={value.size}
           min={24}
           max={140}
           step={1}
-          value={value.size}
-          onChange={(e) => patch({ size: clampNum(parseInt(e.target.value, 10), 24, 140) })}
-          style={numInput}
+          onCommit={(n) => patch({ size: n })}
         />
       </Field>
       <Field label="字色">
@@ -276,17 +296,63 @@ function SimpleStyleBar({
         />
       </Field>
       <Field label="描边粗">
-        <input
-          type="number"
+        <NumInput
+          value={value.outlineWidth}
           min={0}
           max={16}
           step={0.5}
-          value={value.outlineWidth}
-          onChange={(e) => patch({ outlineWidth: clampNum(parseFloat(e.target.value), 0, 16) })}
-          style={numInput}
+          onCommit={(n) => patch({ outlineWidth: n })}
         />
       </Field>
     </div>
+  );
+}
+
+/**
+ * Number input that allows SMOOTH typing past a min/max. The naive
+ * `value={n}` + `onChange={clamp}` clamps on every keystroke, so with min=24
+ * typing "50" snaps "5"→24 and you can never reach 50. Instead we hold a local
+ * draft string while focused (free typing, no clamp) and only parse+clamp on
+ * blur / Enter. Escape discards the edit.
+ */
+function NumInput({
+  value,
+  min,
+  max,
+  step = 1,
+  onCommit,
+}: {
+  value: number;
+  min: number;
+  max: number;
+  step?: number;
+  onCommit: (n: number) => void;
+}): JSX.Element {
+  const [draft, setDraft] = useState<string | null>(null);
+  const commit = (): void => {
+    if (draft === null) return;
+    const n = parseFloat(draft);
+    setDraft(null);
+    if (Number.isFinite(n)) onCommit(clampNum(n, min, max));
+  };
+  return (
+    <input
+      type="number"
+      min={min}
+      max={max}
+      step={step}
+      value={draft ?? String(value)}
+      onChange={(e) => setDraft(e.target.value)}
+      onBlur={commit}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter') e.currentTarget.blur();
+        else if (e.key === 'Escape') {
+          setDraft(null);
+          e.currentTarget.blur();
+        }
+      }}
+      style={numInput}
+    />
   );
 }
 

@@ -239,11 +239,19 @@ async function runOneEncode(
   signal: AbortSignal | undefined,
   onProgress: ((percent: number) => void) | undefined
 ): Promise<void> {
+  // Filtergraph via a script file (not inline) — a many-segment concat would
+  // otherwise overflow the OS command-line cap → spawn ENAMETOOLONG. See
+  // export-service for the same fix.
+  const filterScriptPath = path.join(
+    os.tmpdir(),
+    `lynlens-pvfilter-${crypto.randomBytes(6).toString('hex')}.txt`
+  );
+  await fs.writeFile(filterScriptPath, filter, 'utf-8');
   const args: string[] = [
     '-v', 'error',
     '-noautorotate',
     '-i', videoPath,
-    '-filter_complex', filter,
+    '-filter_complex_script', filterScriptPath,
     '-map', '[outv]',
     '-map', '[outa]',
     '-c:v', codec,
@@ -255,17 +263,21 @@ async function runOneEncode(
     '-y',
     outputPath,
   ];
-  await runFfmpeg({
-    ffmpegPath: paths.ffmpeg,
-    signal,
-    args,
-    onProgress: ({ outTime }) => {
-      if (onProgress && totalDuration > 0) {
-        const pct = Math.min(99, (outTime / totalDuration) * 99);
-        onProgress(pct);
-      }
-    },
-  });
+  try {
+    await runFfmpeg({
+      ffmpegPath: paths.ffmpeg,
+      signal,
+      args,
+      onProgress: ({ outTime }) => {
+        if (onProgress && totalDuration > 0) {
+          const pct = Math.min(99, (outTime / totalDuration) * 99);
+          onProgress(pct);
+        }
+      },
+    });
+  } finally {
+    await fs.unlink(filterScriptPath).catch(() => {});
+  }
   if (onProgress) onProgress(100);
 }
 

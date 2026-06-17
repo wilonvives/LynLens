@@ -82,9 +82,10 @@ export function useKeyboardShortcuts({
       if (meta && e.key.toLowerCase() === 'r') {
         if (!store.projectId) return;
         e.preventDefault();
+        // Adaptive threshold (omit silenceThreshold) so the quick shortcut
+        // works on noisy recordings too. Default sensitivity.
         void window.lynlens.aiMarkSilence(store.projectId, {
           minPauseSec: 1.0,
-          silenceThreshold: 0.03,
         });
         return;
       }

@@ -1,5 +1,7 @@
 import { promises as fs } from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
+import crypto from 'node:crypto';
 import type { EventBus } from './event-bus';
 import {
   probeColorMeta,
@@ -270,6 +272,17 @@ export class ExportService {
       colorSpace
     );
 
+    // Pass the filtergraph via a SCRIPT FILE, not inline on the command line.
+    // A project with many cuts produces one trim+concat node per kept segment,
+    // so `filter` can be tens of KB — past the OS command-line length cap
+    // (Windows ~32KB) → `spawn ENAMETOOLONG`. `-filter_complex_script <file>`
+    // reads the graph from disk and removes the limit entirely.
+    const filterScriptPath = path.join(
+      os.tmpdir(),
+      `lynlens-filter-${crypto.randomBytes(6).toString('hex')}.txt`
+    );
+    await fs.writeFile(filterScriptPath, filter, 'utf-8');
+
     const args: string[] = [
       '-v', 'error',
       // Disable implicit auto-rotation so our explicit transpose filter is
@@ -277,7 +290,7 @@ export class ExportService {
       // on ffmpeg versions that auto-rotate before filter_complex).
       '-noautorotate',
       '-i', videoPath,
-      '-filter_complex', filter,
+      '-filter_complex_script', filterScriptPath,
       '-map', '[outv]',
       '-map', '[outa]',
       '-c:v', encoder,
@@ -322,20 +335,24 @@ export class ExportService {
       outputPath
     );
 
-    await runFfmpeg({
-      ffmpegPath: paths.ffmpeg,
-      signal: options.signal,
-      args,
-      onProgress: ({ outTime }) => {
-        const percent = Math.min(99, (outTime / totalDuration) * 99);
-        this.eventBus.emit({
-          type: 'export.progress',
-          projectId,
-          percent,
-          stage: '编码中',
-        });
-      },
-    });
+    try {
+      await runFfmpeg({
+        ffmpegPath: paths.ffmpeg,
+        signal: options.signal,
+        args,
+        onProgress: ({ outTime }) => {
+          const percent = Math.min(99, (outTime / totalDuration) * 99);
+          this.eventBus.emit({
+            type: 'export.progress',
+            projectId,
+            percent,
+            stage: '编码中',
+          });
+        },
+      });
+    } finally {
+      await fs.unlink(filterScriptPath).catch(() => {});
+    }
     this.eventBus.emit({ type: 'export.progress', projectId, percent: 100, stage: '完成' });
   }
 }

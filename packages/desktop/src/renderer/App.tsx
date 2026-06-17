@@ -221,6 +221,9 @@ export function App() {
       const result = isProject
         ? await window.lynlens.openProjectByPath(filePath)
         : await window.lynlens.openVideoByPath(filePath);
+      // null = the open was aborted (e.g. user cancelled the "relink missing
+      // video" prompt). Treat as a clean no-op, don't crash on result.*.
+      if (!result) return;
       store.setProject(result);
 
       // Pull segments + transcript + rotation from the persisted state so the
@@ -756,10 +759,14 @@ export function App() {
             try {
               const res = await window.lynlens.aiMarkSilence(store.projectId, opts);
               if (res.added === 0) {
+                // Two reasons nothing matched: pauses shorter than minPause, OR
+                // the environment is noisy so pauses never read as "silent".
+                // The fix for the latter is to RAISE 环境音灵敏度 (not lower a
+                // threshold), so point the user there.
                 alert(
-                  `没找到符合条件的段。\n\n当前阈值: ≥${opts.minPauseSec.toFixed(
-                    1
-                  )} 秒的停顿。\n试试再降低阈值重新标记。`
+                  `没找到符合条件的段。\n\n当前: 停顿要 ≥ ${opts.minPauseSec.toFixed(1)} 秒。\n\n` +
+                    `如果录音有环境底噪(空调/街声等),停顿可能没被判定为静音 —— ` +
+                    `把对话框里的「环境音灵敏度」调高一点,或把「最短停顿」调短,再标记一次。`
                 );
               } else {
                 const b = res.breakdown;

@@ -645,13 +645,20 @@ export function HighlightTimeline({
       window.removeEventListener('mousemove', onMove);
       window.removeEventListener('mouseup', onUp);
       const dt = Date.now() - downT;
+      // No real drag → it was a CLICK on the segment body. The body's mousedown
+      // called stopPropagation (so a drag wouldn't also seek), which means the
+      // container's click-to-seek never fired — so the playhead didn't move
+      // when clicking the yellow region. Do the seek + select here ourselves.
+      // (Side effects OUTSIDE the setState updater — StrictMode double-invokes
+      // updaters in dev.)
+      if (!moved || dt < 80) {
+        setSegDrag(null);
+        onSeek(anchorSrc);
+        onSetPlayingSegIdx(segIdx);
+        return;
+      }
       setSegDrag((cur) => {
-        // No real drag → treat as a normal click on the body (let parent's
-        // onContainerClick handle it via re-dispatch). We skip dispatching
-        // the resize and let the click bubble.
-        if (!cur || !moved || cur.kind !== 'move' || dt < 80) {
-          return null;
-        }
+        if (!cur || cur.kind !== 'move') return null;
         const s = variant.segments[cur.segIdx];
         const newStart = cur.previewSrcSec;
         const newEnd = newStart + (cur.moveLen ?? s.end - s.start);

@@ -832,18 +832,26 @@ export function VariantCard({
                   label={enriching ? '🪄 整理中…' : '🪄 AI 起名 / 备注'}
                   hint={transcript ? 'AI 看内容自动写标题和备注' : '需要先生成字幕'}
                 />
-                {/* 复制文案 → hover reveals a side flyout to pick plain
-                    text vs. timestamped text. Both close the menu after. */}
-                <CopyMenuItem
+                {/* 复制文案 — two flat items (no hover sub-flyout, which played
+                    hide-and-seek: moving the cursor toward the flyout crossed a
+                    gap and closed it). Direct click = copy. */}
+                <MenuItem
                   disabled={!transcript}
-                  onCopyPlain={() => {
+                  onClick={() => {
                     setMenuAnchor(null);
                     void doCopy(false);
                   }}
-                  onCopyTimestamped={() => {
+                  label="📋 复制文案 · 纯文本"
+                  hint={transcript ? '只复制字幕文字' : '需要先生成字幕'}
+                />
+                <MenuItem
+                  disabled={!transcript}
+                  onClick={() => {
                     setMenuAnchor(null);
                     void doCopy(true);
                   }}
+                  label="📋 复制文案 · 带时间戳"
+                  hint={transcript ? '每行前面带 [时间]' : '需要先生成字幕'}
                 />
                 <MenuItem
                   onClick={() => {
@@ -1029,87 +1037,6 @@ export function VariantCard({
               </div>
             );
           })}
-        </div>
-      )}
-    </div>
-  );
-}
-
-/**
- * "复制文案" menu row with a hover-reveal side flyout offering two copy
- * formats: plain text or timestamped text. Flyout opens to the LEFT
- * (right: 100%) because the parent ⋯ menu is right-aligned near the
- * screen edge — a right-side flyout would overflow. Stays open while the
- * cursor is anywhere over the row or the flyout (shared onMouseEnter/Leave
- * on the wrapper).
- */
-function CopyMenuItem({
-  disabled,
-  onCopyPlain,
-  onCopyTimestamped,
-}: {
-  disabled?: boolean;
-  onCopyPlain: () => void;
-  onCopyTimestamped: () => void;
-}): JSX.Element {
-  const [open, setOpen] = useState(false);
-  return (
-    <div
-      style={{ position: 'relative' }}
-      onMouseEnter={() => !disabled && setOpen(true)}
-      onMouseLeave={() => setOpen(false)}
-    >
-      <button
-        disabled={disabled}
-        title={disabled ? '需要先生成字幕' : '把这个变体的字幕拼起来复制'}
-        style={{
-          width: '100%',
-          textAlign: 'left',
-          padding: '6px 10px',
-          background: open && !disabled ? '#252533' : 'transparent',
-          border: 'none',
-          color: disabled ? 'var(--text3)' : 'var(--text1)',
-          cursor: disabled ? 'not-allowed' : 'pointer',
-          borderRadius: 4,
-          fontSize: 13,
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'space-between',
-          gap: 6,
-        }}
-      >
-        <span>📋 复制文案</span>
-        <span style={{ color: 'var(--text3)', fontSize: 11 }}>▸</span>
-      </button>
-      {open && !disabled && (
-        <div
-          role="menu"
-          style={{
-            position: 'absolute',
-            right: '100%',
-            top: 0,
-            marginRight: 4,
-            minWidth: 150,
-            background: '#1a1a26',
-            border: '1px solid #2a2a2a',
-            borderRadius: 6,
-            boxShadow: '0 8px 24px rgba(0,0,0,0.6)',
-            padding: 4,
-            display: 'flex',
-            flexDirection: 'column',
-            gap: 2,
-          }}
-        >
-          <MenuItem
-            onClick={onCopyPlain}
-            label="纯文本"
-            hint="只复制字幕文字"
-          />
-          <MenuItem
-            onClick={onCopyTimestamped}
-            label="带时间戳"
-            hint="每行前面带 [时间]"
-          />
         </div>
       )}
     </div>

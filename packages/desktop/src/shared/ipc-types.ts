@@ -105,7 +105,9 @@ export interface IpcApi {
 
   aiMarkSilence(
     projectId: string,
-    opts: { minPauseSec: number; silenceThreshold: number }
+    // sensitivity (0..1) drives the adaptive noise-floor threshold (default);
+    // silenceThreshold is an optional fixed-absolute override (advanced).
+    opts: { minPauseSec: number; sensitivity?: number; silenceThreshold?: number }
   ): Promise<{
     added: number;
     segmentIds: string[];

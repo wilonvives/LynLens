@@ -47,6 +47,14 @@ export function usePlaybackLoop({
 
   useEffect(() => {
     let raf = 0;
+    // Throttle the React state update (NOT the cut-skip). setCurrentTime at the
+    // full 60fps re-renders the whole subtitle list (200+ cards) every frame,
+    // which starves the main thread → clicking a subtitle input can't paint its
+    // caret ("光标跑不出来"). ~25fps is visually identical for a playhead /
+    // active-line highlight but ~2.4× fewer re-renders. The cut-skip below still
+    // runs every frame so seeking stays frame-tight.
+    let lastEmit = 0;
+    const EMIT_MS = 40;
     const tick = () => {
       // Resolve <video> via DOM querySelector if the React ref is null.
       // dev-mode StrictMode + Vite Fast Refresh occasionally leave the
@@ -59,7 +67,11 @@ export function usePlaybackLoop({
         (videoRef as React.MutableRefObject<HTMLVideoElement | null>).current = v;
       }
       if (v) {
-        setCurrentTime(v.currentTime);
+        const now = performance.now();
+        if (now - lastEmit >= EMIT_MS) {
+          lastEmit = now;
+          setCurrentTime(v.currentTime);
+        }
         // Committed ripple cuts: ALWAYS skip. Number.isFinite guards
         // against NaN before loadedmetadata fires (writing currentTime =
         // NaN throws TypeError, which would kill the entire RAF chain).

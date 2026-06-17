@@ -66,9 +66,15 @@ export function registerSegmentsIpc(ctx: IpcContext): void {
 
   ipcMain.handle(
     'ai-mark-silence',
-    async (_ev, projectId: string, opts: { minPauseSec: number; silenceThreshold: number }) => {
+    async (
+      _ev,
+      projectId: string,
+      opts: { minPauseSec: number; sensitivity?: number; silenceThreshold?: number }
+    ) => {
       const project = engine.projects.get(projectId);
       const env = await extractWaveform(project.videoPath, 4000, engine.ffmpegPaths);
+      // opts carries sensitivity (adaptive, default) or silenceThreshold (manual
+      // override). detectSilences picks adaptive when silenceThreshold is absent.
       const silences = detectSilences(env.peak, project.videoMeta.duration, opts);
       const ids: string[] = [];
 

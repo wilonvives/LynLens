@@ -291,17 +291,23 @@ export function Timeline(props: TimelineProps) {
     if (!canvas || !container) return;
     const ro = new ResizeObserver(() => {
       const dpr = window.devicePixelRatio || 1;
-      const w = container.clientWidth;
-      const h = container.clientHeight;
+      // Measure the CANVAS's own box, not the container's clientWidth.
+      // clientWidth INCLUDES the wrap's horizontal padding (the timeline
+      // gutter), so using it set the canvas wider than its padded content
+      // box → it overflowed / mis-sized and stopped drawing (blank waveform).
+      // The canvas's CSS is width/height:100%, so its rect already excludes
+      // the padding — measure that and let CSS own the display size.
+      const rect = canvas.getBoundingClientRect();
+      const w = rect.width;
+      const h = rect.height;
       canvas.width = Math.max(1, Math.floor(w * dpr));
       canvas.height = Math.max(1, Math.floor(h * dpr));
-      canvas.style.width = w + 'px';
-      canvas.style.height = h + 'px';
       const ctx = canvas.getContext('2d');
       if (ctx) ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
       draw();
     });
     ro.observe(container);
+    ro.observe(canvas);
     return () => ro.disconnect();
   }, []);
 

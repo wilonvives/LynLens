@@ -19,6 +19,7 @@
  *     numberOfSharedAudioTags below. This was the cause of "scrub a few times
  *     → whole player goes black".
  */
+import { memo, useMemo } from 'react';
 import { Player as RemotionPlayer } from '@remotion/player';
 // eslint-disable-next-line import/no-unresolved -- Vite alias to template src
 import { BusinessExplainer } from '@remotion-template';
@@ -40,6 +41,8 @@ export interface PackagingPlayerRef {
   pause: () => void;
   play: () => void;
   toggle: () => void;
+  /** Current playhead frame — polled so the 字幕 list can follow playback. */
+  getCurrentFrame: () => number;
 }
 
 interface Props {
@@ -84,7 +87,14 @@ function ErrorFallback({ error }: { error: Error }): React.ReactNode {
   );
 }
 
-export function PackagingRemotionPlayer({
+// memo is ESSENTIAL here. The parent (PackagingPanel) re-renders ~60×/sec
+// while playing — it polls the player's frame into currentTimeSec so the 字幕
+// list can follow playback. Without memo, every one of those re-renders would
+// re-render this <Player>, and re-rendering @remotion/player mid-playback makes
+// it re-seek/re-buffer → stutter + the playhead "跳针重复". memo skips the
+// re-render when our props (which DON'T depend on currentTimeSec) are unchanged,
+// so the player plays undisturbed while the subtitle follow still works.
+function PackagingRemotionPlayerInner({
   videoSrc,
   spec,
   clips,
@@ -95,7 +105,13 @@ export function PackagingRemotionPlayer({
   playerRef,
 }: Props): JSX.Element {
   const durationInFrames = Math.max(1, Math.round(durationInSeconds * fps));
-  const inputProps: BusinessExplainerProps = { videoSrc, spec, clips };
+  // Memoize inputProps too — Remotion re-evaluates the composition when the
+  // inputProps object identity changes, so a fresh object each render would
+  // also hitch playback.
+  const inputProps = useMemo<BusinessExplainerProps>(
+    () => ({ videoSrc, spec, clips }),
+    [videoSrc, spec, clips]
+  );
   return (
     <Player
       ref={playerRef}
@@ -117,3 +133,5 @@ export function PackagingRemotionPlayer({
     />
   );
 }
+
+export const PackagingRemotionPlayer = memo(PackagingRemotionPlayerInner);

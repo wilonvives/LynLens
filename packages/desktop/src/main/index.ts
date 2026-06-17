@@ -81,6 +81,13 @@ const isDev = !app.isPackaged && process.env.LYNLENS_DEV === '1';
 if (isDev) {
   const devUserData = path.join(app.getPath('temp'), 'LynLens-dev');
   app.setPath('userData', devUserData);
+  // Disable Chromium's on-disk HTTP cache in dev. A hard kill of the dev
+  // Electron (which we do on every code change) can leave the cache index
+  // half-written; on the next launch Chromium hits a corrupt entry and the
+  // module load dies with net::ERR_CACHE_READ_FAILURE → React never mounts →
+  // black window. The cache buys nothing in dev (Vite serves modules fresh),
+  // so turn it off entirely and the failure mode can't happen.
+  app.commandLine.appendSwitch('disable-http-cache');
 }
 
 // ============================================================================
@@ -200,7 +207,12 @@ interface WatcherState {
   reloadTimer: NodeJS.Timeout | null;
 }
 const projectWatchers = new Map<string, WatcherState>();
-const INTERNAL_SAVE_WINDOW_MS = 1500;
+// Generous so our OWN autosave never trips the watcher into a reloadFromDisk.
+// A reload wholesale-replaces the renderer's transcript/segments mid-edit,
+// which can blur the input you just clicked → the text caret won't appear
+// ("光标跑不出来"). Only a genuine external edit (MCP/Claude writing the .qcp
+// while you're NOT typing) should reload, and that's rare + not time-critical.
+const INTERNAL_SAVE_WINDOW_MS = 4000;
 
 // Auto-persist UI-side mutations to the .qcp sidecar so any other process
 // (Claude/MCP) sees them. Debounce to avoid thrashing during bulk operations.
@@ -214,10 +226,18 @@ function scheduleAutosave(projectId: string): void {
     projectId,
     setTimeout(() => {
       saveDebouncers.delete(projectId);
+      // Mark BEFORE the write (covers the write duration) AND again AFTER it
+      // resolves (covers the watcher's change event, which fires at write
+      // completion — often after a delay on Windows fs.watch). Re-stamping
+      // after resolve makes our own saves reliably fall inside the guard
+      // window, so they never trigger a focus-blurring reloadFromDisk.
       markInternalSave(projectId);
-      void engine.projects.saveProject(projectId, state.qcpPath).catch((err) => {
-        console.error('[lynlens] autosave failed:', err);
-      });
+      void engine.projects
+        .saveProject(projectId, state.qcpPath)
+        .then(() => markInternalSave(projectId))
+        .catch((err) => {
+          console.error('[lynlens] autosave failed:', err);
+        });
     }, 300)
   );
 }
