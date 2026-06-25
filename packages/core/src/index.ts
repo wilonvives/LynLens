@@ -1,4 +1,20 @@
 export * from './types';
+// Lynscripe — decoupled transcription module (Gemini text + whisper timings).
+// Self-contained; produces a standard Transcript only when asked.
+export {
+  parseTranscriptTemplate,
+  applyCorrections,
+  countPlaceholders,
+} from './lynscripe/template';
+export { buildTranscribeSystemPrompt, buildTranscribeUserPrompt } from './lynscripe/prompt';
+export { getMatchingBlocks, alignChars, v2ToTranscript } from './lynscripe/align';
+export { GeminiTranscribeProvider, type GeminiProviderOptions } from './lynscripe/gemini-provider';
+export type {
+  TranscriptTemplate,
+  UncertainTerm,
+  VocabEntry,
+  TranscriptTextProvider,
+} from './lynscripe/types';
 export { EventBus } from './event-bus';
 export { SegmentManager } from './segment-manager';
 export { Project, ProjectManager } from './project-manager';
@@ -63,6 +79,13 @@ export {
   type WhisperModel,
   type FillerMatch,
 } from './transcription';
+export {
+  FasterWhisperLocalService,
+  fasterWhisperWords,
+  runFasterWhisper,
+  parseFasterWhisperJson,
+  type FasterWhisperServiceOptions,
+} from './faster-whisper-service';
 export { LearningMemory, defaultLearningMemoryPath, applyCorrectionsToText, minimalDiff, isPathologicalCorrection } from './learning-memory';
 export { parseSrt } from './srt-parser';
 export { LearningService } from './learning-service';

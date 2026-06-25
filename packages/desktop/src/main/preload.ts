@@ -26,6 +26,29 @@ const api: IpcApi = {
   export: (req) => ipcRenderer.invoke('export', req),
   cancelExport: (pid) => ipcRenderer.invoke('cancel-export', pid),
   aiMarkSilence: (pid, opts) => ipcRenderer.invoke('ai-mark-silence', pid, opts),
+  // Lynscripe (转录 tab) — path-based (audio or video file)
+  lynscripeGetConfig: () => ipcRenderer.invoke('lynscripe-get-config'),
+  lynscripeSetKey: (key, model) => ipcRenderer.invoke('lynscripe-set-key', key, model),
+  lynscripePickFile: () => ipcRenderer.invoke('lynscripe-pick-file'),
+  lynscripeWaveform: (filePath, buckets) =>
+    ipcRenderer.invoke('lynscripe-waveform', filePath, buckets),
+  lynscripeGetVocab: () => ipcRenderer.invoke('lynscripe-get-vocab'),
+  lynscripeGetAlign: () => ipcRenderer.invoke('lynscripe-get-align'),
+  lynscripeSetAlign: (fwPath, alignModel) =>
+    ipcRenderer.invoke('lynscripe-set-align', fwPath, alignModel),
+  lynscripePickFwFolder: () => ipcRenderer.invoke('lynscripe-pick-fw-folder'),
+  lynscripeTranscribe: (filePath, language) =>
+    ipcRenderer.invoke('lynscripe-transcribe', filePath, language),
+  lynscripeBuild: (filePath, v2Text, opts) =>
+    ipcRenderer.invoke('lynscripe-build', filePath, v2Text, opts),
+  lynscripeExportSrt: (transcript, suggestedName) =>
+    ipcRenderer.invoke('lynscripe-export-srt', transcript, suggestedName),
+  lynscripeExportTxt: (text, suggestedName) =>
+    ipcRenderer.invoke('lynscripe-export-txt', text, suggestedName),
+  lynscripeSaveSession: (sourcePath, session) =>
+    ipcRenderer.invoke('lynscripe-save-session', sourcePath, session),
+  lynscripeLoadSession: (sourcePath) => ipcRenderer.invoke('lynscripe-load-session', sourcePath),
+  lynscripeApply: (pid, transcript) => ipcRenderer.invoke('lynscripe-apply', pid, transcript),
   approveAllPending: (pid) => ipcRenderer.invoke('approve-all-pending', pid),
   rejectAllPending: (pid) => ipcRenderer.invoke('reject-all-pending', pid),
   commitRipple: (pid) => ipcRenderer.invoke('commit-ripple', pid),

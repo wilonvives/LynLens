@@ -1,0 +1,474 @@
+/* ---------- 转录 tab (Lynscripe) ---------- */
+.transcribe-panel {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden; /* header + player frozen; only .transcribe-scroll scrolls */
+  padding: 16px 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+/* The scrolling "module" below the frozen player + sub-tab nav. */
+.transcribe-scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+/* Header + settings gear */
+.transcribe-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 16px;
+  flex-shrink: 0;
+}
+.transcribe-title {
+  font-size: 16px;
+  font-weight: 600;
+}
+.transcribe-badge {
+  font-size: 10px;
+  color: #fff;
+  background: var(--accent);
+  border-radius: 4px;
+  padding: 1px 6px;
+  vertical-align: middle;
+  margin-left: 6px;
+}
+.transcribe-gear-wrap {
+  position: relative;
+}
+.transcribe-icon-btn {
+  background: #20202a;
+  border: 1px solid #333;
+  color: var(--text2);
+  border-radius: 6px;
+  padding: 4px 9px;
+  cursor: pointer;
+  font-size: 13px;
+}
+.transcribe-icon-btn:hover {
+  border-color: var(--accent);
+}
+.transcribe-settings-pop {
+  position: absolute;
+  right: 0;
+  top: 32px;
+  z-index: 20;
+  background: #16161c;
+  border: 1px solid #333;
+  border-radius: 8px;
+  padding: 12px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.transcribe-key-edit {
+  display: inline-flex;
+  gap: 6px;
+  align-items: center;
+}
+
+/* Source row */
+.transcribe-source {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 12px;
+  flex-shrink: 0;
+}
+.transcribe-source-name {
+  color: var(--text1);
+}
+.transcribe-source-none {
+  color: var(--text3);
+}
+.transcribe-cat {
+  background: #2a2a33;
+  color: var(--text2);
+  border-radius: 4px;
+  padding: 1px 6px;
+  font-size: 11px;
+  white-space: nowrap;
+}
+.transcribe-applied {
+  font-size: 12px;
+  color: #4ec9b0;
+}
+
+/* Waveform player strip */
+.transcribe-wave {
+  height: 64px;
+  flex-shrink: 0;
+  background: #0d0d12;
+  border: 1px solid #23232b;
+  border-radius: 6px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 10px;
+  overflow: hidden;
+}
+.transcribe-wave-play {
+  flex: 0 0 auto;
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  border: 1px solid #333;
+  background: #20202a;
+  color: var(--text1);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.transcribe-wave-play:hover:not(:disabled) {
+  border-color: var(--accent);
+}
+.transcribe-wave-body {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.transcribe-wave-canvas {
+  width: 100%;
+  height: 100%;
+  display: block;
+  cursor: pointer;
+}
+.transcribe-wave-time {
+  flex: 0 0 auto;
+  font-size: 11px;
+  color: var(--text3);
+  font-variant-numeric: tabular-nums;
+}
+.transcribe-wave-hint {
+  color: var(--text3);
+  font-size: 12px;
+}
+
+/* Editable cue list (Tab 2) */
+.transcribe-editlist {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid #23232b;
+  border-radius: 6px;
+  overflow: hidden;
+}
+.transcribe-edit-row {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 10px;
+  border-bottom: 1px solid #1a1a20;
+}
+.transcribe-edit-row:hover {
+  background: #15151b;
+}
+.transcribe-edit-row .row-idx {
+  flex: 0 0 auto;
+  width: 28px;
+  text-align: right;
+  color: var(--text3);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+.transcribe-edit-row .row-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--text1);
+  cursor: text;
+}
+.transcribe-edit-row .row-text input {
+  width: 100%;
+  background: #0f0f14;
+  color: var(--text1);
+  border: 1px solid var(--accent);
+  border-radius: 4px;
+  padding: 3px 6px;
+  font-size: 13px;
+}
+.transcribe-edit-row .row-del {
+  flex: 0 0 auto;
+  background: transparent;
+  border: none;
+  color: var(--text3);
+  cursor: pointer;
+  font-size: 15px;
+  opacity: 0;
+}
+.transcribe-edit-row:hover .row-del {
+  opacity: 1;
+}
+.transcribe-edit-row .row-del:hover {
+  color: #ff6b6b;
+}
+.transcribe-edit-row .row-add {
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 2;
+  width: 20px;
+  height: 16px;
+  line-height: 14px;
+  text-align: center;
+  border: 1px solid var(--accent);
+  background: #1a1a22;
+  color: var(--accent);
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 11px;
+  padding: 0;
+  opacity: 0;
+}
+.transcribe-edit-row:hover .row-add {
+  opacity: 1;
+}
+.transcribe-edit-row .row-add-top {
+  top: -8px;
+}
+.transcribe-edit-row .row-add-bottom {
+  bottom: -8px;
+}
+
+/* Align table row ops + editable cells */
+.transcribe-align-table td {
+  cursor: text;
+}
+.transcribe-align-table td.transcribe-occ {
+  cursor: default;
+}
+.transcribe-align-table input {
+  width: 100%;
+  background: #0f0f14;
+  color: var(--text1);
+  border: 1px solid var(--accent);
+  border-radius: 4px;
+  padding: 2px 5px;
+  font-size: 12px;
+}
+.transcribe-rowops {
+  white-space: nowrap;
+  width: 1%;
+}
+.transcribe-rowops button {
+  background: transparent;
+  border: none;
+  color: var(--text3);
+  cursor: pointer;
+  font-size: 13px;
+  padding: 0 3px;
+  opacity: 0;
+}
+.transcribe-align-table tr:hover .transcribe-rowops button {
+  opacity: 1;
+}
+.transcribe-rowops button:hover {
+  color: var(--accent);
+}
+
+/* Confirm modal */
+.transcribe-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.55);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 100;
+}
+.transcribe-modal {
+  width: 420px;
+  max-width: 90vw;
+  background: #16161c;
+  border: 1px solid #333;
+  border-radius: 10px;
+  padding: 18px 20px;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.6);
+}
+.transcribe-modal-title {
+  font-size: 15px;
+  font-weight: 600;
+  margin-bottom: 10px;
+}
+.transcribe-modal-body {
+  font-size: 13px;
+  color: var(--text2);
+  line-height: 1.7;
+  margin-bottom: 16px;
+}
+.transcribe-modal-foot {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.transcribe-error {
+  background: rgba(255, 107, 107, 0.12);
+  border: 1px solid rgba(255, 107, 107, 0.4);
+  color: #ff9b9b;
+  font-size: 12px;
+  padding: 8px 12px;
+  border-radius: 6px;
+}
+
+/* Sub-tab nav */
+.transcribe-subtabs {
+  display: flex;
+  gap: 4px;
+  background: #16161c;
+  border: 1px solid #23232b;
+  border-radius: 8px;
+  padding: 3px;
+  align-self: flex-start;
+  flex-shrink: 0;
+}
+.transcribe-subtabs button {
+  background: transparent;
+  border: none;
+  color: var(--text2);
+  padding: 6px 16px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 13px;
+}
+.transcribe-subtabs button.active {
+  background: var(--accent);
+  color: #fff;
+}
+
+/* Tab panes */
+.transcribe-tabpane {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.transcribe-tabpane-foot {
+  margin-top: 4px;
+}
+.transcribe-toolbar {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+.transcribe-section-title {
+  font-size: 12px;
+  color: var(--text2);
+}
+
+/* Vocab popover (📕) */
+.transcribe-vocab-box {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 10px;
+  background: #0f0f14;
+  border: 1px solid #23232b;
+  border-radius: 6px;
+  max-height: 160px;
+  overflow-y: auto;
+}
+.transcribe-vocab-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: #20202a;
+  border-radius: 4px;
+  padding: 2px 7px;
+  font-size: 12px;
+  color: var(--text1);
+}
+.transcribe-vocab-cat {
+  font-size: 10px;
+  color: var(--text3);
+}
+
+/* Tables */
+.transcribe-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+.transcribe-table th {
+  text-align: left;
+  color: var(--text3);
+  font-weight: 500;
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--border);
+  position: sticky;
+  top: 0;
+  background: var(--bg, #111);
+}
+.transcribe-table td {
+  padding: 4px 8px;
+  border-bottom: 1px solid #1f1f26;
+  vertical-align: middle;
+}
+.transcribe-table input {
+  width: 100%;
+  background: #0f0f14;
+  color: var(--text1);
+  border: 1px solid #333;
+  border-radius: 4px;
+  padding: 3px 6px;
+  font-size: 12px;
+}
+.transcribe-table input[type='checkbox'] {
+  width: auto;
+}
+.transcribe-heard {
+  color: var(--text3);
+  font-style: italic;
+}
+.transcribe-ctx {
+  color: var(--text3);
+  max-width: 260px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.transcribe-occ {
+  text-align: center;
+  color: var(--text3);
+  font-variant-numeric: tabular-nums;
+  width: 1%;
+  white-space: nowrap;
+}
+.transcribe-tc {
+  font-variant-numeric: tabular-nums;
+  color: var(--text2);
+  white-space: nowrap;
+  width: 1%;
+}
+.transcribe-cue-text {
+  color: var(--text1);
+  line-height: 1.6;
+}
+.transcribe-draft-table td:first-child,
+.transcribe-align-table td:first-child {
+  color: var(--text3);
+}
+
+/* The cue currently under the playhead (Tab 3) */
+.transcribe-cue-active td {
+  background: rgba(91, 141, 239, 0.2);
+}
+.transcribe-cue-active .transcribe-cue-text {
+  color: #cfe0ff;
+}
+
+/* Red "snake" highlight on changed words */
+.transcribe-hl {
+  color: #ff6b6b;
+  text-decoration: underline wavy rgba(255, 107, 107, 0.85);
+  text-underline-offset: 3px;
+}

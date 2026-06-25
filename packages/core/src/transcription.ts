@@ -147,38 +147,83 @@ export interface WhisperLocalOptions {
   ffmpegPaths?: FfmpegPaths;
 }
 
+/** Shared prep: resolve cuts and produce the 16k-mono wav (in edited mode the
+ *  wav is the kept ranges only, so times come back effective and get remapped).
+ *  Used by every TranscriptionService so they all handle cuts identically. */
+export interface TranscribeAudioPrep {
+  wavPath: string;
+  cleanup: () => Promise<void>;
+  editedMode: boolean;
+  audioCuts: ReadonlyArray<{ start: number; end: number }>;
+  cuts: ReadonlyArray<{ start: number; end: number }>;
+}
+
+export async function prepareTranscribeAudio(
+  input: string,
+  options: TranscribeOptions,
+  ffmpegPaths: FfmpegPaths
+): Promise<TranscribeAudioPrep> {
+  const cuts = options.cutRanges ?? [];
+  // edited mode: transcribe ONLY the kept audio; pad cuts inward so splices
+  // don't clip the boundary syllable (the SAME padded set feeds the audio and
+  // the later source remap, so effective↔source stays exact).
+  const editedMode = options.scope === 'edited' && cuts.length > 0;
+  const audioCuts = editedMode ? padCutsForTranscription(cuts) : cuts;
+  const keeps = editedMode ? invertCutsToKeeps(audioCuts) : undefined;
+  const { wavPath, cleanup } = await toWav16kMono(input, ffmpegPaths, options.signal, keeps);
+  return { wavPath, cleanup, editedMode, audioCuts, cuts };
+}
+
+/** Shared post-processing: cut-filter (mode A) → merge utterances → maxLen split
+ *  → learned corrections → source remap (edited) / scope stamp. Identical for
+ *  whisper.cpp and faster-whisper so both engines yield the same shaped result. */
+export function finalizeTranscript(
+  raw: Transcript,
+  options: TranscribeOptions,
+  prep: TranscribeAudioPrep
+): Transcript {
+  let transcript = raw;
+  if (!prep.editedMode && prep.cuts.length > 0) {
+    transcript = filterTranscriptByCuts(transcript, prep.cuts);
+  }
+  transcript = mergeIntoUtterances(transcript);
+  if (options.maxLen && options.maxLen > 0) {
+    transcript = splitSegmentsToMaxLen(transcript, options.maxLen);
+  }
+  if (options.autoCorrections && Object.keys(options.autoCorrections).length > 0) {
+    transcript = applyAutoCorrections(transcript, options.autoCorrections);
+  }
+  if (options.properNouns && Object.keys(options.properNouns).length > 0) {
+    transcript = applyProperNouns(transcript, options.properNouns);
+  }
+  if (prep.editedMode) {
+    transcript = mapTranscriptToSource(transcript, prep.audioCuts);
+    transcript = { ...transcript, scope: 'edited', cutFingerprint: cutFingerprint(prep.cuts) };
+  } else {
+    transcript = { ...transcript, scope: 'full' };
+  }
+  return transcript;
+}
+
 export class WhisperLocalService implements TranscriptionService {
   constructor(private readonly opts: WhisperLocalOptions) {}
 
   async transcribe(input: string, options: TranscribeOptions = {}): Promise<Transcript> {
     await assertExists(this.opts.binaryPath, 'whisper binary');
     await assertExists(this.opts.modelPath, 'whisper model');
-    const cuts = options.cutRanges ?? [];
-    // Mode B: transcribe ONLY the kept audio (source minus cuts). We feed
-    // whisper the concatenated kept ranges, so the result is in EFFECTIVE
-    // (post-cut) time and contains no cut-region content; we map it back to
-    // source-time at the end.
-    const editedMode = options.scope === 'edited' && cuts.length > 0;
-    // Shrink the cuts by a small pad so the kept-audio splices don't clip the
-    // boundary syllable (see padCutsForTranscription). The SAME padded set is
-    // used for the audio (here) and the source remap (below) so timing stays
-    // consistent; the stored fingerprint still uses the real cuts.
-    const audioCuts = editedMode ? padCutsForTranscription(cuts) : cuts;
-    const keeps = editedMode ? invertCutsToKeeps(audioCuts) : undefined;
-    const { wavPath, cleanup } = await toWav16kMono(
+    const prep = await prepareTranscribeAudio(
       input,
-      this.opts.ffmpegPaths ?? resolveFfmpegPaths(),
-      options.signal,
-      keeps
+      options,
+      this.opts.ffmpegPaths ?? resolveFfmpegPaths()
     );
 
     try {
       // whisper.cpp CLI produces <output>.json when --output-json-full is passed.
-      const outputBase = wavPath.replace(/\.wav$/i, '');
+      const outputBase = prep.wavPath.replace(/\.wav$/i, '');
       const args = [
         '-m', this.opts.modelPath,
         '-l', mapLanguage(options.language ?? 'auto'),
-        '-f', wavPath,
+        '-f', prep.wavPath,
         '--output-json-full',
         '--output-file', outputBase,
         '--split-on-word',
@@ -232,41 +277,10 @@ export class WhisperLocalService implements TranscriptionService {
       const rawBuf = await fs.readFile(jsonPath);
       const parsed = JSON.parse(rawBuf.toString('latin1'));
       options.onProgress?.(100);
-      let transcript = parseWhisperCppJson(parsed, options.model ?? 'base');
-      // Mode A only: post-filter the full-video transcript against cuts. Mode B
-      // already transcribed just the kept audio, so there's nothing to filter.
-      if (!editedMode && cuts.length > 0) {
-        transcript = filterTranscriptByCuts(transcript, cuts);
-      }
-      // Undo whisper's arbitrary fine-grained chopping: merge adjacent
-      // segments (no pause, no sentence-end) back into whole utterances, so
-      // cross-segment splits like "all"/"in" or "sign"/"board" are reunited
-      // BEFORE we segment. Then the cost-based splitter owns all line breaks.
-      transcript = mergeIntoUtterances(transcript);
-      if (options.maxLen && options.maxLen > 0) {
-        transcript = splitSegmentsToMaxLen(transcript, options.maxLen);
-      }
-      if (options.autoCorrections && Object.keys(options.autoCorrections).length > 0) {
-        transcript = applyAutoCorrections(transcript, options.autoCorrections);
-      }
-      if (options.properNouns && Object.keys(options.properNouns).length > 0) {
-        transcript = applyProperNouns(transcript, options.properNouns);
-      }
-      if (editedMode) {
-        // Times are currently effective (post-cut). Map back to source-time so
-        // the rest of the app (player seek, ripple, export) stays consistent,
-        // and stamp the cut fingerprint so the UI can lock it when cuts change.
-        // Map back through the SAME padded cut set used for the audio, so the
-        // effective↔source times line up exactly. Fingerprint uses the real
-        // cuts so staleness detection compares against the project state.
-        transcript = mapTranscriptToSource(transcript, audioCuts);
-        transcript = { ...transcript, scope: 'edited', cutFingerprint: cutFingerprint(cuts) };
-      } else {
-        transcript = { ...transcript, scope: 'full' };
-      }
-      return transcript;
+      const transcript = parseWhisperCppJson(parsed, options.model ?? 'base');
+      return finalizeTranscript(transcript, options, prep);
     } finally {
-      await cleanup();
+      await prep.cleanup();
     }
   }
 }

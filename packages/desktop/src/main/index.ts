@@ -4,14 +4,13 @@ import { createReadStream, statSync, watch as fsWatch, type FSWatcher } from 'no
 import { promises as fsp } from 'node:fs';
 import {
   LynLensEngine,
-  WhisperLocalService,
   type FfmpegPaths,
 } from '@lynlens/core';
 import {
   setCodexContext,
   loadSavedProvider,
 } from './agent-dispatcher';
-import { resolveWhisperModel } from './whisper-resolve';
+import { applyBestTranscriptionService } from './transcription-engine';
 import { startMcpHttpServer, type McpHttpServer } from './mcp-http-server';
 import { startMediaHttpServer } from './media-http-server';
 import { setupAutoUpdater } from './auto-updater';
@@ -52,6 +51,11 @@ function guessMime(filePath: string): string {
     case '.flv': return 'video/x-flv';
     case '.wav': return 'audio/wav';
     case '.mp3': return 'audio/mpeg';
+    case '.m4a': return 'audio/mp4';
+    case '.aac': return 'audio/aac';
+    case '.flac': return 'audio/flac';
+    case '.ogg': return 'audio/ogg';
+    case '.opus': return 'audio/ogg';
     default: return 'application/octet-stream';
   }
 }
@@ -152,25 +156,12 @@ function resolveBundledDiarizationBase(): string | null {
 // ============================================================================
 
 const engine = new LynLensEngine({ ffmpegPaths: resolveBundledFfmpegPaths() });
-// Swap in the bundled WhisperLocalService when binaries are available.
-{
-  const whisper = resolveWhisperModel();
-  if (whisper) {
-    engine.setTranscriptionService(
-      new WhisperLocalService({
-        binaryPath: whisper.binaryPath,
-        modelPath: whisper.modelPath,
-        ffmpegPaths: engine.ffmpegPaths,
-      })
-    );
-    console.log(
-      '[lynlens] whisper.cpp local transcription ready, model:',
-      path.basename(whisper.modelPath)
-    );
-  } else {
-    console.log('[lynlens] whisper binaries not found; transcription disabled');
-  }
-}
+// Select the transcription engine: the user's faster-whisper pack (GPU) when
+// configured, else bundled whisper.cpp. Async (reads userData config) — fire it
+// and log the result; nothing transcribes before the window is up anyway.
+void applyBestTranscriptionService(engine).then((label) => {
+  console.log('[lynlens] transcription engine:', label);
+});
 // Load learning memory from ~/.lynlens/learning-memory.json and start the
 // event subscription that records future user corrections. Without this,
 // the learning system is inert — recordCorrection() would throw and

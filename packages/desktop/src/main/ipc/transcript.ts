@@ -15,10 +15,10 @@ import {
   filterTranscriptByCuts,
   mergeShortEnglishSegments,
   parseSrt,
-  WhisperLocalService,
 } from '@lynlens/core';
 import type { IpcContext } from './_context';
-import { resolveWhisperModel, listWhisperModels, type WhisperModelKey } from '../whisper-resolve';
+import { listWhisperModels, type WhisperModelKey } from '../whisper-resolve';
+import { applyBestTranscriptionService } from '../transcription-engine';
 
 export function registerTranscriptIpc(ctx: IpcContext): void {
   const { engine, getMainWindow } = ctx;
@@ -253,20 +253,10 @@ export function registerTranscriptIpc(ctx: IpcContext): void {
       }
     ) => {
       const project = engine.projects.get(projectId);
-      // Honour the user's model choice (快速 base / 高质量 large-v3). Swap the
-      // engine's whisper service to the requested model for this transcribe.
-      if (opts.model) {
-        const resolved = resolveWhisperModel(opts.model);
-        if (resolved) {
-          engine.setTranscriptionService(
-            new WhisperLocalService({
-              binaryPath: resolved.binaryPath,
-              modelPath: resolved.modelPath,
-              ffmpegPaths: engine.ffmpegPaths,
-            })
-          );
-        }
-      }
+      // Pick the engine for this transcribe: the user's faster-whisper pack (GPU)
+      // when configured, else bundled whisper.cpp with the requested model. When
+      // fw is active the whisper model choice is moot (fw uses its align model).
+      await applyBestTranscriptionService(engine, opts.model);
       // Cap subtitle length per orientation. Without this whisper produces
       // "natural-pause" segments that can run 19+ chars even for portrait,
       // overflowing the on-screen subtitle frame.

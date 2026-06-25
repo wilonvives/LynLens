@@ -1,6 +1,6 @@
 import { useStore } from '../store';
 
-export type WorkMode = 'precision' | 'highlight' | 'packaging' | 'copywriter';
+export type WorkMode = 'transcribe' | 'precision' | 'highlight' | 'packaging' | 'copywriter';
 
 interface WorkModeTabsProps {
   workMode: WorkMode;
@@ -22,6 +22,13 @@ export function WorkModeTabs({ workMode, onSwitchMode }: WorkModeTabsProps): JSX
 
   return (
     <div className="work-mode-tabs">
+      <button
+        className={`work-mode-tab${workMode === 'transcribe' ? ' active' : ''}`}
+        onClick={() => onSwitchMode('transcribe')}
+        title="高质量转录(Gemini 文本 + whisper 时间轴)。这是第一步,可在这里直接打开视频/音频"
+      >
+        转录
+      </button>
       <button
         className={`work-mode-tab${workMode === 'precision' ? ' active' : ''}`}
         onClick={() => onSwitchMode('precision')}

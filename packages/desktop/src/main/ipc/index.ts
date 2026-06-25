@@ -24,6 +24,7 @@ import { registerAgentWindowIpc } from './agent-window';
 import { registerSettingsIpc } from './settings';
 import { registerLearningIpc } from './learning';
 import { registerMarkersIpc } from './markers';
+import { registerLynscripeIpc } from './lynscripe';
 
 export type { IpcContext } from './_context';
 
@@ -41,4 +42,5 @@ export function registerAllIpc(ctx: IpcContext): void {
   registerSettingsIpc(ctx);
   registerLearningIpc(ctx);
   registerMarkersIpc(ctx);
+  registerLynscripeIpc(ctx);
 }

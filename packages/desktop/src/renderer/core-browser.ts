@@ -24,6 +24,14 @@ export {
 export { PLATFORM_LABELS } from '../../../core/src/copywriter-platforms';
 export type { SocialPlatform } from '../../../core/src/copywriter-platforms';
 
+// Lynscripe template helpers — pure string ops, safe for browser. The 转录 tab
+// applies corrections locally for an instant V2 preview before the whisper pass.
+export { applyCorrections, countPlaceholders } from '../../../core/src/lynscripe/template';
+export type {
+  TranscriptTemplate,
+  UncertainTerm,
+} from '../../../core/src/lynscripe/types';
+
 export type {
   AiMode,
   LynLensEvent,

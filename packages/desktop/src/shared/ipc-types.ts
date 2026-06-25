@@ -13,6 +13,7 @@ import type {
   SocialPlatform,
   SocialStylePresetData,
   Transcript,
+  TranscriptTemplate,
   VideoMeta,
 } from '@lynlens/core';
 
@@ -26,6 +27,19 @@ export interface GenerateSocialCopiesResult {
     hashtags: string[];
   }>;
   failures: Array<{ platform: SocialPlatform; error: string }>;
+}
+
+export interface LynscripeAlignConfig {
+  /** faster-whisper offline pack root (empty = use bundled whisper.cpp). */
+  fwPath: string;
+  /** Chosen faster-whisper model key for alignment (e.g. 'medium'). */
+  alignModel: string;
+  /** Whether the configured pack is usable (python + script + a model). */
+  ready: boolean;
+  /** Model keys actually present in the pack. */
+  models: string[];
+  /** Which engine the build will actually use. */
+  engine: 'faster-whisper' | 'whisper.cpp';
 }
 
 export interface CommitRippleResult {
@@ -113,6 +127,43 @@ export interface IpcApi {
     segmentIds: string[];
     breakdown: { silences: number; fillers: number; retakes: number };
   }>;
+
+  // ── Lynscripe (转录 tab) — path-based (audio OR video file) ──────────────
+  /** Whether a Gemini key is configured + the model. Never returns the key. */
+  lynscripeGetConfig(): Promise<{ keySet: boolean; model: string }>;
+  /** Save the Gemini API key (stored under userData, never in the repo). */
+  lynscripeSetKey(key: string, model?: string): Promise<{ keySet: boolean; model: string }>;
+  /** Pick an audio/video file to transcribe. Returns the absolute path, or null. */
+  lynscripePickFile(): Promise<string | null>;
+  /** Waveform envelope (peak + rms arrays) for the source file's audio. */
+  lynscripeWaveform(filePath: string, buckets?: number): Promise<{ peak: number[]; rms: number[] }>;
+  /** The current proper-noun vocab (term → category), same store as 粗剪. */
+  lynscripeGetVocab(): Promise<Record<string, string>>;
+  /** Alignment-engine config + which faster-whisper models are present. */
+  lynscripeGetAlign(): Promise<LynscripeAlignConfig>;
+  /** Set the faster-whisper pack folder + chosen align model. */
+  lynscripeSetAlign(fwPath: string, alignModel: string): Promise<LynscripeAlignConfig>;
+  /** Pick the faster-whisper pack folder via native dialog (null if cancelled). */
+  lynscripePickFwFolder(): Promise<string | null>;
+  /** Stage 1: Gemini transcribe a file → template + uncertain terms. */
+  lynscripeTranscribe(filePath: string, language?: string): Promise<TranscriptTemplate>;
+  /** Stage 5: confirmed V2 text + whisper word timings on the file → Transcript. */
+  lynscripeBuild(
+    filePath: string,
+    v2Text: string,
+    opts?: { language?: string; commitVocab?: Array<{ term: string; category: string }> }
+  ): Promise<Transcript>;
+  /** Save the produced transcript as a .srt file. Returns the saved path, or null. */
+  lynscripeExportSrt(transcript: Transcript, suggestedName?: string): Promise<string | null>;
+  /** Save the draft text as a .txt file. Returns the saved path, or null. */
+  lynscripeExportTxt(text: string, suggestedName?: string): Promise<string | null>;
+  /** Auto-save the work-in-progress session to a sidecar next to the source. */
+  lynscripeSaveSession(sourcePath: string, session: unknown): Promise<boolean>;
+  /** Load a previously-saved session for this source file (null if none). */
+  lynscripeLoadSession(sourcePath: string): Promise<unknown>;
+  /** Explicit bridge: apply the produced transcript as a video project's 字幕稿. */
+  lynscripeApply(projectId: string, transcript: Transcript): Promise<{ applied: number }>;
+
   approveAllPending(projectId: string): Promise<number>;
   rejectAllPending(projectId: string): Promise<number>;
 

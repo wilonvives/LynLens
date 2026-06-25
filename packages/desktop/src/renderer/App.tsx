@@ -10,6 +10,7 @@ import { QuickMarkDialog } from './QuickMarkDialog';
 import { ShortcutsDialog } from './ShortcutsDialog';
 import { HighlightPanel } from './HighlightPanel';
 import { PackagingPanel } from './PackagingPanel';
+import { TranscribePanel } from './TranscribePanel';
 import { SocialCopyPanel } from './SocialCopyPanel';
 import { Resizer } from './Resizer';
 import { usePlayerWrapSize } from './hooks/usePlayerWrapSize';
@@ -57,6 +58,9 @@ export function App() {
   const [showOrientDialog, setShowOrientDialog] = useState(false);
   const [showQuickMarkDialog, setShowQuickMarkDialog] = useState(false);
   const [workMode, setWorkMode] = useState<WorkMode>('precision');
+  // 转录 tab's source file (audio OR video). Lifted here so a drag-drop while
+  // on the 转录 tab can set it directly, instead of trying to open a project.
+  const [transcribeSource, setTranscribeSource] = useState<string | null>(null);
   const [diarizing, setDiarizing] = useState(false);
   /**
    * Mark-over-cut prompt. Set when the user's Shift+drag covers a range
@@ -536,7 +540,17 @@ export function App() {
       onDrop={(e) => {
         e.preventDefault();
         const f = e.dataTransfer.files[0];
-        if (f) void openFromDrop(f);
+        if (!f) return;
+        // On the 转录 tab, a dropped file (audio or video) becomes the
+        // transcribe source — don't route it through the video-project opener
+        // (which rejects audio). Everywhere else: open as video / project.
+        if (workMode === 'transcribe') {
+          const p = window.lynlens.getPathForFile(f);
+          if (p) setTranscribeSource(p);
+          else alert('无法获取拖入文件的本地路径,请改用「选择音频/视频」按钮。');
+          return;
+        }
+        void openFromDrop(f);
       }}
     >
       <MenuBar
@@ -547,7 +561,14 @@ export function App() {
 
       <WorkModeTabs workMode={workMode} onSwitchMode={(m) => void switchMode(m)} />
 
-      {workMode === 'highlight' ? (
+      {workMode === 'transcribe' ? (
+        <TranscribePanel
+          projectId={store.projectId}
+          videoPath={store.videoPath}
+          sourcePath={transcribeSource ?? store.videoPath}
+          onSourceChange={setTranscribeSource}
+        />
+      ) : workMode === 'highlight' ? (
         <HighlightPanel
           effectiveDuration={effectiveDuration}
           videoPath={store.videoPath}
